@@ -27,10 +27,11 @@ impl Default for VerificationConfig {
 }
 
 /// Consistency mode for verification
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConsistencyMode {
     /// Strong consistency - read after write completes
+    #[default]
     Strong,
     /// Eventual consistency - poll until consistent
     Eventual,
@@ -38,12 +39,6 @@ pub enum ConsistencyMode {
     Polling,
     /// Webhook - wait for callback
     Webhook,
-}
-
-impl Default for ConsistencyMode {
-    fn default() -> Self {
-        Self::Strong
-    }
 }
 
 /// Recovery configuration
@@ -109,19 +104,14 @@ fn default_multiplier() -> f64 {
 }
 
 /// Backoff type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackoffType {
     /// Linear backoff
+    #[default]
     Linear,
     /// Exponential backoff
     Exponential,
-}
-
-impl Default for BackoffType {
-    fn default() -> Self {
-        Self::Linear
-    }
 }
 
 /// Action to take on recovery
@@ -131,7 +121,10 @@ pub enum RecoveryAction {
     /// Verify state
     Verify,
     /// Poll for result
-    Poll { interval: chrono::Duration, max_attempts: u32 },
+    Poll {
+        interval: chrono::Duration,
+        max_attempts: u32,
+    },
     /// Send alert
     Alert { severity: AlertSeverity },
     /// Human approval required
@@ -180,6 +173,7 @@ fn default_mandatory() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Contract {
     /// Unique identifier
+    #[serde(default)]
     pub id: ContractId,
     /// Action name this contract applies to
     pub action_name: String,
@@ -190,6 +184,7 @@ pub struct Contract {
     #[serde(default)]
     pub postconditions: Vec<Postcondition>,
     /// Recovery configuration
+    #[serde(default)]
     pub recovery: Option<RecoveryConfig>,
     /// Verification configuration
     #[serde(default)]
@@ -218,7 +213,11 @@ impl Contract {
     }
 
     /// Add a precondition
-    pub fn with_precondition(mut self, predicate: Predicate, description: impl Into<String>) -> Self {
+    pub fn with_precondition(
+        mut self,
+        predicate: Predicate,
+        description: impl Into<String>,
+    ) -> Self {
         self.preconditions.push(Precondition {
             predicate,
             description: description.into(),
@@ -227,7 +226,11 @@ impl Contract {
     }
 
     /// Add a postcondition
-    pub fn with_postcondition(mut self, predicate: Predicate, description: impl Into<String>) -> Self {
+    pub fn with_postcondition(
+        mut self,
+        predicate: Predicate,
+        description: impl Into<String>,
+    ) -> Self {
         self.postconditions.push(Postcondition {
             predicate,
             description: description.into(),

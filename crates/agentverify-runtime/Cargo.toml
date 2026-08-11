@@ -13,3 +13,5 @@ agentverify-engine = { path = "../agentverify-engine" }
 tokio.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
+async-trait = "0.1"
+serde_json.workspace = true
