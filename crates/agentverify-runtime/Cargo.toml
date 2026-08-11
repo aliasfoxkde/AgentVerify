@@ -1,0 +1,15 @@
+[package]
+name = "agentverify-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agentverify-core = { path = "../agentverify-core" }
+agentverify-contract = { path = "../agentverify-contract" }
+agentverify-engine = { path = "../agentverify-engine" }
+tokio.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
