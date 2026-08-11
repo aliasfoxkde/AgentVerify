@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "cargo:*",
+      "git:*",
+      "rustc:*",
+      "clippy:*",
+      "fmt:*",
+      "test:*",
+      "bench:*",
+      "audit:*",
+      "deny:*",
+      "nextest:*"
+    ]
+  },
+  "goals": {
+    "default": "High-quality, well-tested Rust code following the rules in .claude/rules/"
+  },
+  "rules": [
+    ".claude/rules/quality.md",
+    ".claude/rules/commit.md"
+  ],
+  "env": {
+    "RUST_BACKTRACE": "1",
+    "RUST_MINIMUM_STABLE": "1.75.0"
+  }
+}

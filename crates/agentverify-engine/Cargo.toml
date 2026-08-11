@@ -1,0 +1,18 @@
+[package]
+name = "agentverify-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+agentverify-core = { path = "../agentverify-core" }
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+jsonpath-rust.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
