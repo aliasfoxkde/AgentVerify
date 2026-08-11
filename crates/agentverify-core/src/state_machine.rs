@@ -1,7 +1,7 @@
 //! State machine for action lifecycle
 
-use std::fmt;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use thiserror::Error;
 
 /// Errors that can occur in state transitions
@@ -80,10 +80,7 @@ impl State {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            State::Committed
-                | State::Rejected
-                | State::Escalated
-                | State::VerificationFailed
+            State::Committed | State::Rejected | State::Escalated | State::VerificationFailed
         )
     }
 

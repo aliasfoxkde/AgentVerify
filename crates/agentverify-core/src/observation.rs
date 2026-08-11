@@ -99,8 +99,14 @@ mod tests {
 
         let obs = Observation::new(SourceId("test".into()), state);
 
-        assert_eq!(obs.get("customer.email"), Some(&serde_json::json!("test@example.com")));
-        assert_eq!(obs.get("customer.status"), Some(&serde_json::json!("active")));
+        assert_eq!(
+            obs.get("customer.email"),
+            Some(&serde_json::json!("test@example.com"))
+        );
+        assert_eq!(
+            obs.get("customer.status"),
+            Some(&serde_json::json!("active"))
+        );
         assert_eq!(obs.get("customer.nonexistent"), None);
     }
 

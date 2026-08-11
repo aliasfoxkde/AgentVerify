@@ -8,48 +8,24 @@ use serde_json::Value;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Predicate {
     // === Basic Predicates ===
-
     /// Check if a path exists
-    Exists {
-        path: String,
-    },
+    Exists { path: String },
     /// Check if a path does not exist
-    NotExists {
-        path: String,
-    },
+    NotExists { path: String },
     /// Check if value equals expected
-    Equals {
-        path: String,
-        value: Value,
-    },
+    Equals { path: String, value: Value },
     /// Check if value does not equal expected
-    NotEquals {
-        path: String,
-        value: Value,
-    },
+    NotEquals { path: String, value: Value },
     /// Check if value contains expected
-    Contains {
-        path: String,
-        value: Value,
-    },
+    Contains { path: String, value: Value },
     /// Check if value matches regex
-    Matches {
-        path: String,
-        pattern: String,
-    },
+    Matches { path: String, pattern: String },
     /// Check if value is greater than expected
-    GreaterThan {
-        path: String,
-        value: Value,
-    },
+    GreaterThan { path: String, value: Value },
     /// Check if value is less than expected
-    LessThan {
-        path: String,
-        value: Value,
-    },
+    LessThan { path: String, value: Value },
 
     // === Collection Predicates ===
-
     /// Check count of items
     Count {
         path: String,
@@ -57,28 +33,17 @@ pub enum Predicate {
         value: i64,
     },
     /// Check if collection is empty
-    IsEmpty {
-        path: String,
-    },
+    IsEmpty { path: String },
     /// Check if collection is not empty
-    IsNotEmpty {
-        path: String,
-    },
+    IsNotEmpty { path: String },
 
     // === Compound Predicates ===
-
     /// All predicates must be true (AND)
-    All {
-        predicates: Vec<Predicate>,
-    },
+    All { predicates: Vec<Predicate> },
     /// Any predicate must be true (OR)
-    Any {
-        predicates: Vec<Predicate>,
-    },
+    Any { predicates: Vec<Predicate> },
     /// Negate predicate (NOT)
-    Not {
-        predicate: Box<Predicate>,
-    },
+    Not { predicate: Box<Predicate> },
     /// If antecedent, then consequent
     Implies {
         antecedent: Box<Predicate>,
@@ -89,16 +54,12 @@ pub enum Predicate {
 impl Predicate {
     /// Create an exists check
     pub fn exists(path: impl Into<String>) -> Self {
-        Self::Exists {
-            path: path.into(),
-        }
+        Self::Exists { path: path.into() }
     }
 
     /// Create a not-exists check
     pub fn not_exists(path: impl Into<String>) -> Self {
-        Self::NotExists {
-            path: path.into(),
-        }
+        Self::NotExists { path: path.into() }
     }
 
     /// Create an equals check
@@ -129,7 +90,7 @@ impl Predicate {
     }
 
     /// Create a not compound predicate
-    pub fn not(predicate: Predicate) -> Self {
+    pub fn negate(predicate: Predicate) -> Self {
         Self::Not {
             predicate: Box::new(predicate),
         }
@@ -145,17 +106,5 @@ pub enum CountOperator {
     Lt,
     Le,
     Gt,
-    Ge,
-}
-
-/// Comparison operator
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CompareOperator {
-    Eq,
-    Ne,
-    Lt,
-    Le,
-   Gt,
     Ge,
 }

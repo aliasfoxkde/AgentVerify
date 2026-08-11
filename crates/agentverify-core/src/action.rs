@@ -4,35 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Unique action identifier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ActionId(pub uuid::Uuid);
-
-impl ActionId {
-    pub fn new() -> Self {
-        Self(uuid::Uuid::new_v4())
-    }
-}
-
-impl Default for ActionId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Idempotency key for deduplication
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct IdempotencyKey(pub String);
-
-impl IdempotencyKey {
-    pub fn new(key: impl Into<String>) -> Self {
-        Self(key.into())
-    }
-
-    pub fn from_action_id(id: ActionId) -> Self {
-        Self(format!("av_{}", id.0))
-    }
-}
+pub use super::id::ActionId;
+pub use super::id::IdempotencyKey;
 
 /// An action to be verified
 #[derive(Debug, Clone, Serialize, Deserialize)]

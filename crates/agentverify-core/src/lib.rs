@@ -15,13 +15,12 @@ mod receipt;
 mod state_machine;
 mod verification_result;
 
-pub use action::{Action, ActionId};
+pub use action::{Action, ActionId, IdempotencyKey};
 pub use contract::{Contract, ContractId, Postcondition, Precondition};
 pub use observation::{Evidence, Observation, SourceId};
-pub use predicate::Predicate;
+pub use predicate::{CountOperator, Predicate};
 pub use receipt::{PostconditionResult, Receipt};
-pub use id::ReceiptId;
-pub use state_machine::StateMachine;
+pub use state_machine::{State, StateMachine};
 pub use verification_result::VerificationResult;
 
 /// Core identifier types
@@ -42,6 +41,20 @@ pub mod id {
     impl Default for ActionId {
         fn default() -> Self {
             Self::new()
+        }
+    }
+
+    /// Idempotency key for deduplication
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    pub struct IdempotencyKey(pub String);
+
+    impl IdempotencyKey {
+        pub fn new(key: impl Into<String>) -> Self {
+            Self(key.into())
+        }
+
+        pub fn from_action_id(id: ActionId) -> Self {
+            Self(format!("av_{}", id.0))
         }
     }
 
