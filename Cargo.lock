@@ -6,9 +6,13 @@ version = 3
 name = "agentverify-cli"
 version = "0.1.0"
 dependencies = [
+ "agentverify-contract",
+ "agentverify-core",
  "agentverify-runtime",
  "anyhow",
  "clap",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
