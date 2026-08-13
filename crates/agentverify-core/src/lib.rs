@@ -19,9 +19,11 @@ pub use action::{Action, ActionId, IdempotencyKey};
 pub use contract::{
     Contract, ContractId, Postcondition, Precondition, SchemaVersion, CONTRACT_SCHEMA_VERSION,
 };
+pub use id::ReceiptId;
 pub use observation::{Evidence, Observation, SourceId};
 pub use predicate::{CountOperator, Predicate};
-pub use receipt::{PostconditionResult, Receipt};
+pub use receipt::PostconditionResult;
+pub use receipt::Receipt;
 pub use state_machine::{State, StateMachine};
 pub use verification_result::VerificationResult;
 
@@ -89,6 +91,12 @@ pub mod id {
     impl Default for ReceiptId {
         fn default() -> Self {
             Self::new()
+        }
+    }
+
+    impl std::fmt::Display for ReceiptId {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
         }
     }
 
