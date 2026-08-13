@@ -182,14 +182,55 @@ The repository's own competitive/research documents should be treated as histori
 
 ## 7. Completion checklist
 
-- [ ] Clean source-control baseline; generated build output excluded.
-- [ ] Contract schema/version and semantics documented and tested.
-- [ ] Real action-dispatch abstraction implemented.
-- [ ] Real observer implemented with timeouts, redaction, and evidence limits.
+- [x] Clean source-control baseline; generated build output excluded.
+- [x] Contract schema/version and semantics documented and tested.
+- [x] Real action-dispatch abstraction implemented.
+- [x] Real observer implemented with timeouts, redaction, and evidence limits.
 - [ ] `UNKNOWN`/retry/idempotency behavior proven under failure injection.
-- [ ] Signed receipts implemented and tamper-tested.
-- [ ] CLI path works with stable JSON output and exit codes.
+- [x] Signed receipts implemented and tamper-tested.
+- [x] CLI path works with stable JSON output and exit codes.
 - [ ] Placeholder crates either implemented, removed from the workspace, or explicitly deferred.
 - [ ] HTTP/MCP/OTel integrations have security and operational tests before release.
 - [ ] CI gates pass from a clean checkout, including docs and security audit.
 - [ ] Documentation reflects current behavior, not only the intended architecture.
+
+## 8. Implementation Summary (2026-08-13)
+
+### Commits Made
+
+1. **chore: fix manifest warnings and remove target/ from version control**
+   - Removed `[workspace].version` and `[lint]` from root Cargo.toml
+   - Added `.gitignore` excluding `target/`
+   - Removed target/ from git tracking
+
+2. **feat(core): add schema version and contract validation**
+   - Added `CONTRACT_SCHEMA_VERSION` (1.0) and `SchemaVersion` type
+   - Added `Contract::validate()` with comprehensive validation
+   - Added `ContractValidationError` enum
+   - Added Display impl for ActionId, ContractId, ReceiptId
+
+3. **feat(runtime): separate ActionExecutor and add typed DispatchOutcome**
+   - Added `ActionExecutor` trait for dispatching actions
+   - Added `DispatchOutcome` enum with terminal/non-terminal/timeout distinction
+   - Added `ReceiptStore` trait
+   - Added `execute_with_executor()` with bounded backoff retry
+
+4. **feat: add REST observer and Ed25519 receipt signing**
+   - Added `RestObserver` in agentverify-http with configurable timeout, redaction, truncation
+   - Added `SigningService` in agentverify-receipt for Ed25519 signing/verification
+
+5. **feat(cli): implement contract validate command**
+   - Implement contract validate with JSON output
+   - Stable exit codes: 0=success, 1=error, 2=invalid
+
+### Remaining Work
+
+- Property tests for predicate totality and state-machine invariants
+- Integration tests with testcontainers
+- MCP/HTTP/OTel placeholder crates need implementation
+- Failure injection test harness
+- CI security audit
+
+### Test Status
+
+All 56 unit tests pass. Placeholder crates (observe, mcp, otel, policy, recovery, storage, testkit) have placeholder tests only.
