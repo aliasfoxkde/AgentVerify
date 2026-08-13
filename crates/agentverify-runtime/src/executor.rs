@@ -513,6 +513,7 @@ impl Default for Executor {
 mod tests {
     use super::*;
     use agentverify_core::Predicate;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn executor_returns_verified_on_empty_postconditions() {
@@ -559,5 +560,150 @@ mod tests {
         // Should be the same result, with 0 attempts (cached)
         assert_eq!(verification_result2, VerificationResult::Failed);
         assert_eq!(receipt2.attempts, 0);
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_timeout_before_dispatch_with_empty_state_fails() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use std::sync::Arc;
+
+        struct MockExecutor {
+            outcome: DispatchOutcome,
+        }
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for MockExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(self.outcome.clone())
+            }
+        }
+
+        let executor = Executor::new();
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let mock = Arc::new(MockExecutor {
+            outcome: DispatchOutcome::TimeoutBeforeDispatch,
+        });
+
+        let result = executor
+            .execute_with_executor(action, contract, mock, None)
+            .await;
+
+        assert!(result.is_ok());
+        let (verification_result, receipt) = result.unwrap();
+        // With no observer, empty state causes verification to fail
+        // This is correct: we cannot verify without observation
+        assert_eq!(verification_result, VerificationResult::Failed);
+        // With default max_retries=3, we get 3 attempts
+        assert_eq!(receipt.attempts, 3);
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_transport_error_is_terminal() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use std::sync::Arc;
+
+        struct MockExecutor {
+            outcome: DispatchOutcome,
+        }
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for MockExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(self.outcome.clone())
+            }
+        }
+
+        let executor = Executor::new();
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let mock = Arc::new(MockExecutor {
+            outcome: DispatchOutcome::TransportError("connection refused".to_string()),
+        });
+
+        let result = executor
+            .execute_with_executor(action, contract, mock, None)
+            .await;
+
+        assert!(result.is_ok());
+        let (verification_result, receipt) = result.unwrap();
+        // TransportError is terminal - should be Failed immediately, not retried
+        assert_eq!(verification_result, VerificationResult::Failed);
+        assert_eq!(receipt.attempts, 1); // First attempt
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_ambiguous_is_terminal_unknown() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use std::sync::Arc;
+
+        struct MockExecutor {
+            outcome: DispatchOutcome,
+        }
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for MockExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(self.outcome.clone())
+            }
+        }
+
+        let executor = Executor::new();
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let mock = Arc::new(MockExecutor {
+            outcome: DispatchOutcome::Ambiguous("result unclear".to_string()),
+        });
+
+        let result = executor
+            .execute_with_executor(action, contract, mock, None)
+            .await;
+
+        assert!(result.is_ok());
+        let (verification_result, receipt) = result.unwrap();
+        // Ambiguous is terminal - should be Unknown immediately, not retried
+        assert_eq!(verification_result, VerificationResult::Unknown);
+        assert_eq!(receipt.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_retry_exhaustion_returns_failed() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+
+        struct MockExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for MockExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(DispatchOutcome::TimeoutBeforeDispatch)
+            }
+        }
+
+        let config = ExecutorConfig {
+            verification_timeout_ms: 5000,
+            max_retries: 3,
+            verify_before_retry: true,
+        };
+        let executor = Executor::with_config(config);
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let result = executor
+            .execute_with_executor(action, contract, Arc::new(MockExecutor), None)
+            .await;
+
+        assert!(result.is_ok());
+        let (verification_result, receipt) = result.unwrap();
+        // With no observer, verification fails after exhausting retries
+        assert_eq!(verification_result, VerificationResult::Failed);
+        // With max_retries=3, we get 3 attempts
+        assert_eq!(receipt.attempts, 3);
     }
 }
