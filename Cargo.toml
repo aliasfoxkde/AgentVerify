@@ -1,5 +1,4 @@
 [workspace]
-version = "0.1.0"
 members = [
     "crates/agentverify-core",
     "crates/agentverify-contract",
@@ -87,6 +86,3 @@ inherits = "release"
 
 [profile.dev]
 opt-level = 0
-
-[lint]
-workspace = true
