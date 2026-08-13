@@ -2,6 +2,7 @@
 //!
 //! Orchestrates action execution with verification using verify-before-retry semantics.
 
+use crate::action_executor::{ActionExecutor, DispatchOutcome};
 use agentverify_contract::Contract;
 use agentverify_core::{
     Action, Observation, Receipt, SourceId, State, StateMachine, VerificationResult,
@@ -28,6 +29,10 @@ pub enum ExecutorError {
     Unknown(String),
     #[error("Idempotency conflict: action already executed")]
     IdempotencyConflict,
+    #[error("Retry exhausted after {attempts} attempts")]
+    RetryExhausted { attempts: u32 },
+    #[error("Action executor error: {0}")]
+    ActionExecutor(String),
 }
 
 /// Observer trait for collecting state observations
@@ -291,6 +296,186 @@ impl Executor {
             Ok(VerificationResult::Failed)
         } else {
             Ok(VerificationResult::Partial)
+        }
+    }
+
+    /// Execute an action using a real action executor
+    ///
+    /// This method uses the verify-before-retry pattern:
+    /// 1. Check idempotency (return cached result if already executed)
+    /// 2. Validate preconditions
+    /// 3. Dispatch the action through the executor
+    /// 4. Observe the result state
+    /// 5. Verify postconditions
+    /// 6. Generate receipt
+    ///
+    /// Timeouts are treated as UNKNOWN, not failure. The caller must observe
+    /// state before retrying.
+    pub async fn execute_with_executor(
+        &self,
+        action: Action,
+        contract: Contract,
+        action_executor: Arc<dyn ActionExecutor>,
+        observer: Option<Arc<dyn Observer>>,
+    ) -> Result<(VerificationResult, Receipt), ExecutorError> {
+        use tokio::time::sleep;
+
+        // Check idempotency
+        if let Some(key) = &action.idempotency_key {
+            if let Some(cached) = self.idempotency.check(&key.0).await {
+                let receipt = self.create_receipt(&action, &contract, cached, 0);
+                return Ok((cached, receipt));
+            }
+        }
+
+        let mut attempts = 0;
+        let mut backoff_ms: u64 = 100; // Initial backoff
+
+        // Main execution loop
+        loop {
+            attempts += 1;
+            let mut state_machine = StateMachine::new();
+
+            // Validate preconditions
+            state_machine
+                .advance(State::Validating)
+                .map_err(|e| ExecutorError::PreconditionFailed(e.to_string()))?;
+
+            if let Err(e) = self.validate_preconditions(&action, &contract) {
+                state_machine
+                    .advance(State::Rejected)
+                    .map_err(|_| ExecutorError::PreconditionFailed(e.to_string()))?;
+                let receipt =
+                    self.create_receipt(&action, &contract, VerificationResult::Failed, attempts);
+                return Ok((VerificationResult::Failed, receipt));
+            }
+
+            state_machine
+                .advance(State::Authorized)
+                .map_err(|e| ExecutorError::ExecutionFailed(e.to_string()))?;
+
+            // Execute action through executor
+            state_machine
+                .advance(State::Executing)
+                .map_err(|e| ExecutorError::ExecutionFailed(e.to_string()))?;
+
+            let dispatch_result = action_executor
+                .execute(&action)
+                .await
+                .map_err(|e| ExecutorError::ActionExecutor(e.to_string()))?;
+
+            // Handle dispatch outcome
+            match dispatch_result {
+                DispatchOutcome::Completed => {}
+                DispatchOutcome::Accepted => {}
+                DispatchOutcome::TimeoutBeforeDispatch => {
+                    state_machine
+                        .advance(State::Unknown)
+                        .map_err(|e| ExecutorError::Timeout(e.to_string()))?;
+                }
+                DispatchOutcome::TimeoutAfterDispatch => {
+                    state_machine
+                        .advance(State::Unknown)
+                        .map_err(|e| ExecutorError::Timeout(e.to_string()))?;
+                }
+                DispatchOutcome::TransportError(_) => {
+                    // Terminal - don't retry
+                    let receipt = self.create_receipt(
+                        &action,
+                        &contract,
+                        VerificationResult::Failed,
+                        attempts,
+                    );
+                    return Ok((VerificationResult::Failed, receipt));
+                }
+                DispatchOutcome::Ambiguous(_) => {
+                    // Terminal - require human review
+                    let receipt = self.create_receipt(
+                        &action,
+                        &contract,
+                        VerificationResult::Unknown,
+                        attempts,
+                    );
+                    return Ok((VerificationResult::Unknown, receipt));
+                }
+            };
+
+            // Observe state
+            state_machine
+                .advance(State::Observing)
+                .map_err(|e| ExecutorError::Unknown(e.to_string()))?;
+
+            let observation = if let Some(ref obs) = observer {
+                obs.observe(&action, &contract).await?
+            } else {
+                // If no observer, assume no change
+                Observation::new(SourceId("none".into()), serde_json::json!({}))
+            };
+
+            // Verify postconditions
+            state_machine
+                .advance(State::Verifying)
+                .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
+
+            let result = self.verify_postconditions(&action, &contract, &observation)?;
+
+            // Record in idempotency registry
+            if let Some(key) = &action.idempotency_key {
+                self.idempotency.insert(key.0.clone(), result).await;
+            }
+
+            // Determine final state
+            match result {
+                VerificationResult::Verified => {
+                    state_machine
+                        .advance(State::Verified)
+                        .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
+                    state_machine
+                        .advance(State::Committed)
+                        .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
+
+                    let receipt = self.create_receipt_with_observation(
+                        &action,
+                        &contract,
+                        result,
+                        attempts,
+                        observation,
+                    );
+                    return Ok((result, receipt));
+                }
+                VerificationResult::Failed => {
+                    // If verify_before_retry is enabled and we haven't exceeded retries
+                    if self.config.verify_before_retry && attempts < self.config.max_retries {
+                        // Apply backoff before retry
+                        sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        backoff_ms = (backoff_ms * 2).min(5000); // Cap at 5 seconds
+                        continue;
+                    }
+
+                    state_machine
+                        .advance(State::VerificationFailed)
+                        .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
+
+                    let receipt = self.create_receipt(&action, &contract, result, attempts);
+                    return Ok((VerificationResult::Failed, receipt));
+                }
+                VerificationResult::Unknown => {
+                    // Unknown requires observation/recovery action
+                    if attempts < self.config.max_retries {
+                        // Apply backoff before retry
+                        sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        backoff_ms = (backoff_ms * 2).min(5000);
+                        continue;
+                    }
+                    let receipt = self.create_receipt(&action, &contract, result, attempts);
+                    return Ok((result, receipt));
+                }
+                _ => {
+                    // Partial, Duplicate
+                    let receipt = self.create_receipt(&action, &contract, result, attempts);
+                    return Ok((result, receipt));
+                }
+            }
         }
     }
 
