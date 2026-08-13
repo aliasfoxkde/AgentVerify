@@ -1,11 +1,7 @@
-//! AgentVerify $crate
+//! AgentVerify HTTP
 //!
-//! Placeholder - implementation pending
+//! HTTP-based observers and clients.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn placeholder() {
-        // Implementation pending
-    }
-}
+mod observer;
+
+pub use observer::{RestObserver, RestObserverConfig, RestObserverError};

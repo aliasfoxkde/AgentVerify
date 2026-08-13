@@ -1,11 +1,7 @@
-//! AgentVerify $crate
+//! AgentVerify Receipt
 //!
-//! Placeholder - implementation pending
+//! Receipt signing and verification.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn placeholder() {
-        // Implementation pending
-    }
-}
+mod signing;
+
+pub use signing::{SigningError, SigningService};
