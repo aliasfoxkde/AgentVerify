@@ -186,15 +186,15 @@ The repository's own competitive/research documents should be treated as histori
 - [x] Contract schema/version and semantics documented and tested.
 - [x] Real action-dispatch abstraction implemented.
 - [x] Real observer implemented with timeouts, redaction, and evidence limits.
-- [ ] `UNKNOWN`/retry/idempotency behavior proven under failure injection.
+- [x] `UNKNOWN`/retry/idempotency behavior proven under failure injection.
 - [x] Signed receipts implemented and tamper-tested.
 - [x] CLI path works with stable JSON output and exit codes.
-- [ ] Placeholder crates either implemented, removed from the workspace, or explicitly deferred.
+- [x] Placeholder crates either implemented, removed from the workspace, or explicitly deferred.
 - [ ] HTTP/MCP/OTel integrations have security and operational tests before release.
 - [x] CI gates pass from a clean checkout (clippy, fmt, tests).
 - [x] Documentation reflects current behavior (see Section 8).
 
-**Note:** Items marked [ ] require additional implementation or testing work before release.
+**Note:** HTTP/MCP/OTel security tests remain for future work.
 
 ## 8. Implementation Summary (2026-08-13)
 
@@ -225,12 +225,17 @@ The repository's own competitive/research documents should be treated as histori
    - Implement contract validate with JSON output
    - Stable exit codes: 0=success, 1=error, 2=invalid
 
+6. **chore: remove placeholder crates from workspace**
+   - Deferred: observe, mcp, otel, policy, recovery, storage, testkit
+
+7. **test(runtime): add failure injection tests for DispatchOutcome**
+   - Tests for timeout, transport error, ambiguous, retry exhaustion behavior
+
 ### Remaining Work
 
+- HTTP/MCP/OTel integrations security/operational tests
 - Property tests for predicate totality and state-machine invariants
 - Integration tests with testcontainers
-- MCP/HTTP/OTel placeholder crates need implementation
-- Failure injection test harness
 - CI security audit
 
 ### Test Status
