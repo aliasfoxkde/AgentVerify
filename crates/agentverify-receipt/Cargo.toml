@@ -8,3 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
+serde_json = { workspace = true }
+ed25519-dalek = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+thiserror = { workspace = true }

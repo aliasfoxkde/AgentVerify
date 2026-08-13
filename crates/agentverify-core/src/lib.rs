@@ -48,6 +48,12 @@ pub mod id {
         }
     }
 
+    impl std::fmt::Display for ActionId {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
+        }
+    }
+
     /// Idempotency key for deduplication
     #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub struct IdempotencyKey(pub String);
@@ -75,6 +81,12 @@ pub mod id {
     impl Default for ContractId {
         fn default() -> Self {
             Self::new()
+        }
+    }
+
+    impl std::fmt::Display for ContractId {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "{}", self.0)
         }
     }
 
