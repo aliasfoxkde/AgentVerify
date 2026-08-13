@@ -4,17 +4,18 @@ members = [
     "crates/agentverify-contract",
     "crates/agentverify-engine",
     "crates/agentverify-runtime",
-    "crates/agentverify-observe",
-    "crates/agentverify-recovery",
     "crates/agentverify-receipt",
-    "crates/agentverify-policy",
-    "crates/agentverify-storage",
-    "crates/agentverify-mcp",
-    "crates/agentverify-otel",
     "crates/agentverify-http",
     "crates/agentverify-cli",
-    "crates/agentverify-testkit",
 ]
+# Deferred placeholder crates (not yet implemented):
+# - agentverify-observe: Observation adapters
+# - agentverify-recovery: Recovery strategies
+# - agentverify-policy: Policy engine
+# - agentverify-storage: Storage adapters
+# - agentverify-mcp: MCP integration
+# - agentverify-otel: OpenTelemetry export
+# - agentverify-testkit: Testing utilities
 
 resolver = "2"
 

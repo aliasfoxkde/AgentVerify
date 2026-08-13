@@ -68,34 +68,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentverify-mcp"
-version = "0.1.0"
-dependencies = [
- "agentverify-core",
-]
-
-[[package]]
-name = "agentverify-observe"
-version = "0.1.0"
-dependencies = [
- "agentverify-core",
-]
-
-[[package]]
-name = "agentverify-otel"
-version = "0.1.0"
-dependencies = [
- "agentverify-core",
-]
-
-[[package]]
-name = "agentverify-policy"
-version = "0.1.0"
-dependencies = [
- "agentverify-core",
-]
-
-[[package]]
 name = "agentverify-receipt"
 version = "0.1.0"
 dependencies = [
@@ -105,13 +77,6 @@ dependencies = [
  "rand 0.8.7",
  "serde_json",
  "thiserror",
-]
-
-[[package]]
-name = "agentverify-recovery"
-version = "0.1.0"
-dependencies = [
- "agentverify-core",
 ]
 
 [[package]]
@@ -126,20 +91,6 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tokio",
-]
-
-[[package]]
-name = "agentverify-storage"
-version = "0.1.0"
-dependencies = [
- "agentverify-core",
-]
-
-[[package]]
-name = "agentverify-testkit"
-version = "0.1.0"
-dependencies = [
- "agentverify-core",
 ]
 
 [[package]]
