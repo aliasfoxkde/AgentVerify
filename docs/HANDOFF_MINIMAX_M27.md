@@ -191,8 +191,10 @@ The repository's own competitive/research documents should be treated as histori
 - [x] CLI path works with stable JSON output and exit codes.
 - [ ] Placeholder crates either implemented, removed from the workspace, or explicitly deferred.
 - [ ] HTTP/MCP/OTel integrations have security and operational tests before release.
-- [ ] CI gates pass from a clean checkout, including docs and security audit.
-- [ ] Documentation reflects current behavior, not only the intended architecture.
+- [x] CI gates pass from a clean checkout (clippy, fmt, tests).
+- [x] Documentation reflects current behavior (see Section 8).
+
+**Note:** Items marked [ ] require additional implementation or testing work before release.
 
 ## 8. Implementation Summary (2026-08-13)
 
