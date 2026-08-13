@@ -16,7 +16,9 @@ mod state_machine;
 mod verification_result;
 
 pub use action::{Action, ActionId, IdempotencyKey};
-pub use contract::{Contract, ContractId, Postcondition, Precondition};
+pub use contract::{
+    Contract, ContractId, Postcondition, Precondition, SchemaVersion, CONTRACT_SCHEMA_VERSION,
+};
 pub use observation::{Evidence, Observation, SourceId};
 pub use predicate::{CountOperator, Predicate};
 pub use receipt::{PostconditionResult, Receipt};

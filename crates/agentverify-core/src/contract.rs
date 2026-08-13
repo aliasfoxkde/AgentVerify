@@ -1,10 +1,53 @@
 //! Contract types
+//!
+//! # Schema Version
+//!
+//! The current schema version is 1.0. The schema version determines compatibility
+//! of contract definitions across versions. Breaking changes will increment the major version.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub use super::id::ContractId;
 use super::predicate::Predicate;
+
+/// Current contract schema version
+pub const CONTRACT_SCHEMA_VERSION: &str = "1.0";
+
+/// Contract schema version with compatibility info
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaVersion {
+    pub major: u32,
+    pub minor: u32,
+}
+
+impl SchemaVersion {
+    pub fn new(version: &str) -> Option<Self> {
+        let parts: Vec<&str> = version.split('.').collect();
+        if parts.len() != 2 {
+            return None;
+        }
+        let major = parts[0].parse().ok()?;
+        let minor = parts[1].parse().ok()?;
+        Some(Self { major, minor })
+    }
+
+    /// Returns true if this version is compatible with another version
+    pub fn is_compatible_with(&self, other: &Self) -> bool {
+        self.major == other.major
+    }
+
+    /// Returns the version string
+    pub fn version_string(&self) -> String {
+        format!("{}.{}", self.major, self.minor)
+    }
+}
+
+impl Default for SchemaVersion {
+    fn default() -> Self {
+        Self { major: 1, minor: 0 }
+    }
+}
 
 /// Verification configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +215,9 @@ fn default_mandatory() -> bool {
 /// A verification contract
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Contract {
+    /// Schema version for compatibility tracking
+    #[serde(default = "default_schema_version")]
+    pub schema_version: String,
     /// Unique identifier
     #[serde(default)]
     pub id: ContractId,
@@ -194,6 +240,10 @@ pub struct Contract {
     pub created_at: DateTime<Utc>,
 }
 
+fn default_schema_version() -> String {
+    CONTRACT_SCHEMA_VERSION.to_string()
+}
+
 fn utc_now() -> DateTime<Utc> {
     Utc::now()
 }
@@ -202,6 +252,7 @@ impl Contract {
     /// Create a new contract for an action
     pub fn new(action_name: impl Into<String>) -> Self {
         Self {
+            schema_version: CONTRACT_SCHEMA_VERSION.to_string(),
             id: ContractId::new(),
             action_name: action_name.into(),
             preconditions: Vec::new(),
@@ -244,4 +295,138 @@ impl Contract {
         self.recovery = Some(recovery);
         self
     }
+
+    /// Validate the contract for internal consistency and semantic correctness
+    ///
+    /// # Validation Rules
+    ///
+    /// - Schema version must be parseable and compatible with current version
+    /// - Action name must not be empty
+    /// - At least one postcondition is required
+    /// - Postconditions should not have duplicate paths that could indicate copy-paste errors
+    /// - Recovery config: max_attempts must be > 0
+    /// - Recovery config: backoff max must be >= initial
+    ///
+    /// # Semantic Notes
+    ///
+    /// - `Partial` is a **terminal** failure state when ANY mandatory postcondition fails
+    /// - `Partial` is **success** when only non-mandatory postconditions fail
+    /// - `Duplicate` is always a **terminal success** state (idempotent)
+    /// - `Unknown` requires explicit recovery action, never treated as success or failure
+    pub fn validate(&self) -> Result<(), ContractValidationError> {
+        // Validate schema version
+        if let Some(version) = SchemaVersion::new(&self.schema_version) {
+            let current = SchemaVersion::default();
+            if !version.is_compatible_with(&current) {
+                return Err(ContractValidationError::IncompatibleSchemaVersion {
+                    expected: current.version_string(),
+                    actual: self.schema_version.clone(),
+                });
+            }
+        } else {
+            return Err(ContractValidationError::InvalidSchemaVersion(
+                self.schema_version.clone(),
+            ));
+        }
+
+        // Validate action name
+        if self.action_name.is_empty() {
+            return Err(ContractValidationError::EmptyActionName);
+        }
+
+        // Must have at least one postcondition
+        if self.postconditions.is_empty() {
+            return Err(ContractValidationError::NoPostconditions);
+        }
+
+        // Check for duplicate postcondition paths (potential copy-paste error)
+        let mut paths_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for postcond in &self.postconditions {
+            let path = extract_predicate_path(&postcond.predicate);
+            if !path.is_empty() && !paths_seen.insert(path.clone()) {
+                return Err(ContractValidationError::DuplicatePostconditionPath(path));
+            }
+        }
+
+        // Validate recovery configuration
+        if let Some(ref recovery) = self.recovery {
+            if recovery.max_attempts == 0 {
+                return Err(ContractValidationError::InvalidMaxAttempts);
+            }
+
+            if let Some(ref backoff) = recovery.backoff {
+                if backoff.max < backoff.initial {
+                    return Err(ContractValidationError::InvalidBackoff {
+                        initial: backoff.initial,
+                        max: backoff.max,
+                    });
+                }
+                if backoff.multiplier <= 0.0 {
+                    return Err(ContractValidationError::InvalidBackoffMultiplier(
+                        backoff.multiplier,
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Extract the primary path from a predicate for duplicate checking
+fn extract_predicate_path(predicate: &Predicate) -> String {
+    match predicate {
+        Predicate::Exists { path } => path.clone(),
+        Predicate::NotExists { path } => path.clone(),
+        Predicate::Equals { path, .. } => path.clone(),
+        Predicate::NotEquals { path, .. } => path.clone(),
+        Predicate::Contains { path, .. } => path.clone(),
+        Predicate::Matches { path, .. } => path.clone(),
+        Predicate::GreaterThan { path, .. } => path.clone(),
+        Predicate::LessThan { path, .. } => path.clone(),
+        Predicate::Count { path, .. } => path.clone(),
+        Predicate::IsEmpty { path } => path.clone(),
+        Predicate::IsNotEmpty { path } => path.clone(),
+        Predicate::All { predicates } => predicates
+            .first()
+            .map(extract_predicate_path)
+            .unwrap_or_default(),
+        Predicate::Any { predicates } => predicates
+            .first()
+            .map(extract_predicate_path)
+            .unwrap_or_default(),
+        Predicate::Not { predicate } => extract_predicate_path(predicate),
+        Predicate::Implies { antecedent, .. } => extract_predicate_path(antecedent),
+    }
+}
+
+/// Contract validation error
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ContractValidationError {
+    #[error("Invalid schema version: {0}")]
+    InvalidSchemaVersion(String),
+
+    #[error("Incompatible schema version: expected {expected}, got {actual}")]
+    IncompatibleSchemaVersion { expected: String, actual: String },
+
+    #[error("Action name cannot be empty")]
+    EmptyActionName,
+
+    #[error("Contract must have at least one postcondition")]
+    NoPostconditions,
+
+    #[error("Duplicate postcondition path: {0}")]
+    DuplicatePostconditionPath(String),
+
+    #[error("max_attempts must be greater than 0")]
+    InvalidMaxAttempts,
+
+    #[error("Backoff max ({max}) must be >= initial ({initial})")]
+    InvalidBackoff {
+        initial: chrono::Duration,
+        max: chrono::Duration,
+    },
+
+    #[error("Backoff multiplier must be positive, got {0}")]
+    InvalidBackoffMultiplier(f64),
 }
