@@ -2,9 +2,9 @@
 
 **Repository:** `/nas/Temp/repos/AgentVerify`
 **Role:** outcome verification and signed evidence candidate
-**Audit boundary:** `codex/add-platform-handoff-2026-08-14` / `81757cf` / dirty `2` (generated code-memory artifacts)
+**Audit boundary:** `codex/add-platform-handoff-2026-08-14` / `3a03e6d` / dirty `2` (generated code-memory artifacts)
 **Updated:** 2026-08-14
-**Evidence boundary (central audit):** branch `codex/add-platform-handoff-2026-08-14`, HEAD `81757cf`, 2 dirty status entries; refresh this boundary before any implementation claim.
+**Evidence boundary (central audit):** branch `codex/add-platform-handoff-2026-08-14`, HEAD `3a03e6d` (feat(runtime): harden execute_with_executor with failure injection tests), 2 dirty status entries (pre-existing code-memory artifacts); refresh this boundary before any implementation claim.
 **Central planning:** `AUTHORITY_INDEX_2026-08-14.md`, `MASTER_EXECUTION_PLAN_2026-08-14.md`, and `CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md`
 **Provenance markers:** `HANDOFF_AUDIT_2026-08-13.md` and
 `CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md` remain recorded for the central

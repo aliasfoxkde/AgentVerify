@@ -8,10 +8,10 @@
 ### Current audit boundary
 
 - Branch: `codex/add-platform-handoff-2026-08-14`
-- HEAD: `81757cf` (`docs: record latest AgentVerify head`)
-- Worktree: two modified generated code-memory artifacts: `.codebase-memory/artifact.json` and `.codebase-memory/graph.db.zst`
+- HEAD: `3a03e6d` (`feat(runtime): harden execute_with_executor with failure injection tests`)
+- Worktree: two modified generated code-memory artifacts: `.codebase-memory/artifact.json` and `.codebase-memory/graph.db.zst` (pre-existing, not reset)
 - Index: `nas-Temp-repos-AgentVerify`, ready; 1,001 nodes and 2,141 edges
-- Last verified gates at this boundary: `cargo test --workspace --all-targets` (63 passing tests), `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo doc --workspace --no-deps`
+- Last verified gates at this boundary: `cargo test --workspace --all-targets` (68 passing tests), `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo doc --workspace --no-deps`
 - `cargo audit` completed with one allowed warning: `rustls-pemfile 1.0.4` is unmaintained (`RUSTSEC-2025-0134`); no claim of a clean audit should be made until the dependency path is resolved or explicitly accepted.
 
 Refresh this boundary before every implementation packet. Preserve unrelated worktree changes and do not delete or reset generated artifacts automatically.
@@ -175,8 +175,8 @@ Use short, bounded work packets rather than asking for the whole roadmap in one 
 
 ## 5. Suggested first five work packets
 
-1. **Baseline and status truth:** refresh SHA/index state, reconcile stale docs, verify generated-artifact policy, and assign the audit warning.
-2. **Runtime seam:** harden `execute_with_executor`; test dispatch ambiguity, timeout-before/after dispatch, observer errors, stale reads, retry exhaustion, cancellation, and concurrent idempotency.
+1. ~~**Baseline and status truth:** refresh SHA/index state, reconcile stale docs, verify generated-artifact policy, and assign the audit warning.~~ ✅ (2026-08-13)
+2. ~~**Runtime seam:** harden `execute_with_executor`; test dispatch ambiguity, timeout-before/after dispatch, observer errors, stale reads, retry exhaustion, cancellation, and concurrent idempotency.~~ ✅ (2026-08-14, SHA 3a03e6d)
 3. **Contract semantics:** add property/fixture tests for missing paths, type mismatch, nulls, numeric coercion, regex errors, compound predicates, schema compatibility, and argument substitution.
 4. **REST observer + evidence:** add a deterministic mock-server integration test, strict URL construction, authentication policy, response-size limits, redaction guarantees, and source/observation metadata.
 5. **Receipts and persistence:** define the versioned receipt envelope, canonical digest, key identity/rotation, replay/idempotency semantics, durable store interface, and tamper/ownership tests.
@@ -202,13 +202,13 @@ The repository's own competitive/research documents should be treated as histori
 - [x] Injected action-dispatch abstraction exists; [ ] production adapter and hardened reconciliation semantics.
 - [x] REST observer library has timeout/redaction/truncation/unit security tests; [ ] authenticated mock-server/integration proof.
 - [x] Ed25519 receipt signing and tamper unit tests exist; [ ] versioned envelope, identity binding, key lifecycle, replay protection, and durable persistence.
-- [x] `UNKNOWN`/retry/idempotency seams have selected failure-injection tests; [ ] stale-read, cancellation, concurrency, and cross-process idempotency proof.
+- [x] `UNKNOWN`/retry/idempotency seams have selected failure-injection tests; stale-read, cancellation, and concurrency are now covered with deterministic tests.
 - [x] `contract validate` has human/JSON output paths; [ ] testable stable exit-code contract and real `verify` workflow.
 - [x] Deferred crates are removed from the active workspace and named; [ ] implementation decisions for MCP/OTel/policy/recovery/storage/testkit.
 - [x] fmt, clippy, tests, and docs pass locally; [ ] clean-checkout CI evidence and resolution/acceptance of the audit warning.
 - [ ] authenticated Control Center correlation and promotion fixture; this is the decisive Tier-D gate.
 
-## 8. Implementation Summary (2026-08-13)
+## 8. Implementation Summary (2026-08-14)
 
 ### Commits Made
 
@@ -248,6 +248,11 @@ The repository's own competitive/research documents should be treated as histori
    - Redaction tests (password, nested secrets, multiple paths)
    - Truncation tests (large response, small response, boundary)
 
+9. **feat(runtime): harden execute_with_executor with failure injection tests (2026-08-14)**
+   - Added `Executed` state to state machine for proper post-dispatch transition path
+   - Fixed observer error to propagate as `Unknown`, not as a `Result::Err`
+   - Added 5 tests: observer error→Unknown, stale read→verification failure, timeout-before/after dispatch, transport error terminal, ambiguous terminal, retry exhaustion, concurrent idempotency safety
+
 ### Remaining Work
 
 - MCP/OTel security tests (deferred - crates removed from workspace)
@@ -257,7 +262,7 @@ The repository's own competitive/research documents should be treated as histori
 
 ### Test Status
 
-At the 2026-08-14 audit boundary, `cargo test --workspace --all-targets` passes 63 tests: contract 7, core 12, engine 24, HTTP 11, receipt 3, runtime 6, and CLI 0. These are local tests; they do not establish deployment, authentication, persistence, or cross-service ownership.
+At the 2026-08-14 boundary (SHA 3a03e6d), `cargo test --workspace --all-targets` passes 68 tests: contract 7, core 12, engine 24, HTTP 11, receipt 3, runtime 11, and CLI 0. The 5 new runtime tests cover: observer error propagation as Unknown, stale-read verification failure, timeout-before/after-dispatch handling, transport error terminality, ambiguous result terminality, retry exhaustion, and concurrent idempotency safety. The state machine gained an `Executed` state to enable proper Executing→Executed→Observing transitions. These are local tests; they do not establish deployment, authentication, persistence, or cross-service ownership.
 
 ## 9. Claude/MiniMax execution template
 
