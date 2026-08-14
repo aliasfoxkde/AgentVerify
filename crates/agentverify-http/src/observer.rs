@@ -165,6 +165,14 @@ impl RestObserver {
     }
 }
 
+impl RestObserverConfig {
+    /// Helper to set max evidence size
+    pub fn with_max_evidence_size(mut self, size: usize) -> Self {
+        self.max_evidence_size = size;
+        self
+    }
+}
+
 #[async_trait::async_trait]
 impl agentverify_runtime::Observer for RestObserver {
     async fn observe(
@@ -224,5 +232,159 @@ mod tests {
         assert_eq!(config.timeout_ms, 10000);
         assert_eq!(config.redact_paths.len(), 2);
         assert_eq!(config.headers.len(), 1);
+    }
+
+    // ============ SECURITY TESTS ============
+
+    #[test]
+    fn url_injection_path_traversal_rejected() {
+        let config = RestObserverConfig::new("http://api.example.com");
+        let observer = RestObserver::new(config).unwrap();
+
+        // Create contract with path traversal in action_name
+        let action = Action::new("test", serde_json::json!({}));
+        let contract = Contract::new("../../../etc/passwd");
+
+        let result = observer.build_url(&action, &contract);
+        assert!(result.is_err());
+        match result {
+            Err(RestObserverError::InvalidUrl(url)) => {
+                assert!(url.contains(".."));
+            }
+            _ => panic!("Expected InvalidUrl error"),
+        }
+    }
+
+    #[test]
+    fn url_injection_double_slash_rejected() {
+        let config = RestObserverConfig::new("http://api.example.com");
+        let observer = RestObserver::new(config).unwrap();
+
+        // Create action with double slash attempt
+        let action = Action::new("test//etc/passwd", serde_json::json!({}));
+        let contract = Contract::new("test");
+
+        let result = observer.build_url(&action, &contract);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn url_injection_http_scheme_injection_rejected() {
+        let config = RestObserverConfig::new("http://api.example.com");
+        let observer = RestObserver::new(config).unwrap();
+
+        // Attempt to inject different scheme via action name
+        let action = Action::new("http://evil.com/bad", serde_json::json!({}));
+        let contract = Contract::new("test");
+
+        let result = observer.build_url(&action, &contract);
+        // Should be rejected as invalid URL containing //
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn redaction_password_field() {
+        let config =
+            RestObserverConfig::new("http://api.example.com").with_redact_path("/password");
+        let observer = RestObserver::new(config).unwrap();
+
+        let mut state = serde_json::json!({
+            "username": "testuser",
+            "password": "secret123"
+        });
+
+        observer.redact(&mut state);
+
+        assert_eq!(state["username"], "testuser");
+        assert_eq!(state["password"], "[REDACTED]");
+    }
+
+    #[test]
+    fn redaction_nested_secret() {
+        let config =
+            RestObserverConfig::new("http://api.example.com").with_redact_path("/data/api_key");
+        let observer = RestObserver::new(config).unwrap();
+
+        let mut state = serde_json::json!({
+            "data": {
+                "api_key": "sk-12345",
+                "name": "test"
+            }
+        });
+
+        observer.redact(&mut state);
+
+        assert_eq!(state["data"]["api_key"], "[REDACTED]");
+        assert_eq!(state["data"]["name"], "test");
+    }
+
+    #[test]
+    fn redaction_multiple_paths() {
+        let config = RestObserverConfig::new("http://api.example.com")
+            .with_redact_path("/password")
+            .with_redact_path("/secret")
+            .with_redact_path("/token");
+        let observer = RestObserver::new(config).unwrap();
+
+        let mut state = serde_json::json!({
+            "password": "pass1",
+            "secret": "pass2",
+            "token": "pass3",
+            "public": "data"
+        });
+
+        observer.redact(&mut state);
+
+        assert_eq!(state["password"], "[REDACTED]");
+        assert_eq!(state["secret"], "[REDACTED]");
+        assert_eq!(state["token"], "[REDACTED]");
+        assert_eq!(state["public"], "data");
+    }
+
+    #[test]
+    fn truncation_large_response() {
+        let config = RestObserverConfig::new("http://api.example.com").with_max_evidence_size(100);
+        let observer = RestObserver::new(config).unwrap();
+
+        let large_state = serde_json::json!({
+            "data": "x".repeat(500)
+        });
+
+        let result = observer.truncate(large_state);
+
+        match result {
+            Value::String(s) => {
+                assert!(s.contains("[TRUNCATED:"));
+                assert!(s.contains("> 100"));
+            }
+            _ => panic!("Expected truncated string"),
+        }
+    }
+
+    #[test]
+    fn truncation_small_response_preserved() {
+        let config = RestObserverConfig::new("http://api.example.com").with_max_evidence_size(1000);
+        let observer = RestObserver::new(config).unwrap();
+
+        let small_state = serde_json::json!({
+            "data": "small"
+        });
+
+        let result = observer.truncate(small_state.clone());
+        assert_eq!(result, small_state);
+    }
+
+    #[test]
+    fn truncation_exact_boundary() {
+        let config = RestObserverConfig::new("http://api.example.com").with_max_evidence_size(100);
+        let observer = RestObserver::new(config).unwrap();
+
+        // Create JSON that's exactly at the boundary
+        let state = serde_json::json!({"d": "x".repeat(50)});
+        let json_str = serde_json::to_string(&state).unwrap();
+        assert!(json_str.len() <= 100);
+
+        let result = observer.truncate(state.clone());
+        assert_eq!(result, state);
     }
 }
