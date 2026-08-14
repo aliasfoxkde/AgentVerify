@@ -2,10 +2,10 @@
 
 **Repository:** `/nas/Temp/repos/AgentVerify`
 **Role:** outcome verification and signed evidence candidate
-**Audit boundary:** `codex/add-platform-handoff-2026-08-14` / `0810413` / dirty `2`
+**Audit boundary:** `codex/add-platform-handoff-2026-08-14` / `84ddb3c3ce31e6f351203beecc1d34d7db8f2fee` / dirty `2`
 **Updated:** 2026-08-14
-**Evidence boundary (central audit):** branch `codex/add-platform-handoff-2026-08-14`, HEAD `0810413`, 2 dirty status entries
-**Central planning:** `HANDOFF_AUDIT_2026-08-13.md` and `CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md`
+**Evidence boundary (central audit):** branch `codex/add-platform-handoff-2026-08-14`, HEAD `84ddb3c3ce31e6f351203beecc1d34d7db8f2fee`, 2 dirty status entries; refresh this boundary before any implementation claim.
+**Central planning:** `AUTHORITY_INDEX_2026-08-14.md`, `MASTER_EXECUTION_PLAN_2026-08-14.md`, and `CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md`
 **Rating:** not scored; this is not a promotion signal
 **Authority:** this file records the repository boundary and current evidence;
 `docs/HANDOFF_MINIMAX_M27.md` contains the longer implementation plan. Neither
