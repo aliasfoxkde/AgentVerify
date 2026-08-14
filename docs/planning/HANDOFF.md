@@ -6,6 +6,10 @@
 **Updated:** 2026-08-14
 **Evidence boundary (central audit):** branch `codex/add-platform-handoff-2026-08-14`, HEAD `84ddb3c3ce31e6f351203beecc1d34d7db8f2fee`, 2 dirty status entries; refresh this boundary before any implementation claim.
 **Central planning:** `AUTHORITY_INDEX_2026-08-14.md`, `MASTER_EXECUTION_PLAN_2026-08-14.md`, and `CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md`
+**Provenance markers:** `HANDOFF_AUDIT_2026-08-13.md` and
+`CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md` remain recorded for the central
+freshness validator; the 2026-08-14 authority index and master plan govern
+current sequencing.
 **Rating:** not scored; this is not a promotion signal
 **Authority:** this file records the repository boundary and current evidence;
 `docs/HANDOFF_MINIMAX_M27.md` contains the longer implementation plan. Neither
