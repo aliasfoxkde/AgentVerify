@@ -2,9 +2,9 @@
 
 **Repository:** `/nas/Temp/repos/AgentVerify`
 **Role:** outcome verification and signed evidence candidate
-**Audit boundary:** `codex/add-platform-handoff-2026-08-14` / `d8072f35c7643e12773c30e3fc0ac3486791141c` / dirty `2`
+**Audit boundary:** `codex/add-platform-handoff-2026-08-14` / `81757cf` / dirty `2` (generated code-memory artifacts)
 **Updated:** 2026-08-14
-**Evidence boundary (central audit):** branch `codex/add-platform-handoff-2026-08-14`, HEAD `d8072f35c7643e12773c30e3fc0ac3486791141c`, 2 dirty status entries; refresh this boundary before any implementation claim.
+**Evidence boundary (central audit):** branch `codex/add-platform-handoff-2026-08-14`, HEAD `81757cf`, 2 dirty status entries; refresh this boundary before any implementation claim.
 **Central planning:** `AUTHORITY_INDEX_2026-08-14.md`, `MASTER_EXECUTION_PLAN_2026-08-14.md`, and `CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md`
 **Provenance markers:** `HANDOFF_AUDIT_2026-08-13.md` and
 `CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md` remain recorded for the central
@@ -27,10 +27,11 @@ integration contract through `AGENTVERIFY-P1-01`.
 
 The repository contains Rust crates for core domain types, contract parsing,
 predicate evaluation, runtime orchestration, HTTP observation, receipt types,
-and a CLI. The existing handoff reports local workspace tests, formatting, and
-clippy success, but explicitly identifies placeholder or deferred crates and
-does not prove a deployed service, authenticated observer, durable storage,
-MCP boundary, or Control Center correlation.
+and a CLI. The current audit confirms 63 local workspace tests plus format,
+clippy, and documentation success, but explicitly identifies placeholder or
+deferred crates and does not prove a deployed service, authenticated observer,
+durable storage, MCP boundary, or Control Center correlation. `cargo audit`
+also reports the unmaintained transitive `rustls-pemfile` 1.0.4 advisory.
 
 Treat these as separate evidence tiers:
 
@@ -92,8 +93,8 @@ result; neither may silently replace the other’s authority.
 
 - Placeholder crates and CLI commands may make the workspace appear more
   complete than the runnable surface is.
-- Generated `target/` content is tracked or otherwise produces source-control
-  churn; resolve this in a deliberate repository-hygiene packet.
+- Generated `target/` content is not tracked at this boundary, but can produce
+  local build churn; keep it ignored and out of handoff diffs.
 - HTTP/MCP/storage/telemetry deployment boundaries are not established.
 - External observers can produce stale, partial, unauthorized, or ambiguous
   evidence; retries must be idempotency-safe and reconciliation-aware.

@@ -1,9 +1,20 @@
 # AgentVerify handoff plan for Codex + MiniMax M2.7
 
-**Audit date:** 2026-08-13  
+**Audit date:** 2026-08-14
 **Repository:** `/nas/Temp/repos/AgentVerify`  
-**Audience:** the next Codex session configured with MiniMax-M2.7  
-**Status:** implementation handoff; no production feature work was performed by this audit
+**Audience:** Claude operating with MiniMax M2.7, with Codex-style review discipline
+**Status:** active implementation handoff; this document is evidence-based planning, not a production-readiness approval
+
+### Current audit boundary
+
+- Branch: `codex/add-platform-handoff-2026-08-14`
+- HEAD: `81757cf` (`docs: record latest AgentVerify head`)
+- Worktree: two modified generated code-memory artifacts: `.codebase-memory/artifact.json` and `.codebase-memory/graph.db.zst`
+- Index: `nas-Temp-repos-AgentVerify`, ready; 1,001 nodes and 2,141 edges
+- Last verified gates at this boundary: `cargo test --workspace --all-targets` (63 passing tests), `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo doc --workspace --no-deps`
+- `cargo audit` completed with one allowed warning: `rustls-pemfile 1.0.4` is unmaintained (`RUSTSEC-2025-0134`); no claim of a clean audit should be made until the dependency path is resolved or explicitly accepted.
+
+Refresh this boundary before every implementation packet. Preserve unrelated worktree changes and do not delete or reset generated artifacts automatically.
 
 ## 1. Mission and definition of done
 
@@ -18,17 +29,19 @@ Make AgentVerify a usable, deterministic outcome-verification product for action
 7. emit a verifiable receipt with evidence;
 8. expose a documented integration surface and tests that prove the above under timeout, duplicate, stale-read, and partial-write scenarios.
 
-Do not call the repository production-ready merely because `cargo test --workspace` is green: the current suite contains placeholder tests and does not exercise external execution, real observers, signatures, HTTP, MCP, or persistence.
+Do not call the repository production-ready merely because the workspace is green. The suite proves local semantics and selected failure/security seams, but does not prove a deployed service, authenticated ownership, durable persistence, real action dispatch through a production adapter, MCP/OTel integration, or Control Center correlation.
 
 ## 2. Audited baseline
 
 ### Evidence-backed architecture
 
-The refreshed codebase-memory index is `nas-Temp-repos-AgentVerify` and reports 844 nodes, 1,630 edges, 24 Rust files, and one executable entry point at `crates/agentverify-cli/src/main.rs`. The main dependency direction is:
+The refreshed codebase-memory index is `nas-Temp-repos-AgentVerify` and reports 1,001 nodes, 2,141 edges, and one executable entry point at `crates/agentverify-cli/src/main.rs`. The active workspace contains seven member crates:
 
 ```text
-CLI -> runtime -> contract/engine -> core
-                         runtime -> core
+CLI -> runtime -> contract -> core
+              -> engine -> core
+HTTP observer -> runtime/core
+receipt signing -> core receipt
 ```
 
 The high fan-in symbols are `PredicateEngine::evaluate`, `IdempotencyRegistry::new`, `Predicate::exists`, `Observation::get`, and `validate_contract`.
@@ -38,28 +51,30 @@ The high fan-in symbols are `PredicateEngine::evaluate`, `IdempotencyRegistry::n
 - `agentverify-core`: action, contract, observation/evidence, receipt data model, state machine, predicates, verification results, recovery/config types.
 - `agentverify-contract`: JSON/YAML parsing, file loading, serialization, and basic validation.
 - `agentverify-engine`: exists/not-exists, equals/not-equals, contains, regex matching, numeric comparisons, count, empty checks, all/any/not/implies, and basic `$args` resolution; 24 unit tests currently pass.
-- `agentverify-runtime`: async executor skeleton, observer trait, state transitions, postcondition evaluation, bounded retry loop, and in-memory idempotency cache; only 2 runtime tests currently pass.
-- CI workflow: format, clippy with `-D warnings`, workspace tests, docs, and cargo-audit steps are declared.
+- `agentverify-runtime`: observer/action-executor traits, state transitions, postcondition evaluation, bounded retry loop, and process-local idempotency cache. The injected `execute_with_executor` path is exercised by six runtime tests; the convenience `execute` path still simulates dispatch.
+- `agentverify-http`: REST observer with timeout, URL-string rejection checks, redaction, truncation, and 11 unit/security tests. This is a library seam, not proof of an authenticated production observer deployment.
+- `agentverify-receipt`: Ed25519 signing/verification and three unit tests. The current signature canonicalization is local to the service and does not yet bind verifier identity, ownership, replay protection, or a key-distribution contract.
+- CI workflow: format, clippy with `-D warnings`, workspace tests, docs, and cargo-audit steps are declared; inspect the workflow and rerun it from a clean checkout before relying on it as a release gate.
 
 ### What is not implemented or is only a shell
 
-- The runtime does not invoke a real action executor. `Executor::execute` explicitly simulates execution and substitutes an empty observation when no observer is supplied.
-- `agentverify-observe`, `recovery`, `receipt`, `policy`, `storage`, `mcp`, `otel`, `http`, and `testkit` are placeholder crates with placeholder tests.
-- The CLI is a Clap skeleton; its documented `init`, `verify`, `serve`, `mcp`, receipt, doctor, and test commands are not implemented.
-- Receipt signing/verification is not implemented despite crypto dependencies being declared at workspace level.
-- No integration tests use testcontainers, no real Postgres/REST/Redis observer exists, and no failure-injection harness exists.
+- `Executor::execute` explicitly simulates dispatch and substitutes an empty observation when no observer is supplied. Use `execute_with_executor` for current injected-dispatch behavior and do not silently promote the convenience path.
+- `agentverify-observe`, `recovery`, `policy`, `storage`, `mcp`, `otel`, and `testkit` remain placeholder crates outside the workspace. They are intentionally deferred, not complete.
+- The CLI parses `init`, `verify`, and `serve`, but those branches only print status. `contract validate` is the only substantive command.
+- No durable receipt store, authenticated HTTP/MCP boundary, Postgres/Redis observer, testcontainers integration, or Control Center adapter exists.
 - The architecture and integration documents describe planned features as if they were available; update them as features land and label examples as aspirational until executable.
 
 ### Repository hygiene finding
 
-`target/` is present in the worktree and produces extensive modified/untracked generated files after builds. It is also listed by `git ls-files`, so the next agent must treat this as a repository hygiene issue: confirm intent, remove generated artifacts from version control in a separate deliberate change, and add/verify an ignore rule. Do not reset or delete user changes automatically.
+`target/` is build output and is not tracked by `git ls-files` at this audit boundary. It may still be regenerated locally; keep it out of handoff diffs and verify the ignore rule from a clean checkout. Do not reset or delete user changes automatically.
 
 ### Verification performed during audit
 
-- `cargo test --workspace`: passed; the observed suite includes 55 unit tests, but placeholder crates account for several of them.
+- `cargo test --workspace --all-targets`: passed; the observed suite is 63 passing tests across the seven active crates, with no CLI unit tests.
 - `cargo fmt --all -- --check`: passed.
-- `cargo clippy --workspace --all-targets -- -D warnings`: passed, with manifest warnings about unused `lint` and `workspace.version` keys.
-- The root manifest should be corrected or the warnings explicitly documented; CI currently does not fail on these Cargo warnings.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo doc --workspace --no-deps`: passed.
+- `cargo audit`: completed with the `rustls-pemfile` unmaintained warning described above.
 
 ## 3. Required implementation order
 
@@ -68,12 +83,12 @@ The high fan-in symbols are `PredicateEngine::evaluate`, `IdempotencyRegistry::n
 Before feature work:
 
 - inspect and preserve the existing worktree changes;
-- decide whether `target/` is intentionally tracked; if not, remove it from the index in a dedicated commit and add `.gitignore` coverage;
-- fix the root manifest warning (`[lint]` is not valid in the current position, and `[workspace].version` is not the supported package version declaration);
+- verify that `target/` is ignored and not tracked; do not assume a build-created directory is a repository defect without checking `git ls-files`;
+- refresh the code-memory artifacts only when needed and keep their generated modifications separate from source changes;
 - run `cargo fmt`, `cargo test`, `cargo clippy`, `cargo doc`, and `cargo audit` from a clean build directory;
 - add a `docs/STATUS.md` or update this document with the exact shipped-vs-planned matrix.
 
-**Gate:** a clean checkout builds without generated-file churn, and every advertised command is marked implemented or planned.
+**Gate:** a clean checkout builds without generated-file churn, every advertised command is marked implemented or planned, and the audit warning has an owner/decision.
 
 ### Phase 1 — stabilize the domain contract
 
@@ -95,18 +110,18 @@ Focus file: `agentverify-runtime/src/executor.rs` plus a new executor abstractio
 - Return a typed dispatch outcome that distinguishes accepted, completed, timeout-before-dispatch, timeout-after-dispatch, transport error, and ambiguous result.
 - Never infer `FAILED` from a timeout. Reconcile through observation before retrying.
 - Make retries bounded, backoff-aware, cancellation-safe, and idempotency-aware.
-- Replace the process-local idempotency map with an interface; keep in-memory only as a test implementation.
+- Replace the process-local idempotency map with an interface; keep in-memory only as a test implementation. Define key scope, expiry, collision behavior, and concurrent-request behavior.
 - Ensure receipts are not emitted as `VERIFIED` until every required postcondition has evidence.
 
 **Gate:** deterministic tests cover timeout-before-dispatch, timeout-after-dispatch, duplicate dispatch, stale reads, observer errors, retry exhaustion, and cancellation.
 
 ### Phase 3 — ship one real observer and receipts
 
-Recommended first observer: REST, because it can be tested without a database service; add Postgres immediately after if the product requirement prioritizes systems of record.
+Recommended first observer: harden the existing REST library seam with a local mock-server integration test; add Postgres only after the ownership/consistency requirements for the system of record are explicit.
 
 - Define an observer configuration trait with timeout, retry, consistency, redaction, and evidence-size limits.
 - Implement request construction with strict URL/path/query handling and no secret leakage in logs or receipts.
-- Add receipt canonicalization and Ed25519 signing/verifying in `agentverify-receipt`; bind the signature to action, contract version, outcome, evidence digest, timestamps, and verifier configuration.
+- Add receipt canonicalization and Ed25519 signing/verifying in `agentverify-receipt`; bind the signature to action, contract version, outcome, evidence digest, timestamps, verifier identity/version, source identity, and key identifier. Define key rotation and verification policy.
 - Add a storage interface and an in-memory/file implementation before database-backed storage.
 
 **Gate:** end-to-end tests produce a signed receipt and reject tampering, stale contract versions, malformed evidence, and signature/key mismatches.
@@ -160,11 +175,11 @@ Use short, bounded work packets rather than asking for the whole roadmap in one 
 
 ## 5. Suggested first five work packets
 
-1. **Repository baseline:** fix ignore/tracked-build-artifact policy and manifest warnings; prove clean CI commands.
-2. **Runtime seam:** introduce `ActionExecutor`, typed dispatch outcomes, and tests for ambiguous dispatch; do not add network code yet.
-3. **Contract semantics:** finish validation and predicate edge-case/property tests; update docs from planned to actual.
-4. **REST observer + evidence:** implement bounded, redacted observation and a deterministic mock server test.
-5. **Receipts:** canonical digest, Ed25519 signing/verification, tamper tests, and a receipt-store interface.
+1. **Baseline and status truth:** refresh SHA/index state, reconcile stale docs, verify generated-artifact policy, and assign the audit warning.
+2. **Runtime seam:** harden `execute_with_executor`; test dispatch ambiguity, timeout-before/after dispatch, observer errors, stale reads, retry exhaustion, cancellation, and concurrent idempotency.
+3. **Contract semantics:** add property/fixture tests for missing paths, type mismatch, nulls, numeric coercion, regex errors, compound predicates, schema compatibility, and argument substitution.
+4. **REST observer + evidence:** add a deterministic mock-server integration test, strict URL construction, authentication policy, response-size limits, redaction guarantees, and source/observation metadata.
+5. **Receipts and persistence:** define the versioned receipt envelope, canonical digest, key identity/rotation, replay/idempotency semantics, durable store interface, and tamper/ownership tests.
 
 Each packet should end with a commit-sized diff and a handoff note containing: files changed, commands run, test count, behavior decisions, and the next packet.
 
@@ -180,20 +195,18 @@ Use primary/official sources for changing MiniMax behavior:
 
 The repository's own competitive/research documents should be treated as historical planning context until their external links and dates are rechecked. Re-run web research before making cost, context-window, availability, licensing, or benchmark claims in release documentation.
 
-## 7. Completion checklist
+## 7. Current completion matrix
 
-- [x] Clean source-control baseline; generated build output excluded.
-- [x] Contract schema/version and semantics documented and tested.
-- [x] Real action-dispatch abstraction implemented.
-- [x] Real observer implemented with timeouts, redaction, and evidence limits.
-- [x] `UNKNOWN`/retry/idempotency behavior proven under failure injection.
-- [x] Signed receipts implemented and tamper-tested.
-- [x] CLI path works with stable JSON output and exit codes.
-- [x] Placeholder crates either implemented, removed from the workspace, or explicitly deferred.
-- [x] HTTP observer security tests implemented (URL injection, redaction, truncation).
-- [ ] MCP/OTel security tests (deferred - crates removed from workspace).
-- [x] CI gates pass from a clean checkout (clippy, fmt, tests).
-- [x] Documentation reflects current behavior (see Section 8).
+- [x] Core contract schema/version and basic validation exist; [ ] full compatibility/edge-case policy.
+- [x] Predicate engine implementation and unit coverage exist; [ ] property tests and complete semantic fixture matrix.
+- [x] Injected action-dispatch abstraction exists; [ ] production adapter and hardened reconciliation semantics.
+- [x] REST observer library has timeout/redaction/truncation/unit security tests; [ ] authenticated mock-server/integration proof.
+- [x] Ed25519 receipt signing and tamper unit tests exist; [ ] versioned envelope, identity binding, key lifecycle, replay protection, and durable persistence.
+- [x] `UNKNOWN`/retry/idempotency seams have selected failure-injection tests; [ ] stale-read, cancellation, concurrency, and cross-process idempotency proof.
+- [x] `contract validate` has human/JSON output paths; [ ] testable stable exit-code contract and real `verify` workflow.
+- [x] Deferred crates are removed from the active workspace and named; [ ] implementation decisions for MCP/OTel/policy/recovery/storage/testkit.
+- [x] fmt, clippy, tests, and docs pass locally; [ ] clean-checkout CI evidence and resolution/acceptance of the audit warning.
+- [ ] authenticated Control Center correlation and promotion fixture; this is the decisive Tier-D gate.
 
 ## 8. Implementation Summary (2026-08-13)
 
@@ -244,4 +257,22 @@ The repository's own competitive/research documents should be treated as histori
 
 ### Test Status
 
-All 56 unit tests pass. Placeholder crates (observe, mcp, otel, policy, recovery, storage, testkit) have placeholder tests only.
+At the 2026-08-14 audit boundary, `cargo test --workspace --all-targets` passes 63 tests: contract 7, core 12, engine 24, HTTP 11, receipt 3, runtime 6, and CLI 0. These are local tests; they do not establish deployment, authentication, persistence, or cross-service ownership.
+
+## 9. Claude/MiniMax execution template
+
+For every packet, Claude should start from the current boundary and return this exact evidence:
+
+```text
+Packet / objective:
+Current SHA and worktree status:
+Files changed:
+Behavioral decision(s):
+Tests added or changed:
+Commands run and results:
+Security/ownership/replay implications:
+Known limitations:
+Next packet:
+```
+
+The reviewer must reject any packet that claims a feature from a type, trait, placeholder, or unit test alone. Require an executable path, an adversarial test, and documentation that distinguishes implemented, deferred, and unproven behavior.
