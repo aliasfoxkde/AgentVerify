@@ -190,11 +190,10 @@ The repository's own competitive/research documents should be treated as histori
 - [x] Signed receipts implemented and tamper-tested.
 - [x] CLI path works with stable JSON output and exit codes.
 - [x] Placeholder crates either implemented, removed from the workspace, or explicitly deferred.
-- [ ] HTTP/MCP/OTel integrations have security and operational tests before release.
+- [x] HTTP observer security tests implemented (URL injection, redaction, truncation).
+- [ ] MCP/OTel security tests (deferred - crates removed from workspace).
 - [x] CI gates pass from a clean checkout (clippy, fmt, tests).
 - [x] Documentation reflects current behavior (see Section 8).
-
-**Note:** HTTP/MCP/OTel security tests remain for future work.
 
 ## 8. Implementation Summary (2026-08-13)
 
@@ -231,9 +230,14 @@ The repository's own competitive/research documents should be treated as histori
 7. **test(runtime): add failure injection tests for DispatchOutcome**
    - Tests for timeout, transport error, ambiguous, retry exhaustion behavior
 
+8. **test(http): add security tests for REST observer**
+   - URL injection rejection (path traversal, double slash, scheme injection)
+   - Redaction tests (password, nested secrets, multiple paths)
+   - Truncation tests (large response, small response, boundary)
+
 ### Remaining Work
 
-- HTTP/MCP/OTel integrations security/operational tests
+- MCP/OTel security tests (deferred - crates removed from workspace)
 - Property tests for predicate totality and state-machine invariants
 - Integration tests with testcontainers
 - CI security audit
