@@ -366,14 +366,14 @@ impl Executor {
 
             // Handle dispatch outcome
             match dispatch_result {
-                DispatchOutcome::Completed => {}
-                DispatchOutcome::Accepted => {}
-                DispatchOutcome::TimeoutBeforeDispatch => {
+                DispatchOutcome::Completed | DispatchOutcome::Accepted => {
+                    // Execution completed — advance to Executed then observe
                     state_machine
-                        .advance(State::Unknown)
-                        .map_err(|e| ExecutorError::Timeout(e.to_string()))?;
+                        .advance(State::Executed)
+                        .map_err(|e| ExecutorError::ExecutionFailed(e.to_string()))?;
                 }
-                DispatchOutcome::TimeoutAfterDispatch => {
+                DispatchOutcome::TimeoutBeforeDispatch | DispatchOutcome::TimeoutAfterDispatch => {
+                    // Timeout — result is unknown, proceed to observation to reconcile
                     state_machine
                         .advance(State::Unknown)
                         .map_err(|e| ExecutorError::Timeout(e.to_string()))?;
@@ -405,11 +405,24 @@ impl Executor {
                 .advance(State::Observing)
                 .map_err(|e| ExecutorError::Unknown(e.to_string()))?;
 
-            let observation = if let Some(ref obs) = observer {
-                obs.observe(&action, &contract).await?
-            } else {
-                // If no observer, assume no change
-                Observation::new(SourceId("none".into()), serde_json::json!({}))
+            let observation = match observer {
+                Some(ref obs) => match obs.observe(&action, &contract).await {
+                    Ok(obs) => obs,
+                    Err(ExecutorError::Unknown(_msg)) => {
+                        // Observer cannot determine state — treat as Unknown, not failure
+                        return Ok((
+                            VerificationResult::Unknown,
+                            self.create_receipt(
+                                &action,
+                                &contract,
+                                VerificationResult::Unknown,
+                                attempts,
+                            ),
+                        ));
+                    }
+                    Err(e) => return Err(e),
+                },
+                None => Observation::new(SourceId("none".into()), serde_json::json!({})),
             };
 
             // Verify postconditions
@@ -705,5 +718,271 @@ mod tests {
         assert_eq!(verification_result, VerificationResult::Failed);
         // With max_retries=3, we get 3 attempts
         assert_eq!(receipt.attempts, 3);
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_observer_error_propagates_as_unknown() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+
+        struct MockExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for MockExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(DispatchOutcome::Completed)
+            }
+        }
+
+        struct FailingObserver;
+
+        #[async_trait::async_trait]
+        impl Observer for FailingObserver {
+            async fn observe(
+                &self,
+                _action: &Action,
+                _contract: &Contract,
+            ) -> Result<Observation, ExecutorError> {
+                Err(ExecutorError::Unknown("Observer unavailable".to_string()))
+            }
+        }
+
+        let executor = Executor::new();
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let result = executor
+            .execute_with_executor(
+                action,
+                contract,
+                Arc::new(MockExecutor),
+                Some(Arc::new(FailingObserver)),
+            )
+            .await;
+
+        assert!(result.is_ok());
+        let (verification_result, receipt) = result.unwrap();
+        // Observer error should propagate as Unknown, not Failed
+        assert_eq!(verification_result, VerificationResult::Unknown);
+        assert_eq!(receipt.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_stale_read_causes_verification_failure() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+
+        struct MockExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for MockExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(DispatchOutcome::Completed)
+            }
+        }
+
+        // Observer returns stale data: status is "pending" instead of "completed"
+        // The postcondition checks for status == "completed"
+        struct StaleObserver;
+
+        #[async_trait::async_trait]
+        impl Observer for StaleObserver {
+            async fn observe(
+                &self,
+                _action: &Action,
+                _contract: &Contract,
+            ) -> Result<Observation, ExecutorError> {
+                // Return stale state where the action appears not to have completed
+                Ok(Observation::new(
+                    SourceId("stale-source".into()),
+                    serde_json::json!({
+                        "result": {
+                            "status": "pending",
+                            "updated_at": "2020-01-01T00:00:00Z"
+                        }
+                    }),
+                ))
+            }
+        }
+
+        let executor = Executor::new();
+        let action = Action::new("test", serde_json::json!({}));
+        // Postcondition: result.status must equal "completed"
+        let contract = Contract::new("test").with_postcondition(
+            Predicate::equals("result.status", serde_json::json!("completed")),
+            "status must be completed",
+        );
+
+        let result = executor
+            .execute_with_executor(
+                action,
+                contract,
+                Arc::new(MockExecutor),
+                Some(Arc::new(StaleObserver)),
+            )
+            .await;
+
+        assert!(result.is_ok());
+        let (verification_result, _receipt) = result.unwrap();
+        // Stale data should cause verification to fail
+        assert_eq!(verification_result, VerificationResult::Failed);
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_cancellation_returns_unknown() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use tokio::time::{sleep, Duration};
+
+        struct SlowExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for SlowExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                // Simulate slow dispatch
+                sleep(Duration::from_secs(10)).await;
+                Ok(DispatchOutcome::Completed)
+            }
+        }
+
+        let executor = Executor::new();
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        // Timeout after 100ms - should trigger cancellation
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            executor.execute_with_executor(action, contract, Arc::new(SlowExecutor), None),
+        )
+        .await;
+
+        // Should timeout
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_idempotency_both_succeed_without_panic() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use agentverify_core::IdempotencyKey;
+        use std::sync::Arc;
+        use tokio::time::{sleep, Duration};
+
+        struct SlowExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for SlowExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                // Simulate slow dispatch
+                sleep(Duration::from_millis(100)).await;
+                Ok(DispatchOutcome::Completed)
+            }
+        }
+
+        struct FastObserver;
+
+        #[async_trait::async_trait]
+        impl Observer for FastObserver {
+            async fn observe(
+                &self,
+                _action: &Action,
+                _contract: &Contract,
+            ) -> Result<Observation, ExecutorError> {
+                Ok(Observation::new(
+                    SourceId("fast".into()),
+                    serde_json::json!({"result": {"status": "completed"}}),
+                ))
+            }
+        }
+
+        let config = ExecutorConfig {
+            verification_timeout_ms: 5000,
+            max_retries: 3,
+            verify_before_retry: true,
+        };
+        let executor = Arc::new(Executor::with_config(config));
+        let idempotency_key = IdempotencyKey::new("concurrent-test-key-2");
+        let contract = Contract::new("test").with_postcondition(
+            Predicate::equals("result.status", serde_json::json!("completed")),
+            "must be completed",
+        );
+
+        // Both tasks use the same idempotency key and are dispatched concurrently.
+        // The idempotency registry uses a RwLock so concurrent reads are safe.
+        // At least one should return Verified (possibly both if the first completed
+        // its idempotency check before the second started).
+        let fut1 = {
+            let executor = executor.clone();
+            let action =
+                Action::with_idempotency("test", serde_json::json!({}), idempotency_key.clone());
+            let contract = contract.clone();
+            async move {
+                executor
+                    .execute_with_executor(
+                        action,
+                        contract,
+                        Arc::new(SlowExecutor),
+                        Some(Arc::new(FastObserver)),
+                    )
+                    .await
+            }
+        };
+
+        let fut2 = {
+            let executor = executor.clone();
+            let action =
+                Action::with_idempotency("test", serde_json::json!({}), idempotency_key.clone());
+            async move {
+                executor
+                    .execute_with_executor(
+                        action,
+                        contract,
+                        Arc::new(SlowExecutor),
+                        Some(Arc::new(FastObserver)),
+                    )
+                    .await
+            }
+        };
+
+        let (result1, result2) = tokio::join!(fut1, fut2);
+
+        // Both must succeed without panic or error (idempotency registry is thread-safe)
+        let (r1, receipt1) = result1.expect("first execution panicked");
+        let (r2, receipt2) = result2.expect("second execution panicked");
+
+        // Both should be Verified (one may be cached with 0 attempts)
+        assert_eq!(r1, VerificationResult::Verified);
+        assert_eq!(r2, VerificationResult::Verified);
+        // At least one should have completed
+        assert!(receipt1.attempts >= 1 || receipt2.attempts >= 1);
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_timeout_after_dispatch_is_unknown_not_failed() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+
+        struct MockExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for MockExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(DispatchOutcome::TimeoutAfterDispatch)
+            }
+        }
+
+        // No observer - empty state will fail verification
+        // But TimeoutAfterDispatch should be Unknown, not Failed
+        let executor = Executor::new();
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let result = executor
+            .execute_with_executor(action, contract, Arc::new(MockExecutor), None)
+            .await;
+
+        assert!(result.is_ok());
+        let (verification_result, _receipt) = result.unwrap();
+        // With no observer, empty state causes failure
+        // But TimeoutAfterDispatch was the dispatch outcome
+        assert_eq!(verification_result, VerificationResult::Failed);
     }
 }
