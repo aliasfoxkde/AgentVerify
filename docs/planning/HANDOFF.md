@@ -2,9 +2,9 @@
 
 **Repository:** `/nas/Temp/repos/AgentVerify`
 **Role:** outcome verification and signed evidence candidate
-**Audit boundary:** `main` / `a955b4a3f236a121ffa2b6ffa9fd390d07295a0d` / dirty `3`
+**Audit boundary:** `codex/add-platform-handoff-2026-08-14` / `0810413` / dirty `2`
 **Updated:** 2026-08-14
-**Evidence boundary (central audit):** branch `main`, HEAD `a955b4a3f236a121ffa2b6ffa9fd390d07295a0d`, 3 dirty status entries
+**Evidence boundary (central audit):** branch `codex/add-platform-handoff-2026-08-14`, HEAD `0810413`, 2 dirty status entries
 **Central planning:** `HANDOFF_AUDIT_2026-08-13.md` and `CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md`
 **Rating:** not scored; this is not a promotion signal
 **Authority:** this file records the repository boundary and current evidence;
