@@ -320,4 +320,41 @@ mod tests {
         assert!(response.accepted);
         assert_eq!(response.correlation_id, Some("abc123".to_string()));
     }
+
+    #[test]
+    fn submission_response_rejected() {
+        let json = r#"{"accepted": false, "error": "Stale contract"}"#;
+        let response: SubmissionResponse = serde_json::from_str(json).unwrap();
+        assert!(!response.accepted);
+        assert_eq!(response.error, Some("Stale contract".to_string()));
+    }
+
+    #[test]
+    fn config_with_bearer_token() {
+        let config = ControlCenterClientConfig::new("https://cc.example.com")
+            .with_bearer_token("my-token")
+            .with_timeout(5000)
+            .with_redact_field("signature");
+
+        assert!(config.bearer_token.is_some());
+        assert_eq!(config.bearer_token.unwrap(), "my-token");
+        assert_eq!(config.timeout_ms, 5000);
+        assert_eq!(config.redact_fields.len(), 1);
+    }
+
+    #[test]
+    fn client_creation() {
+        let client = ControlCenterClient::new(
+            ControlCenterClientConfig::new("https://cc.example.com")
+        );
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn submission_response_no_correlation_id() {
+        let json = r#"{"accepted": true}"#;
+        let response: SubmissionResponse = serde_json::from_str(json).unwrap();
+        assert!(response.accepted);
+        assert!(response.correlation_id.is_none());
+    }
 }
