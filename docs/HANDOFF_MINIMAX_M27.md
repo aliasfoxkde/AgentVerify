@@ -181,6 +181,7 @@ The fixture must reject orphan, cross-project, cross-workspace, stale-lease, sta
 
 - ✅ Added CLI exit-code tests in `crates/agentverify-cli/tests/cli_exit_codes.rs` (7 tests)
 - ✅ CI workflow present in `.github/workflows/ci.yml` (fmt, clippy, test, doc, audit)
+- ✅ Release workflow in `.github/workflows/release.yml` (multi-platform binaries: Linux x86_64/ARM64, macOS x86_64/ARM64, Windows x86_64)
 - ✅ All 165 workspace tests pass, fmt clean, clippy clean
 - ✅ Machine-readable receipt output with `--json` flag (`VerifyOutput` struct)
 - ⚠️ `cargo audit` reports unmaintained `rustls-pemfile 1.0.4` advisory (noted in P1)
