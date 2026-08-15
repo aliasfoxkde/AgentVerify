@@ -3,7 +3,7 @@
 use agentverify_contract::load_file;
 use agentverify_core::Action;
 use agentverify_http::{RestObserver, RestObserverConfig};
-use agentverify_runtime::Executor;
+use agentverify_runtime::{Executor, SimulatedActionExecutor};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
@@ -181,18 +181,19 @@ fn verify_contract_cmd(
     let observer_config = RestObserverConfig::new(observer_url);
     let observer = RestObserver::new(observer_config)
         .map_err(|e| anyhow::anyhow!("Failed to create observer: {}", e))?;
-    let observer = Arc::new(observer);
+    let observer: Option<Arc<dyn agentverify_runtime::Observer>> = Some(Arc::new(observer));
 
-    // Setup executor (using default config)
+    // Setup executor with simulated action executor
+    let action_executor: Arc<dyn agentverify_runtime::ActionExecutor> =
+        Arc::new(SimulatedActionExecutor::new());
     let executor = Executor::new();
 
-    // Execute verification using the convenience execute() method
-    // This simulates dispatch and verifies postconditions via the observer
+    // Execute verification using execute_with_executor (real executor path)
     let rt = tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
 
     let result = rt.block_on(async {
         executor
-            .execute(action.clone(), contract.clone(), Some(observer.clone()))
+            .execute_with_executor(action.clone(), contract.clone(), action_executor, observer)
             .await
     });
 

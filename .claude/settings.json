@@ -1,16 +1,16 @@
 {
   "permissions": {
     "allow": [
-      "cargo:*",
-      "git:*",
-      "rustc:*",
-      "clippy:*",
-      "fmt:*",
-      "test:*",
-      "bench:*",
-      "audit:*",
-      "deny:*",
-      "nextest:*"
+      "Bash(cargo *)",
+      "Bash(git *)",
+      "Bash(rustc *)",
+      "Bash(clippy *)",
+      "Bash(fmt *)",
+      "Bash(test *)",
+      "Bash(bench *)",
+      "Bash(audit *)",
+      "Bash(deny *)",
+      "Bash(nextest *)"
     ]
   },
   "goals": {

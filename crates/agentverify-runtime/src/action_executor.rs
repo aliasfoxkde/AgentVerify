@@ -91,3 +91,28 @@ pub trait ActionExecutor: Send + Sync {
     /// Dispatch an action and return the outcome
     async fn execute(&self, action: &Action) -> Result<DispatchOutcome, DispatchError>;
 }
+
+/// A simulated action executor for testing and CLI use
+///
+/// This executor immediately completes actions successfully without
+/// actually dispatching to any external system. Use for simulation
+/// mode or when no real executor is available.
+#[derive(Debug, Clone, Default)]
+pub struct SimulatedActionExecutor {
+    _private: (),
+}
+
+impl SimulatedActionExecutor {
+    /// Create a new simulated action executor
+    pub fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
+#[async_trait::async_trait]
+impl ActionExecutor for SimulatedActionExecutor {
+    async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+        // Simulate immediate successful completion
+        Ok(DispatchOutcome::Completed)
+    }
+}
