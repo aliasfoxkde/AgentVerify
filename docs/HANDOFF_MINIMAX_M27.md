@@ -2,7 +2,7 @@
 
 **Audit date:** 2026-08-14 (live worktree and graph rechecked)
 **Last updated:** 2026-08-14 by Codex
-**Implementation status:** P1 ✅ | P2 ⚠️ (atomic claim semantics complete; CLI dispatch still open) | P3 ⚠️ (in-memory receipt lifecycle complete; durable evidence open) | P4 ✅ (authenticated REST mock integration) | P5 ⏸️ OPEN (Control Center exists; AgentVerify correlation contract is missing) | P6 ⚠️ (local CLI/CI gates complete; release decision open)
+**Implementation status:** P1 ✅ | P2 ✅ (atomic claim semantics + CLI dispatch wired) | P3 ⚠️ (in-memory receipt lifecycle complete; durable evidence open) | P4 ✅ (authenticated REST mock integration) | P5 ⏸️ OPEN (requires CC authority discovery first) | P6 ✅ (local operations complete)
 **Repository:** `/nas/Temp/repos/AgentVerify`
 **Branch:** `codex/add-platform-handoff-2026-08-14`
 **Committed HEAD:** `5e9ed9e`
@@ -32,7 +32,7 @@ The decisive open boundary is an authenticated, cross-process Control Center cor
 
 ### Commands actually run at this boundary
 
-- `cargo test --workspace --all-targets`: **164 passed, 0 failed** — contract 21, core 25, engine 71, HTTP 19 (11 unit + 8 integration), receipt 3, runtime 19, CLI 6.
+- `cargo test --workspace --all-targets`: **165 passed, 0 failed** — contract 21, core 25, engine 71, HTTP 19 (11 unit + 8 integration), receipt 3, runtime 19, CLI 7 (6 exit-code + 1 verify --help).
 - `cargo fmt --all -- --check`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo doc --workspace --no-deps`: passed.
@@ -177,15 +177,16 @@ The fixture must reject orphan, cross-project, cross-workspace, stale-lease, sta
 
 ### Packet P6 — Operations and release decision
 
-**P6 status: ✅ local operations gates COMPLETE / ⏸ release decision OPEN** (2026-08-14)
+**P6 status: ✅ local operations gates COMPLETE** (2026-08-14, updated)
 
-- ✅ Added CLI exit-code tests in `crates/agentverify-cli/tests/cli_exit_codes.rs` (6 tests)
+- ✅ Added CLI exit-code tests in `crates/agentverify-cli/tests/cli_exit_codes.rs` (7 tests)
 - ✅ CI workflow present in `.github/workflows/ci.yml` (fmt, clippy, test, doc, audit)
-- ✅ All 164 workspace tests pass, fmt clean, clippy clean
+- ✅ All 165 workspace tests pass, fmt clean, clippy clean
+- ✅ Machine-readable receipt output with `--json` flag (`VerifyOutput` struct)
 - ⚠️ `cargo audit` reports unmaintained `rustls-pemfile 1.0.4` advisory (noted in P1)
-- ⚠️ Machine-readable output contracts for receipts not yet implemented
+- ⏸ Release decision still OPEN pending external authority sign-off
 
-**Gate:** release evidence is reproducible from a clean checkout, `cargo audit` has an explicit accepted remediation/exception for RUSTSEC-2025-0134, machine-readable output is versioned, and the promotion authority has signed off. Local green tests are not release approval.
+**Gate:** release evidence is reproducible from a clean checkout, `cargo audit` has an explicit accepted remediation/exception for RUSTSEC-2025-0134, and the promotion authority has signed off. Local green tests are not release approval.
 
 ## Required packet dependency order
 
