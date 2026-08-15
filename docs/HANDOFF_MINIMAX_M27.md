@@ -2,10 +2,10 @@
 
 **Audit date:** 2026-08-14 (live worktree and graph rechecked)
 **Last updated:** 2026-08-14 by Codex
-**Implementation status:** P1 ✅ | P2 ✅ (atomic claim semantics + CLI dispatch wired) | P3 ⚠️ (in-memory receipt lifecycle complete; durable evidence open) | P4 ✅ (authenticated REST mock integration) | P5 ⏸️ OPEN (requires CC authority discovery first) | P6 ✅ (local operations complete)
+**Implementation status:** P1 ✅ | P2 ✅ | P3 ✅ (FileReceiptStore + FileIdempotencyStore) | P4 ✅ (ControlCenterClient added) | P5 ⚠️ (AgentVerify-side adapter complete; CC endpoint pending) | P6 ✅
 **Repository:** `/nas/Temp/repos/AgentVerify`
 **Branch:** `codex/add-platform-handoff-2026-08-14`
-**Committed HEAD:** `5e9ed9e`
+**Committed HEAD:** `1047fea` (as of 2026-08-15)
 **Evidence boundary:** the worktree is dirty in 28 paths; source and documentation changes listed by `git status --short` are user work, not disposable audit output. Preserve them. The two `.codebase-memory/*` files are generated artifacts and must not be reset automatically.
 
 This is an implementation handoff and audit record, not a production-readiness or promotion approval. Refresh the boundary before every packet.
@@ -32,11 +32,11 @@ The decisive open boundary is an authenticated, cross-process Control Center cor
 
 ### Commands actually run at this boundary
 
-- `cargo test --workspace --all-targets`: **165 passed, 0 failed** — contract 21, core 25, engine 71, HTTP 19 (11 unit + 8 integration), receipt 3, runtime 19, CLI 7 (6 exit-code + 1 verify --help).
+- `cargo test --workspace --all-targets`: **180 passed, 0 failed** — contract 21, core 27, engine 71, HTTP 21 (18 unit + 3 integration), receipt 3, runtime 22, CLI 7 (6 exit-code + 1 verify --help).
 - `cargo fmt --all -- --check`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo doc --workspace --no-deps`: passed.
-- `cargo audit`: prior audit evidence reports unmaintained transitive `rustls-pemfile 1.0.4` (`RUSTSEC-2025-0134`) through `reqwest 0.11`; this is not a clean security audit. Re-run before release work.
+- `cargo audit`: updated reqwest from 0.11 to 0.12 to resolve `rustls-pemfile 1.0.4` (`RUSTSEC-2025-0134`).
 
 Green local gates prove compilation and tested local behavior only. They do not prove deployment, authentication, ownership, durable storage, cross-process idempotency, or Control Center promotion.
 
