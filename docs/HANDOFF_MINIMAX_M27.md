@@ -255,3 +255,16 @@ Promotion impact: Tier A / B / C / D, with rationale
 ## Explicit non-goals at this boundary
 
 AgentVerify is not a Control Center replacement, orchestration monolith, LLM judge, generic tracing platform, or proof that an agent is authorized. MCP, OTel, policy, recovery, storage adapters, Postgres, and production deployment remain deferred until their security and ownership contracts are specified.
+
+## Blocked items requiring external authority
+
+The following items are BLOCKED until external authority supplies required artifacts:
+
+| Task | Blocker | Required artifact |
+|------|---------|------------------|
+| #2 Durable ReceiptStore | No storage backend specified | Owner must specify Postgres/Redis/etc. contract |
+| #3 Cross-process idempotency | No durable store specified | Owner must define TTL, key scoping, cleanup |
+| #4 P5 Control Center | CC exists but correlation contract missing | Owner must approve VerificationReport schema |
+| #5 Ownership tests | Depends on #4 | Cannot begin until #4 resolves |
+
+Per handoff rules: "do not invent a Control Center contract." These items cannot be completed without external authority decision.
