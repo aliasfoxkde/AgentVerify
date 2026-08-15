@@ -67,7 +67,7 @@ impl ControlCenterClientConfig {
         Self {
             base_url: base_url.into(),
             bearer_token: None,
-            timeout_ms: 10_000, // 10s default
+            timeout_ms: 10_000,            // 10s default
             max_receipt_size: 1024 * 1024, // 1MB
             redact_fields: Vec::new(),
         }
@@ -344,9 +344,8 @@ mod tests {
 
     #[test]
     fn client_creation() {
-        let client = ControlCenterClient::new(
-            ControlCenterClientConfig::new("https://cc.example.com")
-        );
+        let client =
+            ControlCenterClient::new(ControlCenterClientConfig::new("https://cc.example.com"));
         assert!(client.is_ok());
     }
 
@@ -356,5 +355,46 @@ mod tests {
         let response: SubmissionResponse = serde_json::from_str(json).unwrap();
         assert!(response.accepted);
         assert!(response.correlation_id.is_none());
+    }
+
+    #[test]
+    fn error_types_contain_meaningful_messages() {
+        // Verify error variants have proper display implementations
+        let err = ControlCenterClientError::Timeout(5000);
+        assert!(err.to_string().contains("5000"));
+
+        let err = ControlCenterClientError::Unauthorized;
+        assert!(err.to_string().contains("Unauthorized"));
+
+        let err = ControlCenterClientError::Forbidden;
+        assert!(err.to_string().contains("Forbidden"));
+
+        let err = ControlCenterClientError::Rejected("Stale contract".to_string());
+        assert!(err.to_string().contains("Stale contract"));
+    }
+
+    #[test]
+    fn config_chain_methods() {
+        // Test that builder methods chain correctly
+        let config = ControlCenterClientConfig::new("http://localhost:8080")
+            .with_bearer_token("token123")
+            .with_timeout(3000)
+            .with_redact_field("password")
+            .with_redact_field("secret");
+
+        assert_eq!(config.base_url, "http://localhost:8080");
+        assert_eq!(config.bearer_token, Some("token123".to_string()));
+        assert_eq!(config.timeout_ms, 3000);
+        assert_eq!(config.redact_fields.len(), 2);
+    }
+
+    #[test]
+    fn redact_field_chaining() {
+        let config = ControlCenterClientConfig::new("http://localhost:8080")
+            .with_redact_field("field1")
+            .with_redact_field("field2")
+            .with_redact_field("field3");
+
+        assert_eq!(config.redact_fields.len(), 3);
     }
 }
