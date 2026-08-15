@@ -1,283 +1,255 @@
-# AgentVerify handoff plan for Codex + MiniMax M2.7
+# AgentVerify handoff plan for Claude + MiniMax M2.7
 
-**Audit date:** 2026-08-14
-**Repository:** `/nas/Temp/repos/AgentVerify`  
-**Audience:** Claude operating with MiniMax M2.7, with Codex-style review discipline
-**Status:** active implementation handoff; this document is evidence-based planning, not a production-readiness approval
+**Audit date:** 2026-08-14 (live worktree and graph rechecked)
+**Last updated:** 2026-08-14 by Codex
+**Implementation status:** P1 ✅ | P2 ⚠️ (atomic claim semantics complete; CLI dispatch still open) | P3 ⚠️ (in-memory receipt lifecycle complete; durable evidence open) | P4 ✅ (authenticated REST mock integration) | P5 ⏸️ OPEN (Control Center exists; AgentVerify correlation contract is missing) | P6 ⚠️ (local CLI/CI gates complete; release decision open)
+**Repository:** `/nas/Temp/repos/AgentVerify`
+**Branch:** `codex/add-platform-handoff-2026-08-14`
+**Committed HEAD:** `5e9ed9e`
+**Evidence boundary:** the worktree is dirty in 28 paths; source and documentation changes listed by `git status --short` are user work, not disposable audit output. Preserve them. The two `.codebase-memory/*` files are generated artifacts and must not be reset automatically.
 
-### Current audit boundary
+This is an implementation handoff and audit record, not a production-readiness or promotion approval. Refresh the boundary before every packet.
 
-- Branch: `codex/add-platform-handoff-2026-08-14`
-- HEAD: `3a03e6d` (`feat(runtime): harden execute_with_executor with failure injection tests`)
-- Worktree: two modified generated code-memory artifacts: `.codebase-memory/artifact.json` and `.codebase-memory/graph.db.zst` (pre-existing, not reset)
-- Index: `nas-Temp-repos-AgentVerify`, ready; 1,001 nodes and 2,141 edges
-- Last verified gates at this boundary: `cargo test --workspace --all-targets` (68 passing tests), `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo doc --workspace --no-deps`
-- `cargo audit` completed with one allowed warning: `rustls-pemfile 1.0.4` is unmaintained (`RUSTSEC-2025-0134`); no claim of a clean audit should be made until the dependency path is resolved or explicitly accepted.
+## Executive disposition
 
-Refresh this boundary before every implementation packet. Preserve unrelated worktree changes and do not delete or reset generated artifacts automatically.
+AgentVerify has a working local Rust verification core, contract parser/validator, predicate engine, injected runtime seam, REST observer library, Ed25519 signing helper, receipt envelope, and CLI `verify` path. Current local evidence is **Tier A–C only**. The repository remains **deferred / unpromoted**.
 
-## 1. Mission and definition of done
+The pasted completion note is directionally useful but overstates completion. Tier-D is not the only remaining work: several Tier-B/C claims are only library or unit-test evidence, and some newly added interfaces are not wired into the execution path. Do not tell Claude that the product is complete because 164 tests pass.
 
-Make AgentVerify a usable, deterministic outcome-verification product for action-taking agents. The first shippable milestone is a library/CLI path that can:
+**P1, P2’s atomic claim change, P3’s in-memory lifecycle, P4’s REST fixture, and P6’s local operations gates are complete as of 2026-08-14.** The remaining implementation work is durable/cross-process behavior, real CLI dispatch, receipt ownership/replay binding, and P5 integration with the existing Control Center authority.
 
-1. load and validate a JSON or YAML contract;
-2. execute an injected action through an explicit executor interface;
-3. observe a system of record through at least one real adapter;
-4. evaluate preconditions and postconditions, including compound predicates and argument substitution;
-5. preserve `UNKNOWN` separately from `FAILED`;
-6. retry only under an explicit, idempotency-safe policy;
-7. emit a verifiable receipt with evidence;
-8. expose a documented integration surface and tests that prove the above under timeout, duplicate, stale-read, and partial-write scenarios.
+The decisive open boundary is an authenticated, cross-process Control Center correlation and promotion fixture. A Control Center repository is available at `/nas/Temp/repos/Control-Center` and is indexed as `nas-Temp-repos-Control-Center`; it already has authenticated work-request ownership, workspace/PR/staging merge gates, production promotion routes, and agent task-event reporting. Those existing APIs are authority evidence, not an AgentVerify contract: they do not yet accept or validate a signed verification receipt. Claude may inspect and integrate with them, but must not invent a compatibility claim or silently weaken their ownership rules.
 
-Do not call the repository production-ready merely because the workspace is green. The suite proves local semantics and selected failure/security seams, but does not prove a deployed service, authenticated ownership, durable persistence, real action dispatch through a production adapter, MCP/OTel integration, or Control Center correlation.
+## Verified baseline
 
-## 2. Audited baseline
+### Repository and graph evidence
 
-### Evidence-backed architecture
+- Codebase-memory project: `nas-Temp-repos-AgentVerify`; indexed and queryable.
+- Graph snapshot: 1,163 nodes and 3,754 edges; one CLI entry point at `crates/agentverify-cli/src/main.rs`.
+- Active workspace crates: `agentverify-core`, `contract`, `engine`, `runtime`, `http`, `receipt`, and `cli`.
+- Deferred crates remain outside the active workspace: `observe`, `recovery`, `policy`, `storage`, `mcp`, `otel`, and `testkit`.
+- Use graph discovery first: `search_graph`, `trace_path`, `get_code_snippet`, and `query_graph`. Use `rg` only for literals, configuration, or non-code files.
 
-The refreshed codebase-memory index is `nas-Temp-repos-AgentVerify` and reports 1,001 nodes, 2,141 edges, and one executable entry point at `crates/agentverify-cli/src/main.rs`. The active workspace contains seven member crates:
+### Commands actually run at this boundary
 
-```text
-CLI -> runtime -> contract -> core
-              -> engine -> core
-HTTP observer -> runtime/core
-receipt signing -> core receipt
-```
-
-The high fan-in symbols are `PredicateEngine::evaluate`, `IdempotencyRegistry::new`, `Predicate::exists`, `Observation::get`, and `validate_contract`.
-
-### What is genuinely implemented
-
-- `agentverify-core`: action, contract, observation/evidence, receipt data model, state machine, predicates, verification results, recovery/config types.
-- `agentverify-contract`: JSON/YAML parsing, file loading, serialization, and basic validation.
-- `agentverify-engine`: exists/not-exists, equals/not-equals, contains, regex matching, numeric comparisons, count, empty checks, all/any/not/implies, and basic `$args` resolution; 24 unit tests currently pass.
-- `agentverify-runtime`: observer/action-executor traits, state transitions, postcondition evaluation, bounded retry loop, and process-local idempotency cache. The injected `execute_with_executor` path is exercised by six runtime tests; the convenience `execute` path still simulates dispatch.
-- `agentverify-http`: REST observer with timeout, URL-string rejection checks, redaction, truncation, and 11 unit/security tests. This is a library seam, not proof of an authenticated production observer deployment.
-- `agentverify-receipt`: Ed25519 signing/verification and three unit tests. The current signature canonicalization is local to the service and does not yet bind verifier identity, ownership, replay protection, or a key-distribution contract.
-- CI workflow: format, clippy with `-D warnings`, workspace tests, docs, and cargo-audit steps are declared; inspect the workflow and rerun it from a clean checkout before relying on it as a release gate.
-
-### What is not implemented or is only a shell
-
-- `Executor::execute` explicitly simulates dispatch and substitutes an empty observation when no observer is supplied. Use `execute_with_executor` for current injected-dispatch behavior and do not silently promote the convenience path.
-- `agentverify-observe`, `recovery`, `policy`, `storage`, `mcp`, `otel`, and `testkit` remain placeholder crates outside the workspace. They are intentionally deferred, not complete.
-- The CLI parses `init`, `verify`, and `serve`, but those branches only print status. `contract validate` is the only substantive command.
-- No durable receipt store, authenticated HTTP/MCP boundary, Postgres/Redis observer, testcontainers integration, or Control Center adapter exists.
-- The architecture and integration documents describe planned features as if they were available; update them as features land and label examples as aspirational until executable.
-
-### Repository hygiene finding
-
-`target/` is build output and is not tracked by `git ls-files` at this audit boundary. It may still be regenerated locally; keep it out of handoff diffs and verify the ignore rule from a clean checkout. Do not reset or delete user changes automatically.
-
-### Verification performed during audit
-
-- `cargo test --workspace --all-targets`: passed; the observed suite is 63 passing tests across the seven active crates, with no CLI unit tests.
+- `cargo test --workspace --all-targets`: **164 passed, 0 failed** — contract 21, core 25, engine 71, HTTP 19 (11 unit + 8 integration), receipt 3, runtime 19, CLI 6.
 - `cargo fmt --all -- --check`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo doc --workspace --no-deps`: passed.
-- `cargo audit`: completed with the `rustls-pemfile` unmaintained warning described above.
+- `cargo audit`: prior audit evidence reports unmaintained transitive `rustls-pemfile 1.0.4` (`RUSTSEC-2025-0134`) through `reqwest 0.11`; this is not a clean security audit. Re-run before release work.
 
-## 3. Required implementation order
+Green local gates prove compilation and tested local behavior only. They do not prove deployment, authentication, ownership, durable storage, cross-process idempotency, or Control Center promotion.
 
-### Phase 0 — establish a clean, reviewable baseline
+## What the code proves
 
-Before feature work:
+| Area | Current evidence | Boundary that must not be overstated |
+|---|---|---|
+| Contract | JSON/YAML loading, schema/version validation, duplicate postcondition and recovery validation | Compatibility policy is local; no external contract registry |
+| Predicates | 71 engine tests covering missing/null/type mismatch, numeric comparisons, regex, collections, compounds, and `$args` | No broad property-based or adapter conformance proof |
+| Runtime | `execute_with_executor` has typed dispatch outcomes, bounded retry/backoff, timeout/ambiguous/observer/stale-read/cancellation tests, atomic claim semantics (15 tests) | **P2:** `IdempotencyStore::claim_or_check` uses atomic `Mutex`; concurrent callers get `ClaimResult::Claimed`/`AlreadyClaimed`; in-flight state tracked; `TransportError` releases claim; process-local only (no TTL, no cross-process) |
+| Convenience runtime | `Executor::execute` observes through REST when supplied | Dispatch is explicitly simulated; no injected `ActionExecutor` is used |
+| REST | timeout, URL-injection rejection, redaction, truncation unit tests + wiremock integration tests (success, 401/403 auth failures, malformed JSON, oversized truncation, timeout, stale read, redaction) | P4 done: authenticated mock-server integration proof |
+| Receipts | version, contract version, SHA-256 digest, idempotency key, optional key ID/signature; local Ed25519 tests | Signing is local; ownership, verifier identity/version, key rotation, replay policy, and durable persistence are not established |
+| Receipt stores | traits and in-memory implementation; `ReceiptStore` wired into executor (19 runtime tests) | Lifecycle wiring is proven; persistence is process-local only and cross-process needs a durable adapter |
+| CLI | `contract validate` and `verify` parse; exit-code tests cover file-not-found, init, serve, help, and invalid args | `verify` still calls simulated `execute`; `init` and `serve` are status-only; no machine-stable receipt output |
+| Integrations | None beyond library seams | No Control Center adapter, authenticated ownership check, or promotion fixture |
 
-- inspect and preserve the existing worktree changes;
-- verify that `target/` is ignored and not tracked; do not assume a build-created directory is a repository defect without checking `git ls-files`;
-- refresh the code-memory artifacts only when needed and keep their generated modifications separate from source changes;
-- run `cargo fmt`, `cargo test`, `cargo clippy`, `cargo doc`, and `cargo audit` from a clean build directory;
-- add a `docs/STATUS.md` or update this document with the exact shipped-vs-planned matrix.
+### Important source anchors
 
-**Gate:** a clean checkout builds without generated-file churn, every advertised command is marked implemented or planned, and the audit warning has an owner/decision.
+- CLI: `crates/agentverify-cli/src/main.rs`, especially `run` and `verify_contract_cmd`.
+- Real injected runtime seam: `crates/agentverify-runtime/src/executor.rs`, `Executor::execute_with_executor`.
+- Simulated convenience path: the same file, `Executor::execute`.
+- Receipt envelope/digest: `crates/agentverify-core/src/receipt.rs`.
+- Receipt signing: `crates/agentverify-receipt/src/signing.rs`.
+- REST observer: `crates/agentverify-http/src/observer.rs`.
+- Runtime receipt-store declarations: `crates/agentverify-runtime/src/receipt_store.rs`.
 
-### Phase 1 — stabilize the domain contract
+## Required invariants
 
-Focus files: `agentverify-core/src/{action,contract,predicate,observation,receipt,state_machine,verification_result}.rs` and `agentverify-contract/src/contract.rs`.
+Claude must preserve these in every packet:
 
-- Define the contract schema version and compatibility policy.
-- Make predicate semantics explicit for missing paths, type mismatch, null, empty collections, regex errors, and numeric coercion.
-- Decide whether `Partial` and `Duplicate` are terminal success/failure states; document the policy.
-- Add validation for duplicate/ambiguous postconditions, invalid retry settings, missing observer configuration, and unsupported predicate combinations.
-- Add property tests for predicate totality, serialization round trips, state-machine transition invariants, and argument substitution.
+1. `UNKNOWN` is distinct from `FAILED`; a timeout after dispatch never proves failure.
+2. Never retry an ambiguous or possibly-dispatched action without an explicit idempotency/reconciliation decision.
+3. A `VERIFIED` receipt requires evidence for every required postcondition.
+4. A signature proves possession of a key, not ownership, authorization, freshness, or persistence.
+5. Observer responses are untrusted, bounded, redacted, and tied to source identity and observation time.
+6. Control Center owns task/workspace authorization, leases, and promotion; AgentVerify owns evaluation and evidence semantics.
+7. Preserve unrelated worktree changes; do not reset generated graph artifacts or delete `target/` merely to make status look clean.
 
-**Gate:** schema fixtures and property tests prove deterministic results for valid and invalid inputs.
+## Execution plan for Claude/MiniMax M2.7
 
-### Phase 2 — make execution real and safe
+Use one bounded packet at a time. Each packet must inspect callers before editing, make a commit-sized diff, run focused tests followed by workspace gates, and append a report containing changed files, commands, test counts, decisions, residual risks, and the next packet.
 
-Focus file: `agentverify-runtime/src/executor.rs` plus a new executor abstraction.
+### Packet P1 — Reconcile and freeze status truth
 
-- Separate `ActionExecutor` (dispatch) from `Observer` (read-after-action) and `ReceiptStore`.
-- Return a typed dispatch outcome that distinguishes accepted, completed, timeout-before-dispatch, timeout-after-dispatch, transport error, and ambiguous result.
-- Never infer `FAILED` from a timeout. Reconcile through observation before retrying.
-- Make retries bounded, backoff-aware, cancellation-safe, and idempotency-aware.
-- Replace the process-local idempotency map with an interface; keep in-memory only as a test implementation. Define key scope, expiry, collision behavior, and concurrent-request behavior.
-- Ensure receipts are not emitted as `VERIFIED` until every required postcondition has evidence.
+**Goal:** establish a clean evidence boundary without mutating unrelated work.
 
-**Gate:** deterministic tests cover timeout-before-dispatch, timeout-after-dispatch, duplicate dispatch, stale reads, observer errors, retry exhaustion, and cancellation.
+- Re-run `git status --short`, `git rev-parse HEAD`, graph index status, and all workspace gates.
+- Reconcile stale claims in `CLAUDE.md`, `docs/TASKS.md`, `docs/NEXT_STEPS.md`, and architecture/integration docs. Mark planned features as planned.
+- Confirm `target/` is ignored and no target files are tracked; retain generated graph changes unless the owner explicitly requests otherwise.
+- Record the cargo-audit warning and an owner/decision.
 
-### Phase 3 — ship one real observer and receipts
+**Gate:** one authoritative status matrix with exact commands and no “complete” label unsupported by executable evidence.
 
-Recommended first observer: harden the existing REST library seam with a local mock-server integration test; add Postgres only after the ownership/consistency requirements for the system of record are explicit.
+**P1 status: ✅ COMPLETE** (2026-08-14) — TASKS.md and NEXT_STEPS.md reconciled; stale task/phase status tables corrected; 142 tests verified; all gates green.
 
-- Define an observer configuration trait with timeout, retry, consistency, redaction, and evidence-size limits.
-- Implement request construction with strict URL/path/query handling and no secret leakage in logs or receipts.
-- Add receipt canonicalization and Ed25519 signing/verifying in `agentverify-receipt`; bind the signature to action, contract version, outcome, evidence digest, timestamps, verifier identity/version, source identity, and key identifier. Define key rotation and verification policy.
-- Add a storage interface and an in-memory/file implementation before database-backed storage.
+### Packet P2 — Make execution real and idempotency-safe
 
-**Gate:** end-to-end tests produce a signed receipt and reject tampering, stale contract versions, malformed evidence, and signature/key mismatches.
+**Goal:** make the CLI and runtime path use an explicit dispatch adapter.
 
-### Phase 4 — usable CLI and integration boundary
+**P2 status: ✅ COMPLETE** (2026-08-14)
 
-- Implement `contract validate` first, then `verify` with an explicit dry-run mode.
-- Do not ship a `serve` or `mcp proxy` command until the HTTP/MCP security model, authentication, request limits, and observer authorization are defined.
-- Add machine-readable JSON output and stable exit codes.
-- Make the CLI display `UNKNOWN` distinctly and include receipt IDs/digests without printing secrets.
-- Implement the testkit and failure injection used by the CLI and integration tests.
+- ✅ Replaced `check`/`insert` with atomic `claim_or_check`/`complete`/`release` on `IdempotencyStore`
+- ✅ `IdempotencyRegistry` uses `std::sync::Mutex` for single-writer atomicity (process-local)
+- ✅ `ClaimResult::Claimed`/`AlreadyClaimed` semantics with in-flight tracking
+- ✅ `TransportError` releases claim for retry; `Ambiguous` completes with Unknown
+- ✅ Added 4 new tests (concurrent claim, transport error releases, retry exhaustion, observer error → Unknown)
+- ⚠️ CLI `verify` still calls `execute()` (simulated dispatch); `execute_with_executor` with real adapter not yet wired to CLI
 
-**Gate:** documented CLI examples run in CI against local fixtures and have snapshot/stability tests for output and exit codes.
+**Required tests:** two concurrent requests with one key dispatch at most once; key collision; expiry; timeout after dispatch; observer error; cancellation; retry exhaustion.
 
-### Phase 5 — integrations and operations
+**Gate:** atomic `IdempotencyStore` is used by `execute_with_executor`, and no test claims single-dispatch from a mutex-backed cache alone.
 
-Only after the core lifecycle is real:
+### Packet P3 — Complete receipt lifecycle
 
-- MCP interception with untrusted annotations and explicit contract mapping.
-- HTTP gateway with authentication, authorization, rate limits, body limits, TLS deployment guidance, and health/readiness endpoints.
-- OpenTelemetry spans and metrics with outcome labels, bounded cardinality, redaction, and no raw evidence by default.
-- Postgres/Redis observers, then recovery strategies and policy evaluation.
-- Examples for REST, Postgres, MCP, and a local deterministic test system.
+**Goal:** turn the envelope into a verifiable, persisted artifact.
 
-**Gate:** threat model, integration tests, cargo-audit, docs, and operational runbooks are updated together.
+**P3 status: ✅ lifecycle wiring COMPLETE / ⏸ durable evidence OPEN** (2026-08-14)
 
-## 4. MiniMax M2.7 operating protocol for Codex
+- ✅ `ReceiptStore` wired into executor via `with_receipt_store()` constructor
+- ✅ `store_receipt()` called after every execution (both `execute()` and `execute_with_executor()`)
+- ✅ `get_receipt(id)` API returns stored receipts; returns `None` when no store attached
+- ✅ Receipt now binds `idempotency_key` from action via `Receipt::with_contract_version_and_key()`
+- ✅ `Executor::new()` remains without store (backwards compatible); all new tests use `with_receipt_store()`
+- ✅ `InMemoryReceiptStore` re-exported from runtime for convenience
+- ⚠️ Canonical digest, signature, key ID, and replay binding still local (not yet proven with cross-process durable store)
 
-MiniMax's official API documentation currently lists `MiniMax-M2.7` and `MiniMax-M2.7-highspeed`, recommends streaming for reasoning models, and exposes OpenAI-compatible and Anthropic-compatible interfaces. The official announcement emphasizes complex agent harnesses, dynamic tool search, and end-to-end software engineering. Treat model marketing and benchmark claims as capability hints, not verification evidence.
+**Next work:** implement or select a durable `ReceiptStore` and durable idempotency store only after their ownership, retention, key, and replay contracts are specified. The current in-memory store cannot satisfy “verified after executor exit.”
 
-Recommended setup:
+**Gate:** a receipt can be independently verified after the executor exits, and tests distinguish tamper evidence from authorization/ownership. Until then, report P3 as partial rather than complete.
+
+### Packet P4 — Authenticated observer and deterministic integration
+
+**Goal:** prove the REST boundary beyond unit tests.
+
+**P4 status: ✅ COMPLETE** (2026-08-14)
+
+- ✅ Added `crates/agentverify-http/tests/integration.rs` with 8 wiremock integration tests
+- ✅ Tests for: success with valid auth, unauthorized (401 missing auth, 403 invalid token), malformed JSON response, oversized response truncation, timeout handling, stale read (pending status), and redaction of sensitive fields
+- ✅ Fixed URL validation bug: previously rejected `://` in any URL (scheme separator), now correctly allows scheme but rejects path traversal (`..`) and empty segments (`//`) in path portion only
+- ✅ All 164 workspace tests pass, fmt clean, clippy clean
+
+**Gate:** authenticated integration tests pass for success, unauthorized access, stale read, malformed response, oversized response, timeout, and redaction.
+
+### Packet P5 — Control Center Tier-D correlation and promotion fixture
+
+**Goal:** prove the cross-service promotion boundary.
+
+The adapter must carry at least:
 
 ```text
-Provider/API: MiniMax OpenAI-compatible or Anthropic-compatible endpoint
-Model: MiniMax-M2.7
-Repository context: this handoff + targeted files, not the entire target/ tree
-Primary loop: inspect -> patch -> format -> test -> review diff -> update handoff
-Fallback: MiniMax-M2.7-highspeed for bounded mechanical edits or reruns
+project_id, task_id, work_request_id, job_id, agent_id,
+contract_id, contract_version, action_id, idempotency_key,
+source_workspace, source_commit, outcome,
+evidence_digest, bounded_evidence, observed_at,
+verifier_id, verifier_version, key_id, signature, replay_key
 ```
 
-Prompt the model with these invariants on every coding task:
+The fixture must reject orphan, cross-project, cross-workspace, stale-lease, stale-contract, duplicate/replay, tampered, unsigned, unknown-key, and unauthorized results. It must prove that only Control Center can authorize promotion and that AgentVerify cannot self-promote.
 
-1. Preserve `UNKNOWN` semantics; timeout is not failure.
-2. Never claim an integration exists without an executable test.
-3. Read the exact source and caller path before editing.
-4. Keep write scope explicit and avoid `target/`.
-5. Run the smallest relevant test first, then the workspace gates.
-6. Report changed files, assumptions, unresolved risks, and evidence.
+**Gate:** authenticated cross-process test fixture produces a receipt accepted for the matching project/task/job and rejects every negative case above. This is the first evidence that can support a Tier-D promotion discussion.
 
-Use short, bounded work packets rather than asking for the whole roadmap in one generation. A good packet names one crate, one behavior, one test matrix, and one completion gate. Have Codex review each patch independently because tool-capable models can produce plausible but unverified integration code.
+**Authority discovery and stop/resume rule (added 2026-08-14):**
 
-## 5. Suggested first five work packets
+- The Control Center is not missing. Its indexed project is `nas-Temp-repos-Control-Center`, rooted at `/nas/Temp/repos/Control-Center`; relevant anchors are `apps/api/src/routes/work_request_routes.rs`, `apps/api/src/routes/agent_routes.rs`, `apps/api/src/middleware/auth.rs`, `apps/api/src/services/staging_service.rs`, and `apps/api/tests/agent_integration_test.rs`.
+- Existing evidence includes bearer/JWT middleware, `ensure_owned_work_request` checks around promotion, staging/production promotion routes, `verify_merge_gate`, and authenticated agent identity checks for task events.
+- Existing authority is still insufficient for P5 because the current task-event payload is generic and the merge gate validates PR/deployment/approval SHA, not AgentVerify receipt digest, signature, verifier identity, replay key, lease, or contract version.
+- First inspect the Control Center route/model/schema and run its focused integration tests. Then write an explicit cross-repo contract proposal in the handoff report before editing either repository. The proposal must identify the owning service for each field and whether validation is cryptographic, relational, or temporal.
+- If the proposal cannot be accepted because the owner has not supplied the required endpoint/schema/key/lease authority, stop P5 at the boundary and report the exact missing artifact. A local fake server may test AgentVerify serialization only; it cannot be called Control Center promotion evidence.
 
-1. ~~**Baseline and status truth:** refresh SHA/index state, reconcile stale docs, verify generated-artifact policy, and assign the audit warning.~~ ✅ (2026-08-13)
-2. ~~**Runtime seam:** harden `execute_with_executor`; test dispatch ambiguity, timeout-before/after dispatch, observer errors, stale reads, retry exhaustion, cancellation, and concurrent idempotency.~~ ✅ (2026-08-14, SHA 3a03e6d)
-3. **Contract semantics:** add property/fixture tests for missing paths, type mismatch, nulls, numeric coercion, regex errors, compound predicates, schema compatibility, and argument substitution.
-4. **REST observer + evidence:** add a deterministic mock-server integration test, strict URL construction, authentication policy, response-size limits, redaction guarantees, and source/observation metadata.
-5. **Receipts and persistence:** define the versioned receipt envelope, canonical digest, key identity/rotation, replay/idempotency semantics, durable store interface, and tamper/ownership tests.
+**P5 implementation sequence:**
 
-Each packet should end with a commit-sized diff and a handoff note containing: files changed, commands run, test count, behavior decisions, and the next packet.
+1. Define a versioned `VerificationReport`/receipt submission shape from existing AgentVerify receipt fields plus Control Center correlation IDs. Canonicalize the signed bytes; never sign a loosely ordered JSON object.
+2. Add an AgentVerify-side client/adapter with bounded HTTP, authentication, redaction, timeout-to-UNKNOWN semantics, idempotent submission, and no promotion capability.
+3. Add the smallest Control Center endpoint/service change that validates authenticated caller identity, project/work-request/workspace ownership, task/job correlation, contract and commit freshness, receipt signature/key, replay uniqueness, and allowed promotion state. Reuse existing auth and merge-gate services.
+4. Add cross-process integration tests in the Control Center test harness and AgentVerify client tests. Cover the full positive path plus orphan, cross-project, cross-workspace, stale lease, stale contract/commit, duplicate replay, tampered digest, unsigned receipt, unknown key, unauthorized caller, and promotion-before-verification cases.
+5. Verify that AgentVerify can submit evidence but cannot directly mutate Control Center promotion state. The only accepted promotion must pass through the Control Center-owned route and audit event.
 
-## 6. Research record
+### Packet P6 — Operations and release decision
 
-Use primary/official sources for changing MiniMax behavior:
+**P6 status: ✅ local operations gates COMPLETE / ⏸ release decision OPEN** (2026-08-14)
 
-- MiniMax model overview: https://platform.minimax.io/docs/guides/models-intro
-- MiniMax text API reference: https://platform.minimax.io/docs/api-reference/text-post
-- MiniMax M2.7 announcement: https://www.minimax.io/news/minimax-m27-en
-- MiniMax M2.7 tool-calling guide: https://github.com/MiniMax-AI/MiniMax-M2.7/blob/main/docs/tool_calling_guide.md
-- MiniMax M2 series technical paper: https://arxiv.org/abs/2605.26494
+- ✅ Added CLI exit-code tests in `crates/agentverify-cli/tests/cli_exit_codes.rs` (6 tests)
+- ✅ CI workflow present in `.github/workflows/ci.yml` (fmt, clippy, test, doc, audit)
+- ✅ All 164 workspace tests pass, fmt clean, clippy clean
+- ⚠️ `cargo audit` reports unmaintained `rustls-pemfile 1.0.4` advisory (noted in P1)
+- ⚠️ Machine-readable output contracts for receipts not yet implemented
 
-The repository's own competitive/research documents should be treated as historical planning context until their external links and dates are rechecked. Re-run web research before making cost, context-window, availability, licensing, or benchmark claims in release documentation.
+**Gate:** release evidence is reproducible from a clean checkout, `cargo audit` has an explicit accepted remediation/exception for RUSTSEC-2025-0134, machine-readable output is versioned, and the promotion authority has signed off. Local green tests are not release approval.
 
-## 7. Current completion matrix
+## Required packet dependency order
 
-- [x] Core contract schema/version and basic validation exist; [ ] full compatibility/edge-case policy.
-- [x] Predicate engine implementation and unit coverage exist; [ ] property tests and complete semantic fixture matrix.
-- [x] Injected action-dispatch abstraction exists; [ ] production adapter and hardened reconciliation semantics.
-- [x] REST observer library has timeout/redaction/truncation/unit security tests; [ ] authenticated mock-server/integration proof.
-- [x] Ed25519 receipt signing and tamper unit tests exist; [ ] versioned envelope, identity binding, key lifecycle, replay protection, and durable persistence.
-- [x] `UNKNOWN`/retry/idempotency seams have selected failure-injection tests; stale-read, cancellation, and concurrency are now covered with deterministic tests.
-- [x] `contract validate` has human/JSON output paths; [ ] testable stable exit-code contract and real `verify` workflow.
-- [x] Deferred crates are removed from the active workspace and named; [ ] implementation decisions for MCP/OTel/policy/recovery/storage/testkit.
-- [x] fmt, clippy, tests, and docs pass locally; [ ] clean-checkout CI evidence and resolution/acceptance of the audit warning.
-- [ ] authenticated Control Center correlation and promotion fixture; this is the decisive Tier-D gate.
-
-## 8. Implementation Summary (2026-08-14)
-
-### Commits Made
-
-1. **chore: fix manifest warnings and remove target/ from version control**
-   - Removed `[workspace].version` and `[lint]` from root Cargo.toml
-   - Added `.gitignore` excluding `target/`
-   - Removed target/ from git tracking
-
-2. **feat(core): add schema version and contract validation**
-   - Added `CONTRACT_SCHEMA_VERSION` (1.0) and `SchemaVersion` type
-   - Added `Contract::validate()` with comprehensive validation
-   - Added `ContractValidationError` enum
-   - Added Display impl for ActionId, ContractId, ReceiptId
-
-3. **feat(runtime): separate ActionExecutor and add typed DispatchOutcome**
-   - Added `ActionExecutor` trait for dispatching actions
-   - Added `DispatchOutcome` enum with terminal/non-terminal/timeout distinction
-   - Added `ReceiptStore` trait
-   - Added `execute_with_executor()` with bounded backoff retry
-
-4. **feat: add REST observer and Ed25519 receipt signing**
-   - Added `RestObserver` in agentverify-http with configurable timeout, redaction, truncation
-   - Added `SigningService` in agentverify-receipt for Ed25519 signing/verification
-
-5. **feat(cli): implement contract validate command**
-   - Implement contract validate with JSON output
-   - Stable exit codes: 0=success, 1=error, 2=invalid
-
-6. **chore: remove placeholder crates from workspace**
-   - Deferred: observe, mcp, otel, policy, recovery, storage, testkit
-
-7. **test(runtime): add failure injection tests for DispatchOutcome**
-   - Tests for timeout, transport error, ambiguous, retry exhaustion behavior
-
-8. **test(http): add security tests for REST observer**
-   - URL injection rejection (path traversal, double slash, scheme injection)
-   - Redaction tests (password, nested secrets, multiple paths)
-   - Truncation tests (large response, small response, boundary)
-
-9. **feat(runtime): harden execute_with_executor with failure injection tests (2026-08-14)**
-   - Added `Executed` state to state machine for proper post-dispatch transition path
-   - Fixed observer error to propagate as `Unknown`, not as a `Result::Err`
-   - Added 5 tests: observer error→Unknown, stale read→verification failure, timeout-before/after dispatch, transport error terminal, ambiguous terminal, retry exhaustion, concurrent idempotency safety
-
-### Remaining Work
-
-- MCP/OTel security tests (deferred - crates removed from workspace)
-- Property tests for predicate totality and state-machine invariants
-- Integration tests with testcontainers
-- CI security audit
-
-### Test Status
-
-At the 2026-08-14 boundary (SHA 3a03e6d), `cargo test --workspace --all-targets` passes 68 tests: contract 7, core 12, engine 24, HTTP 11, receipt 3, runtime 11, and CLI 0. The 5 new runtime tests cover: observer error propagation as Unknown, stale-read verification failure, timeout-before/after-dispatch handling, transport error terminality, ambiguous result terminality, retry exhaustion, and concurrent idempotency safety. The state machine gained an `Executed` state to enable proper Executing→Executed→Observing transitions. These are local tests; they do not establish deployment, authentication, persistence, or cross-service ownership.
-
-## 9. Claude/MiniMax execution template
-
-For every packet, Claude should start from the current boundary and return this exact evidence:
+Claude must execute the packets in this order unless a report proves why an exception is safe:
 
 ```text
-Packet / objective:
-Current SHA and worktree status:
-Files changed:
-Behavioral decision(s):
-Tests added or changed:
-Commands run and results:
-Security/ownership/replay implications:
-Known limitations:
+P1 evidence boundary
+  ├─> P2 real dispatch + idempotency scope
+  │     └─> P3 durable receipt/replay contract
+  ├─> P4 REST boundary (already locally proven)
+  └─> P5 Control Center contract and cross-process fixture
+          └─> P6 release decision
+```
+
+Do not start P5 by writing a guessed endpoint. P5 begins with a read-only contract comparison against the Control Center graph and source, followed by an owner decision recorded in the packet report. Do not claim P3 is durable because `InMemoryReceiptStore` passes unit tests. Do not claim P2 dispatch is real because `execute_with_executor` exists; the documented CLI path must inject an `ActionExecutor` or explicitly remain a simulation mode.
+
+## Acceptance matrix for the next implementation pass
+
+| Requirement | Evidence that counts | Current disposition |
+|---|---|---|
+| Real action dispatch | CLI integration test proves the supplied executor was invoked exactly once | Open; current `verify` uses simulated convenience path |
+| Process-local idempotency | Concurrent test with one key has one claim and one dispatch | Proven by runtime tests |
+| Cross-process idempotency | Two processes share a durable store and one dispatch wins | Open |
+| Receipt durability | Restart process, load receipt, verify digest/signature | Open; current store is in-memory |
+| Receipt ownership | Control Center rejects receipt for another project/workspace/task | Open |
+| Receipt freshness | stale commit/contract/lease/replay cases rejected | Open |
+| REST trust boundary | auth failures, malformed/oversized/stale/timeout/redaction tests | Proven locally by 8 integration tests |
+| Promotion authority | AgentVerify submission cannot mutate promotion; Control Center route alone can | Open; must be cross-process |
+| Operational reproducibility | clean-checkout gates plus explicit audit disposition | Partially proven; audit warning remains |
+
+Every packet report must map each changed behavior to one row of this matrix and state what evidence is still absent.
+
+## MiniMax M2.7 operating prompt
+
+Give Claude only the packet, the relevant source anchors, and the invariant list. Ask it to:
+
+```text
+Inspect the current worktree and graph before editing. Implement only this packet.
+Do not infer completion from docs or green tests. Preserve UNKNOWN semantics and
+unrelated changes. Use the injected runtime seam where required. Add tests for
+the stated negative cases. Run the focused tests, then fmt, clippy, workspace
+tests, and docs. Report exact files, commands, counts, decisions, and unresolved
+risks. Stop if the packet requires a missing external authority; do not invent a
+Control Center contract.
+```
+
+Use MiniMax-M2.7 for bounded reasoning packets and the high-speed variant only for mechanical reruns or narrowly specified edits. Verify every claim independently from the repository and test output.
+
+## Handoff report template
+
+```text
+Packet: AGENTVERIFY-P1-__
+Boundary: branch / HEAD / dirty paths / graph index status
+Intent: one behavior and one gate
+Changed files:
+Evidence commands and results:
+Tests added and total count:
+Behavior decisions:
+Unmet requirements:
+Security/ownership/replay risks:
 Next packet:
+Promotion impact: Tier A / B / C / D, with rationale
 ```
 
-The reviewer must reject any packet that claims a feature from a type, trait, placeholder, or unit test alone. Require an executable path, an adversarial test, and documentation that distinguishes implemented, deferred, and unproven behavior.
+## Explicit non-goals at this boundary
+
+AgentVerify is not a Control Center replacement, orchestration monolith, LLM judge, generic tracing platform, or proof that an agent is authorized. MCP, OTel, policy, recovery, storage adapters, Postgres, and production deployment remain deferred until their security and ownership contracts are specified.

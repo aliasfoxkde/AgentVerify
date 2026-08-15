@@ -7,5 +7,8 @@ mod executor;
 mod receipt_store;
 
 pub use action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
-pub use executor::{Executor, ExecutorError, Observer};
-pub use receipt_store::{ReceiptStore, ReceiptStoreError};
+pub use executor::{
+    ClaimResult, Executor, ExecutorConfig, ExecutorError, IdempotencyRegistry, IdempotencyStore,
+    Observer,
+};
+pub use receipt_store::{InMemoryReceiptStore, ReceiptStore};

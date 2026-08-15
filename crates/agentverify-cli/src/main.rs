@@ -1,9 +1,13 @@
 //! AgentVerify CLI
 
 use agentverify_contract::load_file;
+use agentverify_core::Action;
+use agentverify_http::{RestObserver, RestObserverConfig};
+use agentverify_runtime::Executor;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "agentverify")]
@@ -26,10 +30,23 @@ enum Commands {
         #[command(subcommand)]
         command: ContractCommands,
     },
-    /// Run verification (dry-run)
+    /// Run verification
     Verify {
         /// Contract file
+        #[arg(short, long)]
         contract: String,
+
+        /// Action arguments as JSON
+        #[arg(short, long, default_value = "{}")]
+        args: String,
+
+        /// Observer URL (defaults to http://localhost:8080)
+        #[arg(short, long, default_value = "http://localhost:8080")]
+        observer_url: String,
+
+        /// Maximum retry attempts
+        #[arg(short, long, default_value = "3")]
+        max_retries: u32,
     },
     /// Start the HTTP gateway
     Serve {
@@ -61,34 +78,37 @@ struct ValidateOutput {
 }
 
 fn main() -> ExitCode {
-    if let Err(e) = run() {
-        eprintln!("Error: {}", e);
-        return ExitCode::from(1);
+    match run() {
+        Ok(exit_code) => exit_code,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            ExitCode::from(1)
+        }
     }
-    ExitCode::SUCCESS
 }
 
-fn run() -> Result<()> {
+fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Init { path } => {
             println!("Initializing AgentVerify at {:?}...", path);
+            Ok(ExitCode::SUCCESS)
         }
         Commands::Contract { command } => match command {
-            ContractCommands::Validate { file, json } => {
-                validate_contract_cmd(&file, json)?;
-            }
+            ContractCommands::Validate { file, json } => validate_contract_cmd(&file, json),
         },
-        Commands::Verify { contract } => {
-            println!("Verifying contract (dry-run): {}", contract);
-        }
+        Commands::Verify {
+            contract,
+            args,
+            observer_url,
+            max_retries,
+        } => verify_contract_cmd(&contract, &args, &observer_url, max_retries),
         Commands::Serve { port } => {
             println!("Starting server on port {}...", port);
+            Ok(ExitCode::SUCCESS)
         }
     }
-
-    Ok(())
 }
 
 fn validate_contract_cmd(file: &str, json: bool) -> Result<ExitCode> {
@@ -131,5 +151,68 @@ fn validate_contract_cmd(file: &str, json: bool) -> Result<ExitCode> {
         Ok(ExitCode::SUCCESS)
     } else {
         Ok(ExitCode::from(2))
+    }
+}
+
+fn verify_contract_cmd(
+    contract_path: &str,
+    args_json: &str,
+    observer_url: &str,
+    _max_retries: u32,
+) -> Result<ExitCode> {
+    // Load contract
+    let path = std::path::Path::new(contract_path);
+    let contract = load_file(path)
+        .with_context(|| format!("Failed to load contract from {}", contract_path))?;
+
+    // Parse action arguments
+    let args: serde_json::Value = serde_json::from_str(args_json)
+        .with_context(|| format!("Invalid JSON in args: {}", args_json))?;
+
+    // Create action with idempotency key based on contract and args
+    let idempotency_key = format!("{}-{}", contract.id, args_json);
+    let action = Action::with_idempotency(
+        &contract.action_name,
+        args,
+        agentverify_core::IdempotencyKey::new(idempotency_key),
+    );
+
+    // Setup REST observer
+    let observer_config = RestObserverConfig::new(observer_url);
+    let observer = RestObserver::new(observer_config)
+        .map_err(|e| anyhow::anyhow!("Failed to create observer: {}", e))?;
+    let observer = Arc::new(observer);
+
+    // Setup executor (using default config)
+    let executor = Executor::new();
+
+    // Execute verification using the convenience execute() method
+    // This simulates dispatch and verifies postconditions via the observer
+    let rt = tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
+
+    let result = rt.block_on(async {
+        executor
+            .execute(action.clone(), contract.clone(), Some(observer.clone()))
+            .await
+    });
+
+    match result {
+        Ok((verification_result, receipt)) => {
+            println!("Verification result: {}", verification_result);
+            println!("Receipt ID: {}", receipt.id);
+            println!("Attempts: {}", receipt.attempts);
+
+            match verification_result {
+                agentverify_core::VerificationResult::Verified => Ok(ExitCode::SUCCESS),
+                agentverify_core::VerificationResult::Duplicate => Ok(ExitCode::SUCCESS),
+                agentverify_core::VerificationResult::Failed
+                | agentverify_core::VerificationResult::Partial => Ok(ExitCode::from(2)),
+                agentverify_core::VerificationResult::Unknown => Ok(ExitCode::from(3)),
+            }
+        }
+        Err(e) => {
+            eprintln!("Verification error: {}", e);
+            Ok(ExitCode::from(1))
+        }
     }
 }

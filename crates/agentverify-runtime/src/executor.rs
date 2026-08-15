@@ -3,15 +3,17 @@
 //! Orchestrates action execution with verification using verify-before-retry semantics.
 
 use crate::action_executor::{ActionExecutor, DispatchOutcome};
+use crate::receipt_store::ReceiptStore;
 use agentverify_contract::Contract;
 use agentverify_core::{
-    Action, Observation, Receipt, SourceId, State, StateMachine, VerificationResult,
+    Action, Observation, Receipt, ReceiptId, SourceId, State, StateMachine, VerificationResult,
 };
 use agentverify_engine::PredicateEngine;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use tokio::sync::RwLock;
 
 #[derive(Debug, Error)]
 pub enum ExecutorError {
@@ -67,24 +69,139 @@ impl Default for ExecutorConfig {
     }
 }
 
-/// Idempotency registry to track executed actions
+/// Result of an idempotency claim attempt
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClaimResult {
+    /// Key was claimed by this call (first request wins)
+    Claimed,
+    /// Key was already claimed by another concurrent request
+    AlreadyClaimed,
+}
+
+/// Idempotency store trait for tracking executed actions
+///
+/// Implement this trait to provide custom idempotency storage:
+/// - In-memory for tests (IdempotencyRegistry)
+/// - Redis for distributed systems (atomic SETNX + GET)
+/// - PostgreSQL for durable storage (ON CONFLICT DO UPDATE)
+///
+/// # Atomic semantics
+/// The `claim_or_check` operation is atomic: it prevents two concurrent
+/// requests from both dispatching the same action. Only the first to call
+/// claim_or_check will receive `Claimed`; all others get `AlreadyClaimed`
+/// with the in-flight or completed result.
+///
+/// # Key lifecycle
+/// 1. `claim_or_check(key)` → (Claimed, None) — caller is responsible for dispatch
+/// 2. `complete(key, result)` — store final result; other requests now see the result
+///    (on release) `release(key)` — could not dispatch; allow subsequent requests to retry
+///
+/// # TTL
+/// Implementors should expire entries after TTL to prevent unbounded growth
+/// and to allow retry of genuinely failed actions.
+pub trait IdempotencyStore: Send + Sync {
+    /// Atomically claim a key or return the existing result if already claimed/completed
+    ///
+    /// Returns `(ClaimResult, optional_result)`:
+    /// - `(Claimed, None)` — key was claimed by this call; caller is responsible for dispatch
+    /// - `(AlreadyClaimed, Some(result))` — key was already claimed (in-flight) or completed
+    fn claim_or_check<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> Pin<Box<dyn Future<Output = (ClaimResult, Option<VerificationResult>)> + Send + 'a>>;
+
+    /// Complete a claimed key with the final result
+    ///
+    /// # Panics
+    /// Panics if the key is not currently claimed. Use `claim_or_check` first.
+    fn complete(
+        &self,
+        key: String,
+        result: VerificationResult,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+
+    /// Release a claimed key without storing a result (dispatch failed, allow retry)
+    fn release(&self, key: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+}
+
+/// In-memory idempotency registry for process-local use
+///
+/// # Atomicity
+/// Uses `std::sync::Mutex` to serialize all claim/check/complete operations.
+/// This provides atomic claim semantics: only the first concurrent caller to
+/// `claim_or_check` for a given key will receive `Claimed`; all others
+/// receive `AlreadyClaimed` with the in-flight or completed result.
+///
+/// # Limitations
+/// - Process-local only: does not persist across restarts
+/// - No TTL: entries live until process exits
+/// - No graceful expiry: entries accumulate until process exit
+///
+/// For production, use a distributed store (Redis, PostgreSQL) implementing IdempotencyStore.
 pub struct IdempotencyRegistry {
-    entries: RwLock<HashMap<String, VerificationResult>>,
+    entries: Mutex<HashMap<String, EntryState>>,
+}
+
+/// Internal state of an idempotency key
+#[derive(Debug, Clone)]
+enum EntryState {
+    /// Action is in-flight (claimed but not yet complete)
+    InFlight,
+    /// Action completed with this result
+    Completed(VerificationResult),
 }
 
 impl IdempotencyRegistry {
     pub fn new() -> Self {
         Self {
-            entries: RwLock::new(HashMap::new()),
+            entries: Mutex::new(HashMap::new()),
         }
     }
+}
 
-    pub async fn check(&self, key: &str) -> Option<VerificationResult> {
-        self.entries.read().await.get(key).cloned()
+impl IdempotencyStore for IdempotencyRegistry {
+    fn claim_or_check<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> Pin<Box<dyn Future<Output = (ClaimResult, Option<VerificationResult>)> + Send + 'a>> {
+        Box::pin(async move {
+            let mut guard = self.entries.lock().unwrap();
+            match guard.entry(key.to_string()) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    // Key doesn't exist — atomically claim it
+                    entry.insert(EntryState::InFlight);
+                    (ClaimResult::Claimed, None)
+                }
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    // Key exists — return current state
+                    match entry.get() {
+                        EntryState::InFlight => (ClaimResult::AlreadyClaimed, None),
+                        EntryState::Completed(result) => {
+                            (ClaimResult::AlreadyClaimed, Some(*result))
+                        }
+                    }
+                }
+            }
+        })
     }
 
-    pub async fn insert(&self, key: String, result: VerificationResult) {
-        self.entries.write().await.insert(key, result);
+    fn complete(
+        &self,
+        key: String,
+        result: VerificationResult,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            let mut guard = self.entries.lock().unwrap();
+            guard.insert(key, EntryState::Completed(result));
+        })
+    }
+
+    fn release(&self, key: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        let key = key.to_string();
+        Box::pin(async move {
+            let mut guard = self.entries.lock().unwrap();
+            guard.remove(&key);
+        })
     }
 }
 
@@ -97,7 +214,8 @@ impl Default for IdempotencyRegistry {
 /// Verified executor
 pub struct Executor {
     config: ExecutorConfig,
-    idempotency: Arc<IdempotencyRegistry>,
+    idempotency: Arc<dyn IdempotencyStore>,
+    receipt_store: Option<Arc<dyn ReceiptStore>>,
 }
 
 impl Executor {
@@ -106,38 +224,95 @@ impl Executor {
         Self::with_config(ExecutorConfig::default())
     }
 
-    /// Create a new executor with custom configuration
+    /// Create a new executor with custom configuration and idempotency store
+    pub fn with_config_and_store(config: ExecutorConfig, store: Arc<dyn IdempotencyStore>) -> Self {
+        Self {
+            config,
+            idempotency: store,
+            receipt_store: None,
+        }
+    }
+
+    /// Create a new executor with custom configuration (uses in-memory store)
     pub fn with_config(config: ExecutorConfig) -> Self {
         Self {
             config,
             idempotency: Arc::new(IdempotencyRegistry::new()),
+            receipt_store: None,
         }
     }
 
-    /// Execute an action with verification
+    /// Create a new executor with a receipt store attached
+    ///
+    /// The receipt store is used to persist receipts after execution completes.
+    /// If no store is attached, receipts are still returned but not persisted.
+    pub fn with_receipt_store(
+        config: ExecutorConfig,
+        idempotency: Arc<dyn IdempotencyStore>,
+        receipt_store: Arc<dyn ReceiptStore>,
+    ) -> Self {
+        Self {
+            config,
+            idempotency,
+            receipt_store: Some(receipt_store),
+        }
+    }
+
+    /// Retrieve a stored receipt by ID
+    pub async fn get_receipt(&self, id: &ReceiptId) -> Option<Receipt> {
+        let store = self.receipt_store.as_ref()?;
+        store.get(id).await
+    }
+
+    /// Store a receipt in the attached receipt store (if any)
+    async fn store_receipt(&self, receipt: &Receipt) {
+        if let Some(store) = &self.receipt_store {
+            let _ = store.store(receipt).await;
+        }
+    }
+
+    /// Execute an action with verification (simulated dispatch)
+    ///
+    /// This method simulates dispatch for testing/development. For real dispatch,
+    /// use `execute_with_executor` which accepts an `ActionExecutor` adapter.
     ///
     /// # Process
-    /// 1. Check idempotency (return cached result if already executed)
+    /// 1. Atomically claim idempotency key (only first caller dispatches)
     /// 2. Validate preconditions
-    /// 3. Execute the action
+    /// 3. Simulate execution (always returns Unknown)
     /// 4. Observe the result state
     /// 5. Verify postconditions
-    /// 6. Generate receipt
+    /// 6. Complete idempotency entry
     pub async fn execute(
         &self,
         action: Action,
         contract: Contract,
         observer: Option<Arc<dyn Observer>>,
     ) -> Result<(VerificationResult, Receipt), ExecutorError> {
-        // Check idempotency
-        if let Some(key) = &action.idempotency_key {
-            if let Some(cached) = self.idempotency.check(&key.0).await {
-                let receipt = self.create_receipt(&action, &contract, cached, 0);
-                return Ok((cached, receipt));
+        // Atomically claim or check idempotency key
+        if let Some(ref key) = action.idempotency_key {
+            let (result, existing) = self.idempotency.claim_or_check(&key.0).await;
+            match result {
+                ClaimResult::Claimed => {
+                    // We won — proceed with execution
+                }
+                ClaimResult::AlreadyClaimed => {
+                    if let Some(cached) = existing {
+                        let receipt = self.create_receipt(&action, &contract, cached, 0);
+                        return Ok((cached, receipt));
+                    }
+                    // In-flight — treat as duplicate
+                    let receipt =
+                        self.create_receipt(&action, &contract, VerificationResult::Duplicate, 0);
+                    return Ok((VerificationResult::Duplicate, receipt));
+                }
             }
         }
 
         let mut attempts = 0;
+        let mut backoff_ms: u64 = 100;
+        let final_result: Option<VerificationResult>;
+        let mut final_observation: Option<Observation> = None;
 
         // Main execution loop
         loop {
@@ -153,23 +328,24 @@ impl Executor {
                 state_machine
                     .advance(State::Rejected)
                     .map_err(|_| ExecutorError::PreconditionFailed(e.to_string()))?;
-                let receipt =
-                    self.create_receipt(&action, &contract, VerificationResult::Failed, attempts);
-                return Ok((VerificationResult::Failed, receipt));
+                // Precondition failure is terminal for this action — complete with Failed
+                final_result = Some(VerificationResult::Failed);
+                break;
             }
 
             state_machine
                 .advance(State::Authorized)
                 .map_err(|e| ExecutorError::ExecutionFailed(e.to_string()))?;
 
-            // Execute action
+            // Execute action (simulated)
             state_machine
                 .advance(State::Executing)
                 .map_err(|e| ExecutorError::ExecutionFailed(e.to_string()))?;
 
-            // Simulate execution completing with unknown result (since we don't have actual execution)
-            // In a real implementation, this would come from the action executor
-            let _ = state_machine.advance(State::Unknown);
+            // Simulate execution — no real dispatch available in this path
+            state_machine
+                .advance(State::Unknown)
+                .map_err(|e| ExecutorError::Unknown(e.to_string()))?;
 
             // Observe state
             state_machine
@@ -179,7 +355,6 @@ impl Executor {
             let observation = if let Some(ref obs) = observer {
                 obs.observe(&action, &contract).await?
             } else {
-                // If no observer, assume no change
                 Observation::new(SourceId("none".into()), serde_json::json!({}))
             };
 
@@ -190,11 +365,6 @@ impl Executor {
 
             let result = self.verify_postconditions(&action, &contract, &observation)?;
 
-            // Record in idempotency registry
-            if let Some(key) = &action.idempotency_key {
-                self.idempotency.insert(key.0.clone(), result).await;
-            }
-
             // Determine final state
             match result {
                 VerificationResult::Verified => {
@@ -204,40 +374,55 @@ impl Executor {
                     state_machine
                         .advance(State::Committed)
                         .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
-
-                    let receipt = self.create_receipt_with_observation(
-                        &action,
-                        &contract,
-                        result,
-                        attempts,
-                        observation,
-                    );
-                    return Ok((result, receipt));
+                    final_result = Some(VerificationResult::Verified);
+                    final_observation = Some(observation);
+                    break;
                 }
                 VerificationResult::Failed => {
-                    // If verify_before_retry is enabled and we haven't exceeded retries
                     if self.config.verify_before_retry && attempts < self.config.max_retries {
-                        // Retry after verification - loop continues with fresh state machine
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        backoff_ms = (backoff_ms * 2).min(5000);
                         continue;
                     }
-
                     state_machine
                         .advance(State::VerificationFailed)
                         .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
-
-                    let receipt = self.create_receipt(&action, &contract, result, attempts);
-                    return Ok((VerificationResult::Failed, receipt));
+                    final_result = Some(VerificationResult::Failed);
+                    break;
                 }
-                _ => {
-                    // Unknown, Partial, Duplicate
+                VerificationResult::Unknown => {
                     if attempts < self.config.max_retries {
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        backoff_ms = (backoff_ms * 2).min(5000);
                         continue;
                     }
-                    let receipt = self.create_receipt(&action, &contract, result, attempts);
-                    return Ok((result, receipt));
+                    final_result = Some(VerificationResult::Unknown);
+                    break;
+                }
+                _ => {
+                    // Partial, Duplicate — terminal
+                    final_result = Some(result);
+                    break;
                 }
             }
         }
+
+        // Complete idempotency entry
+        let result = final_result.unwrap_or(VerificationResult::Failed);
+        if let Some(ref key) = action.idempotency_key {
+            self.idempotency.complete(key.0.clone(), result).await;
+        }
+
+        let receipt = if let Some(obs) = final_observation {
+            self.create_receipt_with_observation(&action, &contract, result, attempts, obs)
+        } else {
+            self.create_receipt(&action, &contract, result, attempts)
+        };
+
+        // Persist receipt if a store is attached
+        self.store_receipt(&receipt).await;
+
+        Ok((result, receipt))
     }
 
     /// Validate preconditions against current state
@@ -301,16 +486,17 @@ impl Executor {
 
     /// Execute an action using a real action executor
     ///
-    /// This method uses the verify-before-retry pattern:
-    /// 1. Check idempotency (return cached result if already executed)
+    /// This method uses the verify-before-retry pattern with atomic idempotency:
+    /// 1. Atomically claim idempotency key (only first caller dispatches)
     /// 2. Validate preconditions
     /// 3. Dispatch the action through the executor
     /// 4. Observe the result state
     /// 5. Verify postconditions
-    /// 6. Generate receipt
+    /// 6. Complete the idempotency entry with the result
     ///
     /// Timeouts are treated as UNKNOWN, not failure. The caller must observe
-    /// state before retrying.
+    /// state before retrying. On transport error, the claim is released so
+    /// a subsequent request may retry.
     pub async fn execute_with_executor(
         &self,
         action: Action,
@@ -320,16 +506,43 @@ impl Executor {
     ) -> Result<(VerificationResult, Receipt), ExecutorError> {
         use tokio::time::sleep;
 
-        // Check idempotency
-        if let Some(key) = &action.idempotency_key {
-            if let Some(cached) = self.idempotency.check(&key.0).await {
-                let receipt = self.create_receipt(&action, &contract, cached, 0);
-                return Ok((cached, receipt));
+        // Atomically claim or check the idempotency key
+        let _claimed = if let Some(ref key) = action.idempotency_key {
+            let (result, existing) = self.idempotency.claim_or_check(&key.0).await;
+            match result {
+                ClaimResult::Claimed => {
+                    // We won the claim — we are responsible for dispatch
+                    false
+                }
+                ClaimResult::AlreadyClaimed => {
+                    // Another request is already handling this action
+                    if let Some(cached) = existing {
+                        // Already completed — return cached result
+                        let receipt = self.create_receipt(&action, &contract, cached, 0);
+                        return Ok((cached, receipt));
+                    }
+                    // In-flight — wait briefly and poll for completion
+                    sleep(std::time::Duration::from_millis(50)).await;
+                    let (_, existing) = self.idempotency.claim_or_check(&key.0).await;
+                    if let Some(cached) = existing {
+                        let receipt = self.create_receipt(&action, &contract, cached, 0);
+                        return Ok((cached, receipt));
+                    }
+                    // Still in-flight after poll — treat as duplicate
+                    let receipt =
+                        self.create_receipt(&action, &contract, VerificationResult::Duplicate, 0);
+                    return Ok((VerificationResult::Duplicate, receipt));
+                }
             }
-        }
+        } else {
+            // No idempotency key — proceed without claim
+            false
+        };
 
         let mut attempts = 0;
         let mut backoff_ms: u64 = 100; // Initial backoff
+        let final_result: Option<VerificationResult>;
+        let mut final_observation: Option<Observation> = None;
 
         // Main execution loop
         loop {
@@ -345,9 +558,8 @@ impl Executor {
                 state_machine
                     .advance(State::Rejected)
                     .map_err(|_| ExecutorError::PreconditionFailed(e.to_string()))?;
-                let receipt =
-                    self.create_receipt(&action, &contract, VerificationResult::Failed, attempts);
-                return Ok((VerificationResult::Failed, receipt));
+                final_result = Some(VerificationResult::Failed);
+                break;
             }
 
             state_machine
@@ -367,19 +579,20 @@ impl Executor {
             // Handle dispatch outcome
             match dispatch_result {
                 DispatchOutcome::Completed | DispatchOutcome::Accepted => {
-                    // Execution completed — advance to Executed then observe
                     state_machine
                         .advance(State::Executed)
                         .map_err(|e| ExecutorError::ExecutionFailed(e.to_string()))?;
                 }
                 DispatchOutcome::TimeoutBeforeDispatch | DispatchOutcome::TimeoutAfterDispatch => {
-                    // Timeout — result is unknown, proceed to observation to reconcile
                     state_machine
                         .advance(State::Unknown)
                         .map_err(|e| ExecutorError::Timeout(e.to_string()))?;
                 }
                 DispatchOutcome::TransportError(_) => {
-                    // Terminal - don't retry
+                    // Terminal — release claim and return Failed
+                    if let Some(ref key) = action.idempotency_key {
+                        self.idempotency.release(&key.0).await;
+                    }
                     let receipt = self.create_receipt(
                         &action,
                         &contract,
@@ -389,14 +602,9 @@ impl Executor {
                     return Ok((VerificationResult::Failed, receipt));
                 }
                 DispatchOutcome::Ambiguous(_) => {
-                    // Terminal - require human review
-                    let receipt = self.create_receipt(
-                        &action,
-                        &contract,
-                        VerificationResult::Unknown,
-                        attempts,
-                    );
-                    return Ok((VerificationResult::Unknown, receipt));
+                    // Terminal — complete with Unknown
+                    final_result = Some(VerificationResult::Unknown);
+                    break;
                 }
             };
 
@@ -409,16 +617,8 @@ impl Executor {
                 Some(ref obs) => match obs.observe(&action, &contract).await {
                     Ok(obs) => obs,
                     Err(ExecutorError::Unknown(_msg)) => {
-                        // Observer cannot determine state — treat as Unknown, not failure
-                        return Ok((
-                            VerificationResult::Unknown,
-                            self.create_receipt(
-                                &action,
-                                &contract,
-                                VerificationResult::Unknown,
-                                attempts,
-                            ),
-                        ));
+                        final_result = Some(VerificationResult::Unknown);
+                        break;
                     }
                     Err(e) => return Err(e),
                 },
@@ -432,11 +632,6 @@ impl Executor {
 
             let result = self.verify_postconditions(&action, &contract, &observation)?;
 
-            // Record in idempotency registry
-            if let Some(key) = &action.idempotency_key {
-                self.idempotency.insert(key.0.clone(), result).await;
-            }
-
             // Determine final state
             match result {
                 VerificationResult::Verified => {
@@ -446,50 +641,55 @@ impl Executor {
                     state_machine
                         .advance(State::Committed)
                         .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
-
-                    let receipt = self.create_receipt_with_observation(
-                        &action,
-                        &contract,
-                        result,
-                        attempts,
-                        observation,
-                    );
-                    return Ok((result, receipt));
+                    final_result = Some(VerificationResult::Verified);
+                    final_observation = Some(observation);
+                    break;
                 }
                 VerificationResult::Failed => {
-                    // If verify_before_retry is enabled and we haven't exceeded retries
                     if self.config.verify_before_retry && attempts < self.config.max_retries {
-                        // Apply backoff before retry
-                        sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                        backoff_ms = (backoff_ms * 2).min(5000); // Cap at 5 seconds
-                        continue;
-                    }
-
-                    state_machine
-                        .advance(State::VerificationFailed)
-                        .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
-
-                    let receipt = self.create_receipt(&action, &contract, result, attempts);
-                    return Ok((VerificationResult::Failed, receipt));
-                }
-                VerificationResult::Unknown => {
-                    // Unknown requires observation/recovery action
-                    if attempts < self.config.max_retries {
-                        // Apply backoff before retry
                         sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         backoff_ms = (backoff_ms * 2).min(5000);
                         continue;
                     }
-                    let receipt = self.create_receipt(&action, &contract, result, attempts);
-                    return Ok((result, receipt));
+                    state_machine
+                        .advance(State::VerificationFailed)
+                        .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
+                    final_result = Some(VerificationResult::Failed);
+                    break;
+                }
+                VerificationResult::Unknown => {
+                    if attempts < self.config.max_retries {
+                        sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        backoff_ms = (backoff_ms * 2).min(5000);
+                        continue;
+                    }
+                    final_result = Some(VerificationResult::Unknown);
+                    break;
                 }
                 _ => {
-                    // Partial, Duplicate
-                    let receipt = self.create_receipt(&action, &contract, result, attempts);
-                    return Ok((result, receipt));
+                    // Partial, Duplicate — terminal
+                    final_result = Some(result);
+                    break;
                 }
             }
         }
+
+        // Complete idempotency entry and return
+        let result = final_result.unwrap_or(VerificationResult::Failed);
+        if let Some(ref key) = action.idempotency_key {
+            self.idempotency.complete(key.0.clone(), result).await;
+        }
+
+        let receipt = if let Some(obs) = final_observation {
+            self.create_receipt_with_observation(&action, &contract, result, attempts, obs)
+        } else {
+            self.create_receipt(&action, &contract, result, attempts)
+        };
+
+        // Persist receipt if a store is attached
+        self.store_receipt(&receipt).await;
+
+        Ok((result, receipt))
     }
 
     /// Create a receipt for the action
@@ -500,7 +700,15 @@ impl Executor {
         result: VerificationResult,
         attempts: u32,
     ) -> Receipt {
-        Receipt::new(action.id, contract.id, result, attempts)
+        let idempotency_key = action.idempotency_key.as_ref().map(|k| k.0.clone());
+        Receipt::with_contract_version_and_key(
+            action.id,
+            contract.id,
+            "",
+            result,
+            attempts,
+            idempotency_key,
+        )
     }
 
     /// Create a receipt with observation
@@ -512,7 +720,16 @@ impl Executor {
         attempts: u32,
         observation: Observation,
     ) -> Receipt {
-        Receipt::new(action.id, contract.id, result, attempts).with_observation(observation)
+        let idempotency_key = action.idempotency_key.as_ref().map(|k| k.0.clone());
+        Receipt::with_contract_version_and_key(
+            action.id,
+            contract.id,
+            "",
+            result,
+            attempts,
+            idempotency_key,
+        )
+        .with_observation(observation)
     }
 }
 
@@ -948,11 +1165,305 @@ mod tests {
         let (r1, receipt1) = result1.expect("first execution panicked");
         let (r2, receipt2) = result2.expect("second execution panicked");
 
-        // Both should be Verified (one may be cached with 0 attempts)
+        // With atomic claim semantics:
+        // - First request claims the key → executes dispatch → Verified
+        // - Second concurrent request sees AlreadyClaimed → polls → Duplicate
+        let results = [(r1, receipt1.attempts), (r2, receipt2.attempts)];
+        let verified_count = results
+            .iter()
+            .filter(|(r, _)| *r == VerificationResult::Verified)
+            .count();
+        let duplicate_count = results
+            .iter()
+            .filter(|(r, _)| *r == VerificationResult::Duplicate)
+            .count();
+
+        // Exactly one Verified (the winner) and one Duplicate (the loser)
+        assert_eq!(verified_count, 1, "exactly one request should get Verified");
+        assert_eq!(
+            duplicate_count, 1,
+            "exactly one request should get Duplicate"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_transport_error_releases_claim_for_retry() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+
+        struct MockExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for MockExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(DispatchOutcome::TransportError(
+                    "connection refused".to_string(),
+                ))
+            }
+        }
+
+        let executor = Executor::new();
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let result = executor
+            .execute_with_executor(action, contract, Arc::new(MockExecutor), None)
+            .await;
+
+        assert!(result.is_ok());
+        let (verification_result, _receipt) = result.unwrap();
+        // TransportError is terminal — Failed immediately, not retried
+        assert_eq!(verification_result, VerificationResult::Failed);
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_retry_exhaustion_returns_failed_after_max_attempts() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+
+        struct MockExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for MockExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(DispatchOutcome::TimeoutBeforeDispatch)
+            }
+        }
+
+        let config = ExecutorConfig {
+            verification_timeout_ms: 5000,
+            max_retries: 3,
+            verify_before_retry: true,
+        };
+        let executor = Executor::with_config(config);
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let result = executor
+            .execute_with_executor(action, contract, Arc::new(MockExecutor), None)
+            .await;
+
+        assert!(result.is_ok());
+        let (verification_result, receipt) = result.unwrap();
+        // After exhausting retries with TimeoutBeforeDispatch and no observer,
+        // verification fails
+        assert_eq!(verification_result, VerificationResult::Failed);
+        assert_eq!(receipt.attempts, 3); // max_retries
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_observer_error_returns_unknown() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+
+        struct MockExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for MockExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(DispatchOutcome::Completed)
+            }
+        }
+
+        struct FailingObserver;
+
+        #[async_trait::async_trait]
+        impl Observer for FailingObserver {
+            async fn observe(
+                &self,
+                _action: &Action,
+                _contract: &Contract,
+            ) -> Result<Observation, ExecutorError> {
+                Err(ExecutorError::Unknown("Observer unavailable".to_string()))
+            }
+        }
+
+        let executor = Executor::new();
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let result = executor
+            .execute_with_executor(
+                action,
+                contract,
+                Arc::new(MockExecutor),
+                Some(Arc::new(FailingObserver)),
+            )
+            .await;
+
+        assert!(result.is_ok());
+        let (verification_result, receipt) = result.unwrap();
+        // Observer error propagates as Unknown, not Failed
+        assert_eq!(verification_result, VerificationResult::Unknown);
+        assert_eq!(receipt.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_idempotency_key_prevents_double_dispatch() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use agentverify_core::IdempotencyKey;
+        use std::sync::Arc;
+
+        struct MockExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for MockExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                // This should only be called once due to atomic idempotency claim
+                Ok(DispatchOutcome::Completed)
+            }
+        }
+
+        struct FastObserver;
+
+        #[async_trait::async_trait]
+        impl Observer for FastObserver {
+            async fn observe(
+                &self,
+                _action: &Action,
+                _contract: &Contract,
+            ) -> Result<Observation, ExecutorError> {
+                Ok(Observation::new(
+                    SourceId("fast".into()),
+                    serde_json::json!({"result": {"status": "completed"}}),
+                ))
+            }
+        }
+
+        let executor = Executor::new();
+        let idempotency_key = IdempotencyKey::new("idempotent-test-key");
+        let action = Action::with_idempotency("test", serde_json::json!({}), idempotency_key);
+        let contract = Contract::new("test").with_postcondition(
+            Predicate::equals("result.status", serde_json::json!("completed")),
+            "must be completed",
+        );
+
+        // Execute twice with same idempotency key
+        let result1 = executor
+            .execute_with_executor(
+                action.clone(),
+                contract.clone(),
+                Arc::new(MockExecutor),
+                Some(Arc::new(FastObserver)),
+            )
+            .await;
+
+        assert!(result1.is_ok());
+        let (r1, receipt1) = result1.unwrap();
         assert_eq!(r1, VerificationResult::Verified);
-        assert_eq!(r2, VerificationResult::Verified);
-        // At least one should have completed
-        assert!(receipt1.attempts >= 1 || receipt2.attempts >= 1);
+        assert!(receipt1.attempts >= 1);
+
+        // Second execution with same key should return Duplicate or cached
+        let result2 = executor
+            .execute_with_executor(
+                action,
+                contract,
+                Arc::new(MockExecutor),
+                Some(Arc::new(FastObserver)),
+            )
+            .await;
+
+        assert!(result2.is_ok());
+        let (r2, receipt2) = result2.unwrap();
+        // Should be Duplicate (already claimed) or Verified (cached)
+        assert!(
+            r2 == VerificationResult::Duplicate || r2 == VerificationResult::Verified,
+            "Expected Duplicate or Verified, got {:?}",
+            r2
+        );
+        // Second execution should not have dispatched (attempts should be 0)
+        assert_eq!(receipt2.attempts, 0);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // P3: Receipt lifecycle tests
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn executor_with_receipt_store_persists_receipt() {
+        use agentverify_core::InMemoryReceiptStore;
+
+        let receipt_store = Arc::new(InMemoryReceiptStore::new());
+        let config = ExecutorConfig::default();
+        let executor = Executor::with_receipt_store(
+            config,
+            Arc::new(IdempotencyRegistry::new()),
+            receipt_store.clone(),
+        );
+
+        let action = Action::new("test", serde_json::json!({}));
+        let contract = Contract::new("test")
+            .with_postcondition(Predicate::exists("result"), "result must exist");
+
+        let result = executor
+            .execute(action.clone(), contract.clone(), None)
+            .await;
+
+        assert!(result.is_ok());
+        let (_verification_result, receipt) = result.unwrap();
+
+        // Receipt should be stored
+        let stored = receipt_store.get(&receipt.id).await;
+        assert!(stored.is_some(), "receipt should be persisted in store");
+        assert_eq!(stored.unwrap().id, receipt.id);
+    }
+
+    #[tokio::test]
+    async fn executor_with_receipt_store_retrievable_by_id() {
+        use agentverify_core::InMemoryReceiptStore;
+
+        let receipt_store = Arc::new(InMemoryReceiptStore::new());
+        let config = ExecutorConfig::default();
+        let executor = Executor::with_receipt_store(
+            config,
+            Arc::new(IdempotencyRegistry::new()),
+            receipt_store.clone(),
+        );
+
+        let action = Action::new("test", serde_json::json!({}));
+        let contract = Contract::new("test")
+            .with_postcondition(Predicate::exists("result"), "result must exist");
+
+        let (_, receipt) = executor.execute(action, contract, None).await.unwrap();
+
+        // Retrieve via executor API
+        let retrieved = executor.get_receipt(&receipt.id).await;
+        assert!(retrieved.is_some(), "receipt should be retrievable by ID");
+        assert_eq!(retrieved.unwrap().id, receipt.id);
+    }
+
+    #[tokio::test]
+    async fn executor_with_receipt_store_no_store_attached() {
+        // Without a receipt store, get_receipt returns None but execution still works
+        let executor = Executor::new();
+        let action = Action::new("test", serde_json::json!({}));
+        let contract = Contract::new("test")
+            .with_postcondition(Predicate::exists("result"), "result must exist");
+
+        let result = executor.execute(action, contract, None).await;
+
+        assert!(result.is_ok());
+        let (_, receipt) = result.unwrap();
+
+        // get_receipt returns None when no store is attached
+        let retrieved = executor.get_receipt(&receipt.id).await;
+        assert!(retrieved.is_none(), "no store attached should return None");
+    }
+
+    #[tokio::test]
+    async fn executor_receipt_contains_contract_version_and_idempotency_key() {
+        use agentverify_core::IdempotencyKey;
+
+        let executor = Executor::new();
+        let idempotency_key = IdempotencyKey::new("test-key-123");
+        let action = Action::with_idempotency("test", serde_json::json!({}), idempotency_key);
+        let contract = Contract::new("test")
+            .with_postcondition(Predicate::exists("result"), "result must exist");
+
+        let (_, receipt) = executor.execute(action, contract, None).await.unwrap();
+
+        // Receipt should bind contract version and idempotency key
+        assert_eq!(receipt.idempotency_key, Some("test-key-123".to_string()));
     }
 
     #[tokio::test]

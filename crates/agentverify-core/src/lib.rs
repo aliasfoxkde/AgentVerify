@@ -17,13 +17,16 @@ mod verification_result;
 
 pub use action::{Action, ActionId, IdempotencyKey};
 pub use contract::{
-    Contract, ContractId, Postcondition, Precondition, SchemaVersion, CONTRACT_SCHEMA_VERSION,
+    BackoffConfig, BackoffType, ConsistencyMode, Contract, ContractId, ContractValidationError,
+    Postcondition, Precondition, RecoveryAction, RecoveryConfig, RecoveryStrategy, SchemaVersion,
+    CONTRACT_SCHEMA_VERSION,
 };
 pub use id::ReceiptId;
 pub use observation::{Evidence, Observation, SourceId};
 pub use predicate::{CountOperator, Predicate};
-pub use receipt::PostconditionResult;
-pub use receipt::Receipt;
+pub use receipt::{
+    InMemoryReceiptStore, PostconditionResult, Receipt, ReceiptStore, RECEIPT_SCHEMA_VERSION,
+};
 pub use state_machine::{State, StateMachine};
 pub use verification_result::VerificationResult;
 
