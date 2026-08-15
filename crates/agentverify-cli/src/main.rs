@@ -47,6 +47,10 @@ enum Commands {
         /// Maximum retry attempts
         #[arg(short, long, default_value = "3")]
         max_retries: u32,
+
+        /// Output in JSON format
+        #[arg(short, long)]
+        json: bool,
     },
     /// Start the HTTP gateway
     Serve {
@@ -103,7 +107,8 @@ fn run() -> Result<ExitCode> {
             args,
             observer_url,
             max_retries,
-        } => verify_contract_cmd(&contract, &args, &observer_url, max_retries),
+            json,
+        } => verify_contract_cmd(&contract, &args, &observer_url, max_retries, json),
         Commands::Serve { port } => {
             println!("Starting server on port {}...", port);
             Ok(ExitCode::SUCCESS)
@@ -154,11 +159,22 @@ fn validate_contract_cmd(file: &str, json: bool) -> Result<ExitCode> {
     }
 }
 
+/// Machine-readable output for verify command
+#[derive(serde::Serialize)]
+struct VerifyOutput {
+    verification_result: String,
+    receipt_id: String,
+    attempts: u32,
+    contract_id: String,
+    action_id: String,
+}
+
 fn verify_contract_cmd(
     contract_path: &str,
     args_json: &str,
     observer_url: &str,
     _max_retries: u32,
+    json_output: bool,
 ) -> Result<ExitCode> {
     // Load contract
     let path = std::path::Path::new(contract_path);
@@ -199,9 +215,20 @@ fn verify_contract_cmd(
 
     match result {
         Ok((verification_result, receipt)) => {
-            println!("Verification result: {}", verification_result);
-            println!("Receipt ID: {}", receipt.id);
-            println!("Attempts: {}", receipt.attempts);
+            if json_output {
+                let output = VerifyOutput {
+                    verification_result: verification_result.to_string(),
+                    receipt_id: receipt.id.to_string(),
+                    attempts: receipt.attempts,
+                    contract_id: contract.id.to_string(),
+                    action_id: action.id.to_string(),
+                };
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            } else {
+                println!("Verification result: {}", verification_result);
+                println!("Receipt ID: {}", receipt.id);
+                println!("Attempts: {}", receipt.attempts);
+            }
 
             match verification_result {
                 agentverify_core::VerificationResult::Verified => Ok(ExitCode::SUCCESS),
@@ -212,7 +239,14 @@ fn verify_contract_cmd(
             }
         }
         Err(e) => {
-            eprintln!("Verification error: {}", e);
+            if json_output {
+                let output = serde_json::json!({
+                    "error": e.to_string(),
+                });
+                eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+            } else {
+                eprintln!("Verification error: {}", e);
+            }
             Ok(ExitCode::from(1))
         }
     }

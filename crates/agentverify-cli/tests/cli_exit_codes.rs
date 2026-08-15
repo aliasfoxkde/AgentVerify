@@ -97,3 +97,15 @@ fn contract_validate_invalid_args() {
         "Invalid flags should return exit code 2"
     );
 }
+
+/// Test verify command --help shows JSON output flag.
+#[test]
+fn verify_help_shows_json_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_agentverify"))
+        .args(["verify", "--help"])
+        .output()
+        .expect("Failed to execute CLI");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--json"), "Help should show --json flag");
+}
