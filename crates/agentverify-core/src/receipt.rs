@@ -334,6 +334,176 @@ impl Default for InMemoryReceiptStore {
     }
 }
 
+/// File-based receipt store for local persistence
+///
+/// # Storage Format
+/// - Each receipt stored as a single JSON file named `{receipt_id}.json`
+/// - Index file `index.json` maps action_id → list of receipt_ids
+/// - Directory structure: `{base_path}/{receipt_id}.json`
+///
+/// # Key semantics
+/// - Key scope: receipts stored by ReceiptId
+/// - Collision: overwrite with newer receipt (same ID)
+/// - Atomic writes: use temp file + rename for crash safety
+///
+/// # Limitations
+/// - Local filesystem only, not suitable for multi-process access without file locking
+/// - No TTL: entries persist until manually cleaned up
+///
+/// For production distributed use, implement ReceiptStore with a proper
+/// distributed store (Postgres, Redis, etc.).
+pub struct FileReceiptStore {
+    base_path: std::path::PathBuf,
+}
+
+impl FileReceiptStore {
+    /// Create a new file-based receipt store
+    ///
+    /// # Arguments
+    /// * `base_path` - Directory to store receipt files
+    ///
+    /// # Errors
+    /// Returns error if directory cannot be created
+    pub fn new(base_path: impl Into<std::path::PathBuf>) -> std::io::Result<Self> {
+        let base_path = base_path.into();
+        std::fs::create_dir_all(&base_path)?;
+        Ok(Self { base_path })
+    }
+
+    fn index_path(&self) -> std::path::PathBuf {
+        self.base_path.join("index.json")
+    }
+
+    /// Read index using blocking I/O in async context
+    async fn read_index_async(
+        &self,
+    ) -> std::io::Result<std::collections::HashMap<String, Vec<String>>> {
+        let index_path = self.index_path();
+        if !tokio::fs::try_exists(&index_path).await? {
+            return Ok(std::collections::HashMap::new());
+        }
+        let content = tokio::fs::read_to_string(&index_path).await?;
+        serde_json::from_str(&content)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+
+    /// Write index using blocking I/O in async context
+    async fn write_index_async(
+        &self,
+        index: &std::collections::HashMap<String, Vec<String>>,
+    ) -> std::io::Result<()> {
+        let index_path = self.index_path();
+        let content = serde_json::to_string_pretty(index)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let temp_path = self.base_path.join("index.tmp");
+        tokio::fs::write(&temp_path, &content).await?;
+        tokio::fs::rename(&temp_path, &index_path).await?;
+        Ok(())
+    }
+}
+
+impl ReceiptStore for FileReceiptStore {
+    fn store<'a>(&'a self, receipt: &'a Receipt) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        let base_path = self.base_path.clone();
+        Box::pin(async move {
+            let receipt_id = receipt.id.to_string();
+            let action_id = receipt.action_id.to_string();
+
+            // Serialize receipt
+            let content =
+                serde_json::to_string_pretty(receipt).expect("serialization should not fail");
+
+            // Write to temp file then rename for atomicity
+            let receipt_path = base_path.join(format!("{}.json", receipt_id));
+            let temp_path = base_path.join(format!("{}.tmp", receipt_id));
+            tokio::fs::write(&temp_path, &content)
+                .await
+                .expect("write should not fail");
+            tokio::fs::rename(&temp_path, &receipt_path)
+                .await
+                .expect("rename should not fail");
+
+            // Update index
+            let mut index = Self::new(base_path.clone())
+                .expect("store should initialize")
+                .read_index_async()
+                .await
+                .unwrap_or_default();
+            index.entry(action_id).or_default().push(receipt_id);
+            if let Err(e) = Self::new(base_path)
+                .expect("store should initialize")
+                .write_index_async(&index)
+                .await
+            {
+                eprintln!("warning: failed to update index: {}", e);
+            }
+        })
+    }
+
+    fn get<'a>(
+        &'a self,
+        id: &'a ReceiptId,
+    ) -> Pin<Box<dyn Future<Output = Option<Receipt>> + Send + 'a>> {
+        let base_path = self.base_path.clone();
+        Box::pin(async move {
+            let path = base_path.join(format!("{}.json", id));
+            if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+                return None;
+            }
+            let content = tokio::fs::read_to_string(&path).await.ok()?;
+            serde_json::from_str(&content).ok()
+        })
+    }
+
+    fn list_by_action<'a>(
+        &'a self,
+        action_id: &'a ActionId,
+    ) -> Pin<Box<dyn Future<Output = Vec<Receipt>> + Send + 'a>> {
+        let base_path = self.base_path.clone();
+        Box::pin(async move {
+            let index = match Self::new(base_path.clone())
+                .expect("store should initialize")
+                .read_index_async()
+                .await
+            {
+                Ok(i) => i,
+                Err(_) => return Vec::new(),
+            };
+            let receipt_ids = match index.get(action_id.to_string().as_str()) {
+                Some(ids) => ids.clone(),
+                None => return Vec::new(),
+            };
+            let mut receipts = Vec::new();
+            for receipt_id in receipt_ids {
+                let path = base_path.join(format!("{}.json", receipt_id));
+                if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                    if let Ok(receipt) = serde_json::from_str::<Receipt>(&content) {
+                        receipts.push(receipt);
+                    }
+                }
+            }
+            receipts
+        })
+    }
+
+    fn exists<'a>(&'a self, id: &'a ReceiptId) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        let base_path = self.base_path.clone();
+        Box::pin(async move {
+            tokio::fs::try_exists(base_path.join(format!("{}.json", id)))
+                .await
+                .unwrap_or(false)
+        })
+    }
+}
+
+impl std::fmt::Debug for FileReceiptStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileReceiptStore")
+            .field("base_path", &self.base_path)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,5 +633,64 @@ mod tests {
         assert_eq!(receipt.version, deserialized.version);
         assert_eq!(receipt.contract_version, deserialized.contract_version);
         assert_eq!(receipt.idempotency_key, deserialized.idempotency_key);
+    }
+
+    #[test]
+    fn file_receipt_store_persists_and_retrieves_receipt() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = FileReceiptStore::new(temp_dir.path()).unwrap();
+
+        let receipt = Receipt::new(
+            ActionId::new(),
+            ContractId::new(),
+            VerificationResult::Verified,
+            1,
+        );
+
+        // Store the receipt
+        let store_ref = &store;
+        let receipt_ref = &receipt;
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(store_ref.store(receipt_ref));
+
+        // Retrieve it
+        let retrieved = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(store.get(&receipt.id));
+
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.id, receipt.id);
+        assert_eq!(retrieved.digest, receipt.digest);
+    }
+
+    #[test]
+    fn file_receipt_store_exists_check() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = FileReceiptStore::new(temp_dir.path()).unwrap();
+
+        let receipt = Receipt::new(
+            ActionId::new(),
+            ContractId::new(),
+            VerificationResult::Verified,
+            1,
+        );
+
+        let store_ref = &store;
+        let receipt_ref = &receipt;
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(store_ref.store(receipt_ref));
+
+        let exists = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(store.exists(&receipt.id));
+        assert!(exists);
+
+        let non_existent = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(store.exists(&ReceiptId::new()));
+        assert!(!non_existent);
     }
 }

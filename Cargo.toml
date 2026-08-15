@@ -79,6 +79,7 @@ proptest = "1.0"
 testcontainers = "1.0"
 mockall = "0.12"
 fuzz-utils = "0.1"
+tempfile = "3.10"
 
 [profile.release]
 opt-level = 3
