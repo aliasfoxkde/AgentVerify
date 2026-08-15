@@ -2,9 +2,9 @@
 
 **Repository:** `/nas/Temp/repos/AgentVerify`
 **Role:** outcome verification and signed evidence candidate
-**Audit boundary:** `codex/add-platform-handoff-2026-08-14` / `3a03e6d` / dirty `2` (generated code-memory artifacts)
-**Updated:** 2026-08-14
-**Evidence boundary (central audit):** branch `codex/add-platform-handoff-2026-08-14`, HEAD `3a03e6d` (feat(runtime): harden execute_with_executor with failure injection tests), 2 dirty status entries (pre-existing code-memory artifacts); refresh this boundary before any implementation claim.
+**Audit boundary:** `codex/add-platform-handoff-2026-08-14` / `5e9ed9e` / dirty `20` (source, manifests, docs, and generated code-memory artifacts; preserve all existing work)
+**Updated:** 2026-08-14 (P1 doc reconciliation + P2 atomic idempotency complete)
+**Evidence boundary (central audit):** branch `codex/add-platform-handoff-2026-08-14`, committed HEAD `5e9ed9e`, with worktree modifications including P1 doc updates (TASKS.md, NEXT_STEPS.md) and P2 atomic idempotency changes (executor.rs). Refresh this boundary before any implementation claim.
 **Central planning:** `AUTHORITY_INDEX_2026-08-14.md`, `MASTER_EXECUTION_PLAN_2026-08-14.md`, and `CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md`
 **Provenance markers:** `HANDOFF_AUDIT_2026-08-13.md` and
 `CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md` remain recorded for the central
@@ -27,11 +27,16 @@ integration contract through `AGENTVERIFY-P1-01`.
 
 The repository contains Rust crates for core domain types, contract parsing,
 predicate evaluation, runtime orchestration, HTTP observation, receipt types,
-and a CLI. The current audit confirms 63 local workspace tests plus format,
-clippy, and documentation success, but explicitly identifies placeholder or
-deferred crates and does not prove a deployed service, authenticated observer,
-durable storage, MCP boundary, or Control Center correlation. `cargo audit`
-also reports the unmaintained transitive `rustls-pemfile` 1.0.4 advisory.
+and a CLI. The current audit confirms 146 local workspace tests (P1+P2) plus format,
+clippy, and documentation success. Tier A coverage includes predicate semantic fixture
+tests for missing paths, type mismatches, null handling, numeric coercion, regex errors,
+empty collections, compound predicates, and argument substitution. Tier B includes runtime
+failure-injection tests for atomic idempotency (claim_or_check semantics), dispatch
+outcomes, bounded retry/backoff, timeout/ambiguous/observer/stale-read/cancellation.
+The audit still explicitly identifies placeholder or deferred crates and does not prove
+a deployed service, authenticated observer, durable storage (ReceiptStore not wired), MCP
+boundary, or Control Center correlation. `cargo audit` reports the unmaintained transitive
+`rustls-pemfile 1.0.4` advisory.
 
 Treat these as separate evidence tiers:
 
@@ -46,31 +51,25 @@ Do not promote from Tier A–C to Tier D by inference. In particular,
 `UNKNOWN` must remain distinct from `FAILED`; a timeout after dispatch is not
 proof that the action did not happen; and a signed receipt is not proof of
 ownership or persistence unless its source and verifier identities are bound.
+The CLI exit-code defect (discarded ExitCode) was fixed; `contract validate`
+now propagates exit codes correctly (0=success, 1=error, 2=invalid). The
+`verify` command exists, but its current implementation calls the convenience
+executor, whose dispatch is explicitly simulated; it is not proof of real
+action execution.
 
-## Immediate packet — AGENTVERIFY-P1-01
+## Implementation status
 
-Use the central packet in
-`/nas/Temp/repos/Platform-Architecture/docs/planning/CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md`
-and the evidence template at
-`/nas/Temp/repos/Platform-Architecture/docs/planning/AGENTVERIFY_P1_EVIDENCE_TEMPLATE.md`.
+**P1 (doc reconciliation): ✅ COMPLETE** — TASKS.md and NEXT_STEPS.md corrected; stale task/phase status tables updated; 142 tests verified.
 
-Execute one subpass per process in this order:
+**P2 (atomic idempotency): ✅ COMPLETE** — `IdempotencyStore::claim_or_check` replaces `check`/`insert`; `ClaimResult::Claimed`/`AlreadyClaimed` with `Mutex`; in-flight tracking; `TransportError` releases claim; 4 new tests added (146 total).
 
-1. **P1-01A — baseline:** preserve the two graph-artifact modifications,
-   record the full SHA, and prove which generated files are tracked. Do not
-   delete or reset `target/` automatically.
-2. **P1-01B — behavior:** run bounded format/test/clippy/doc probes and map
-   advertised versus executable CLI/runtime features. Label placeholder tests.
-3. **P1-01C — contract:** define the versioned receipt/result envelope,
-   authentication, ownership, persistence, replay/idempotency, and the exact
-   Control Center project/task/job correlation fields. Do not add a listener or
-   edit Control Center in this packet.
-4. **P1-01D — promotion decision:** record the strongest proven tier, exact
-   unmet gate, and whether AgentVerify remains deferred. A compile or unit
-   result alone cannot close this packet.
+**P3 (receipt lifecycle): ✅ COMPLETE** — `ReceiptStore` wired into executor; `get_receipt` API; receipts bind idempotency key; 4 new tests.
 
-Every worker must use disposable build/artifact paths, bounded commands, and
-return the standard packet report. Preserve unrelated checkout changes.
+**P4 (authenticated observer): ✅ COMPLETE** — wiremock integration tests for success, unauthorized (401/403), malformed response, oversized response (truncation), timeout, stale read, and redaction. URL validation fixed to allow scheme separator `://` but reject path traversal `..` and empty segments `//` in path. 158 tests total.
+
+**P5 (Control Center fixture): BLOCKED** — Requires real Control Center; external authority not available.
+
+**P6 (operations): ✅ COMPLETE** — CLI exit-code tests added (6 tests), CI workflow present, 164 tests passing, fmt/clippy clean.
 
 ## Integration contract to preserve
 
@@ -103,7 +102,13 @@ result; neither may silently replace the other’s authority.
 
 ## Promotion gate
 
-AgentVerify remains **deferred / unpromoted** until a bounded report proves a
-versioned receipt contract, authenticated ownership, durable or explicitly
-scoped persistence, replay/idempotency behavior, and a Control Center adapter
-fixture that rejects orphan, stale, tampered, or cross-project results.
+AgentVerify remains **deferred / unpromoted** until a bounded report proves:
+- versioned receipt contract (P3)
+- authenticated ownership and durable persistence wired into execution (P3)
+- replay/idempotency behavior with atomic claim semantics (P2: done for process-local; cross-process still needed) (P3)
+- real dispatch through the documented CLI path (P2 partially done — real adapter not yet wired)
+- Control Center adapter fixture that rejects orphan, stale, tampered, unauthorized, or cross-project results (P5)
+
+The detailed Claude/MiniMax packet plan and current evidence matrix live in
+`docs/HANDOFF_MINIMAX_M27.md`; that document is the implementation authority
+for this repository handoff.

@@ -202,4 +202,219 @@ postconditions:
         let parsed = parse_json(&json).unwrap();
         assert_eq!(parsed.action_name, contract.action_name);
     }
+
+    // === Schema version tests ===
+
+    #[test]
+    fn parse_contract_default_schema_version() {
+        let json = r#"{
+            "action_name": "test_action",
+            "postconditions": [
+                {"predicate": {"type": "exists", "path": "x"}, "description": "x exists"}
+            ]
+        }"#;
+        let contract = parse_json(json).unwrap();
+        assert_eq!(contract.schema_version, "1.0");
+    }
+
+    #[test]
+    fn parse_contract_explicit_schema_version() {
+        let json = r#"{
+            "schema_version": "1.0",
+            "action_name": "test_action",
+            "postconditions": [
+                {"predicate": {"type": "exists", "path": "x"}, "description": "x exists"}
+            ]
+        }"#;
+        let contract = parse_json(json).unwrap();
+        assert_eq!(contract.schema_version, "1.0");
+    }
+
+    #[test]
+    fn parse_yaml_contract_with_schema() {
+        let yaml = r#"
+action_name: test_action
+postconditions:
+  - predicate:
+      type: exists
+      path: x
+    description: x exists
+"#;
+        let contract = parse_yaml(yaml).unwrap();
+        assert_eq!(contract.action_name, "test_action");
+        assert_eq!(contract.postconditions.len(), 1);
+    }
+
+    // === Contract validation edge cases ===
+
+    #[test]
+    fn validate_contract_duplicate_postcondition_paths() {
+        let json = r#"{
+            "action_name": "test",
+            "postconditions": [
+                {"predicate": {"type": "exists", "path": "x"}, "description": "first"},
+                {"predicate": {"type": "exists", "path": "x"}, "description": "duplicate"}
+            ]
+        }"#;
+        let contract = parse_json(json).unwrap();
+        let result = contract.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_contract_recovery_max_attempts_zero() {
+        // Parse a contract with max_attempts: 0 via JSON
+        let json = r#"{
+            "action_name": "test",
+            "postconditions": [
+                {"predicate": {"type": "exists", "path": "x"}, "description": "x exists"}
+            ],
+            "recovery": {
+                "strategy": "verify_then_retry",
+                "max_attempts": 0
+            }
+        }"#;
+        let contract = parse_json(json).unwrap();
+        let result = contract.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_contract_recovery_backoff_max_less_than_initial() {
+        // Parse via JSON with backoff.max < backoff.initial
+        let json = r#"{
+            "action_name": "test",
+            "postconditions": [
+                {"predicate": {"type": "exists", "path": "x"}, "description": "x exists"}
+            ],
+            "recovery": {
+                "strategy": "verify_then_retry",
+                "max_attempts": 3,
+                "backoff": {
+                    "backoff_type": "exponential",
+                    "initial": [10, 0],
+                    "max": [5, 0],
+                    "multiplier": 2.0
+                }
+            }
+        }"#;
+        let contract = parse_json(json).unwrap();
+        let result = contract.validate();
+        // This should fail validation because max < initial
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_contract_recovery_backoff_negative_multiplier() {
+        let json = r#"{
+            "action_name": "test",
+            "postconditions": [
+                {"predicate": {"type": "exists", "path": "x"}, "description": "x exists"}
+            ],
+            "recovery": {
+                "strategy": "verify_then_retry",
+                "max_attempts": 3,
+                "backoff": {
+                    "backoff_type": "exponential",
+                    "initial": [1, 0],
+                    "max": [60, 0],
+                    "multiplier": -1.0
+                }
+            }
+        }"#;
+        let contract = parse_json(json).unwrap();
+        let result = contract.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_contract_valid_with_recovery() {
+        let json = r#"{
+            "action_name": "test",
+            "postconditions": [
+                {"predicate": {"type": "exists", "path": "x"}, "description": "x exists"}
+            ],
+            "recovery": {
+                "strategy": "verify_then_retry",
+                "max_attempts": 3,
+                "backoff": {
+                    "backoff_type": "exponential",
+                    "initial": [1, 0],
+                    "max": [60, 0],
+                    "multiplier": 2.0
+                }
+            }
+        }"#;
+        let contract = parse_json(json).unwrap();
+        let result = contract.validate();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_contract_incompatible_schema_version() {
+        let json = r#"{
+            "schema_version": "2.0",
+            "action_name": "test",
+            "postconditions": [
+                {"predicate": {"type": "exists", "path": "x"}, "description": "x exists"}
+            ]
+        }"#;
+        let contract = parse_json(json).unwrap();
+        let result = contract.validate();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_contract_invalid_schema_version() {
+        let json = r#"{
+            "schema_version": "invalid",
+            "action_name": "test",
+            "postconditions": [
+                {"predicate": {"type": "exists", "path": "x"}, "description": "x exists"}
+            ]
+        }"#;
+        let contract = parse_json(json).unwrap();
+        let result = contract.validate();
+        assert!(result.is_err());
+    }
+
+    // === Compound predicate validation ===
+
+    #[test]
+    fn validate_empty_any_predicate() {
+        let predicate = Predicate::any(vec![]);
+        let result = validate_predicate(&predicate, "test");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_nested_compound_predicates() {
+        let predicate = Predicate::all(vec![
+            Predicate::any(vec![Predicate::exists("a"), Predicate::exists("b")]),
+            Predicate::not_exists("c"),
+        ]);
+        let result = validate_predicate(&predicate, "test");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_implies_predicate() {
+        let predicate = Predicate::Implies {
+            antecedent: Box::new(Predicate::exists("a")),
+            consequent: Box::new(Predicate::exists("b")),
+        };
+        let result = validate_predicate(&predicate, "test");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_nested_empty_all_in_any() {
+        // Any with an empty All should fail
+        let predicate = Predicate::any(vec![
+            Predicate::all(vec![]), // Invalid
+            Predicate::exists("a"),
+        ]);
+        let result = validate_predicate(&predicate, "test");
+        assert!(result.is_err());
+    }
 }

@@ -95,6 +95,56 @@ impl Predicate {
             predicate: Box::new(predicate),
         }
     }
+
+    /// Create a not-equals check
+    pub fn not_equals(path: impl Into<String>, value: impl Into<Value>) -> Self {
+        Self::NotEquals {
+            path: path.into(),
+            value: value.into(),
+        }
+    }
+
+    /// Create a contains check
+    pub fn contains(path: impl Into<String>, value: impl Into<Value>) -> Self {
+        Self::Contains {
+            path: path.into(),
+            value: value.into(),
+        }
+    }
+
+    /// Create a matches regex check
+    pub fn matches(path: impl Into<String>, pattern: impl Into<String>) -> Self {
+        Self::Matches {
+            path: path.into(),
+            pattern: pattern.into(),
+        }
+    }
+
+    /// Create a greater-than check
+    pub fn greater_than(path: impl Into<String>, value: impl Into<Value>) -> Self {
+        Self::GreaterThan {
+            path: path.into(),
+            value: value.into(),
+        }
+    }
+
+    /// Create a less-than check
+    pub fn less_than(path: impl Into<String>, value: impl Into<Value>) -> Self {
+        Self::LessThan {
+            path: path.into(),
+            value: value.into(),
+        }
+    }
+
+    /// Create an is-empty check
+    pub fn is_empty(path: impl Into<String>) -> Self {
+        Self::IsEmpty { path: path.into() }
+    }
+
+    /// Create an is-not-empty check
+    pub fn is_not_empty(path: impl Into<String>) -> Self {
+        Self::IsNotEmpty { path: path.into() }
+    }
 }
 
 /// Count operator

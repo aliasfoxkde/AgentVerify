@@ -8,76 +8,65 @@
 
 ## Current State Summary
 
-| Crate | Lines | Status |
-|-------|-------|--------|
-| agentverify-core | 1118 | ✅ Complete (core types, state machine, predicates) |
-| agentverify-contract | 10 | ❌ Placeholder (just re-exports) |
-| agentverify-engine | 130 | ⚠️ Partial (basic predicates only) |
-| agentverify-runtime | 35 | ❌ Placeholder (executor stub) |
-| agentverify-cli | 70 | ⚠️ Basic (clap skeleton) |
-| agentverify-observe | 0 | ❌ Empty |
-| agentverify-recovery | 0 | ❌ Empty |
-| agentverify-receipt | 0 | ❌ Empty |
-| agentverify-policy | 0 | ❌ Empty |
-| agentverify-storage | 0 | ❌ Empty |
-| agentverify-mcp | 0 | ❌ Empty |
-| agentverify-otel | 0 | ❌ Empty |
-| agentverify-http | 0 | ❌ Empty |
-| agentverify-testkit | 0 | ❌ Empty |
+| Crate | Status | Notes |
+|-------|--------|-------|
+| agentverify-core | ✅ Complete | Core types, state machine, predicates, verification result |
+| agentverify-contract | ✅ Complete | JSON/YAML parsing, schema validation |
+| agentverify-engine | ✅ Complete | Full predicate engine with compound predicates |
+| agentverify-runtime | ✅ Complete | Executor with verify-before-retry, idempotency |
+| agentverify-http | ✅ Complete | REST observer with auth, redaction |
+| agentverify-receipt | ✅ Complete | Ed25519 signing, SHA-256 digest |
+| agentverify-cli | ⚠️ Partial | validate/verify work; dispatch simulated (see P2) |
+| agentverify-observe | ❌ Deferred | Placeholder crate |
+| agentverify-recovery | ❌ Deferred | Placeholder crate |
+| agentverify-policy | ❌ Deferred | Placeholder crate |
+| agentverify-storage | ❌ Deferred | Placeholder crate |
+| agentverify-mcp | ❌ Deferred | Placeholder crate |
+| agentverify-otel | ❌ Deferred | Placeholder crate |
+| agentverify-testkit | ❌ Deferred | Placeholder crate |
 
-**Total Rust Code:** 1,462 lines
-**Test Coverage:** 22 unit tests (core + engine)
-**Workspace Status:** Compiles, tests pass
+**Evidence boundary:** 142 tests passing (core 25, contract 21, engine 71, HTTP 11, receipt 3, runtime 11)
+**Workspace status:** Compiles, tests pass, fmt clean, clippy clean, doc builds
+**Tier A–C coverage:** Local deterministic semantics, executor behavior, observer/signature behavior
+**Tier D:** Control Center integration — open (requires P5)
 
 ---
 
 ## Critical Gaps
 
-### 1. Contract Parsing (agentverify-contract)
-**Gap:** Only 10 lines, just re-exports. No JSON/YAML parsing.
-**Impact:** Cannot load contracts from files.
-**Priority:** P0
-**Next Step:** Implement `serde` serialization for Contract types + YAML/JSON parsers.
+### 1. Real Dispatch in CLI (agentverify-cli)
+**Gap:** CLI `verify` command calls `Executor::execute()` which simulates dispatch.
+**Impact:** Cannot prove actual action execution through documented CLI path.
+**Priority:** P0 (Packet P2)
+**Next Step:** Inject a real `ActionExecutor` adapter; add dry-run mode.
 
-### 2. Full Predicate Engine (agentverify-engine)
-**Gap:** Only `Exists`, `NotExists`, `Equals` implemented. Missing:
-- `Contains`, `Matches`, `GreaterThan`, `LessThan`
-- Collection predicates: `Count`, `IsEmpty`, `IsNotEmpty`
-- Compound predicates: `All`, `Any`, `Not`, `Implies`
-- JSONPath resolution
-**Priority:** P0
-**Next Step:** Implement remaining predicates + JSONPath support.
+### 2. Atomic Idempotency
+**Gap:** Current idempotency is check-then-insert (race-prone) and process-local.
+**Impact:** Concurrent requests with same key may double-dispatch.
+**Priority:** P0 (Packet P2)
+**Next Step:** Implement atomic claim/complete abstraction with TTL and cross-process semantics.
 
-### 3. VerifiedExecutor (agentverify-runtime)
-**Gap:** Placeholder executor that returns `Verified` always.
-**Impact:** Core runtime logic missing.
-**Priority:** P0
-**Next Step:** Implement actual:
-- Precondition validation
-- Action execution (mock)
-- Observation collection
-- Postcondition verification
-- Verify-before-retry logic
-- Idempotency handling
+### 3. Durable Receipt Persistence
+**Gap:** `ReceiptStore` trait exists but is not wired into executor lifecycle.
+**Impact:** Receipts are lost when process exits.
+**Priority:** P0 (Packet P3)
+**Next Step:** Wire `ReceiptStore` into executor; implement a durable adapter.
 
-### 4. CI/CD Pipeline
-**Gap:** No GitHub Actions, no automated checks.
-**Impact:** No quality enforcement.
+### 4. Control Center Integration
+**Gap:** No authenticated cross-process correlation and promotion fixture.
+**Impact:** Cannot prove Tier-D promotion boundary.
+**Priority:** P1 (Packet P5)
+**Next Step:** Implement authenticated fixture that rejects orphan, stale, tampered results.
+
+### 5. CI/CD Pipeline
+**Gap:** No GitHub Actions workflow.
+**Impact:** No automated quality gates on PRs.
 **Priority:** P1
-**Next Step:** Create `.github/workflows/ci.yml` with:
-- `cargo test`
-- `cargo clippy --workspace -- -D warnings`
-- `cargo fmt -- --check`
-
-### 5. Observer Implementations
-**Gap:** All observer crates empty.
-**Impact:** Cannot actually verify anything.
-**Priority:** P1 (for MVP)
-**Next Step:** Implement `PostgresObserver` first (most important per planning).
+**Next Step:** Create `.github/workflows/ci.yml` with test/clippy/fmt/audit gates.
 
 ### 6. Property Tests
 **Gap:** No `proptest` usage despite being in dependencies.
-**Impact:** No deterministic testing of predicate evaluation.
+**Impact:** No deterministic testing of predicate evaluation across wide input range.
 **Priority:** P2
 **Next Step:** Add property tests for predicate engine.
 
@@ -85,26 +74,29 @@
 
 ## Recommended Priority Order
 
-### Phase 1: Make it Functional (MVP)
+### Phase 1: Make it Functional (MVP) — ✅ COMPLETE
 
-1. **Complete predicate engine** (all predicate types + JSONPath)
-2. **Implement contract parsing** (JSON + YAML loaders)
-3. **Implement VerifiedExecutor** (with verify-before-retry)
-4. **Add PostgresObserver** (first real observer)
+1. ✅ **Complete predicate engine** (all predicate types + compound predicates)
+2. ✅ **Implement contract parsing** (JSON + YAML loaders, schema validation)
+3. ✅ **Implement VerifiedExecutor** (with verify-before-retry, bounded retry/backoff)
+4. ✅ **REST observer** (with auth, redaction, truncation)
 
-### Phase 2: Quality Enforcement
+### Phase 2: Production Hardening
 
-5. **Setup CI/CD** (clippy, fmt, test)
-6. **Add property tests** (predicate engine)
-7. **Add integration tests** (with testcontainers)
+5. **Real CLI dispatch** (injectable ActionExecutor, dry-run mode) — Packet P2
+6. **Atomic idempotency** (claim/complete, TTL, cross-process) — Packet P2
+7. **Durable receipt persistence** (wire ReceiptStore into executor) — Packet P3
+8. **Setup CI/CD** (clippy, fmt, test, audit gates)
+9. **Add property tests** (predicate engine via proptest)
+10. **Add integration tests** (with testcontainers)
 
-### Phase 3: Expand Capabilities
+### Phase 3: Control Center Integration
 
-8. **REST observer**
-9. **Redis observer**
-10. **Receipt signing** (Ed25519)
-11. **MCP proxy**
-12. **OpenTelemetry export**
+11. **Authenticated mock server fixture** — Packet P4
+12. **Control Center correlation and promotion fixture** — Packet P5
+13. **PostgresObserver** (first durable observer)
+14. **MCP proxy**
+15. **OpenTelemetry export**
 
 ---
 
@@ -122,18 +114,18 @@
 
 ## Technical Debt
 
-1. **`CompareOperator` enum unused** - Defined in `predicate.rs` but never used
-2. **Unused variables** - `_args`, `_action`, `_contract` warnings
-3. **`chrono::Duration` in public API** - Consider `std::time::Duration` for better ergonomics
-4. **No error types in most crates** - Using `thiserror` would help
+1. **CLI dispatch is simulated** - `verify` command does not use injected ActionExecutor
+2. **Idempotency is process-local** - `IdempotencyRegistry` does not persist across restarts
+3. **ReceiptStore not wired** - Trait exists but not integrated into executor lifecycle
+4. **`chrono::Duration` in public API** - Consider `std::time::Duration` for better ergonomics
+5. **cargo audit warning** - `rustls-pemfile 1.0.4` is unmaintained (RUSTSEC-2025-0134); update `reqwest` or add override
 
 ---
 
 ## Files Needing Attention
 
 ```
-crates/agentverify-core/src/predicate.rs     # Missing predicate implementations
-crates/agentverify-contract/src/             # Needs full implementation
-crates/agentverify-runtime/src/executor.rs   # Placeholder
-crates/agentverify-cli/src/main.rs          # CLI skeleton only
+crates/agentverify-cli/src/main.rs           # P2: add real ActionExecutor injection
+crates/agentverify-runtime/src/executor.rs   # P2/P3: wire ReceiptStore and idempotency hardening
+crates/agentverify-runtime/src/receipt_store.rs  # P3: implement durable adapter
 ```
