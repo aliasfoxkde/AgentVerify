@@ -4,6 +4,7 @@
 
 mod action_executor;
 mod executor;
+mod idempotency_store;
 mod receipt_store;
 
 pub use action_executor::{
@@ -13,4 +14,5 @@ pub use executor::{
     ClaimResult, Executor, ExecutorConfig, ExecutorError, IdempotencyRegistry, IdempotencyStore,
     Observer,
 };
-pub use receipt_store::{InMemoryReceiptStore, ReceiptStore};
+pub use idempotency_store::FileIdempotencyStore;
+pub use receipt_store::{FileReceiptStore, InMemoryReceiptStore, ReceiptStore};
