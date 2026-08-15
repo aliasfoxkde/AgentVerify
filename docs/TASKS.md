@@ -24,7 +24,7 @@ This document tracks all tasks for AgentVerify development. Organized by priorit
 | Phase 5: Runtime | ✅ Complete | Executor with verify-before-retry, bounded retry/backoff |
 | Phase 6: HTTP Observer | ✅ Complete | REST observer with auth, redaction, truncation |
 | Phase 7: Receipts | ✅ Complete | Ed25519 signing, SHA-256 digest, idempotency |
-| Phase 8: CLI | ⚠️ Partial | validate/verify commands work; dispatch is simulated (P2) |
+| Phase 8: CLI | ✅ | validate/verify commands work; `execute_with_executor` with `SimulatedActionExecutor` wired |
 | Phase 9-12 | ❌ Deferred | MCP, OTel, policy, recovery, storage adapters |
 
 **Current Focus:** Packet P1 complete — stabilizing evidence boundary; P2 addresses real dispatch and atomic idempotency
@@ -72,10 +72,10 @@ This document tracks all tasks for AgentVerify development. Organized by priorit
 
 | ID | Task | Status | Notes |
 |----|------|--------|-------|
-| P1-001 | GitHub Actions CI workflow | ❌ | Not yet created |
+| P1-001 | GitHub Actions CI workflow | ✅ | `.github/workflows/ci.yml` and `release.yml` exist |
 | P1-002 | Clippy enforcement (`-D warnings`) | ✅ | Configured; passes in workspace |
 | P1-003 | Format check in CI | ✅ | `cargo fmt --check` passes |
-| P1-004 | Cargo-dist configuration | ❌ | Not yet created |
+| P1-004 | Cargo-dist / WASM support | ⚠️ Partial | CI exists; full WASM support requires wasm-compatible async runtime (tokio full features don't compile to WASM) |
 
 ### First Observer
 
@@ -112,8 +112,8 @@ This document tracks all tasks for AgentVerify development. Organized by priorit
 
 | ID | Task | Status | Notes |
 |----|------|--------|-------|
-| QF-001 | GitHub Actions CI workflow | ❌ | Not yet created |
-| QF-002 | Cargo-dist configuration | ❌ | Not yet created |
+| QF-001 | GitHub Actions CI workflow | ✅ | Already created |
+| QF-002 | Cargo-dist configuration | ❌ | Needed for WASM builds |
 | QF-003 | Property tests for predicate engine | ❌ | Deferred |
 
 ---
@@ -199,7 +199,7 @@ This document tracks all tasks for AgentVerify development. Organized by priorit
 | 2026-08-14 | Full predicate engine | ✅ |
 | 2026-08-14 | Contract parsing | ✅ |
 | 2026-08-14 | VerifiedExecutor | ✅ |
-| TBD | CI/CD GitHub Actions | ❌ |
+| 2026-08-15 | CI/CD GitHub Actions | ✅ | `.github/workflows/ci.yml` and `release.yml` |
 | TBD | PostgresObserver | ❌ |
 
 ---
