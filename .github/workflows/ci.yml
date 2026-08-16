@@ -50,6 +50,29 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  wasm:
+    name: WASM Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build WASM libraries
+        run: |
+          cargo build --target wasm32-wasip1 \
+            -p agentverify-core \
+            -p agentverify-engine \
+            -p agentverify-contract \
+            -p agentverify-runtime
+
   security:
     name: Security Audit
     runs-on: ubuntu-latest

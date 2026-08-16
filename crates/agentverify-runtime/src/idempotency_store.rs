@@ -18,15 +18,23 @@
 //! - Key hashing may cause collisions (mitigated by storing original key in entry)
 //! - Cross-process cache coherence not guaranteed without file locking
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::executor::{ClaimResult, IdempotencyStore};
+#[cfg(not(target_arch = "wasm32"))]
 use agentverify_core::VerificationResult;
+#[cfg(not(target_arch = "wasm32"))]
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::HashMap;
+#[cfg(not(target_arch = "wasm32"))]
 use std::future::Future;
+#[cfg(not(target_arch = "wasm32"))]
 use std::pin::Pin;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Mutex;
 
 /// Entry state persisted to disk
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum EntryState {
     /// Action is in-flight (claimed but not yet complete)
@@ -36,6 +44,7 @@ enum EntryState {
 }
 
 /// A persisted idempotency entry
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedEntry {
     original_key: String,
@@ -43,6 +52,7 @@ struct PersistedEntry {
     created_at: String, // ISO8601 timestamp
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl PersistedEntry {
     fn new_in_flight(key: String) -> Self {
         Self {
@@ -86,12 +96,14 @@ impl PersistedEntry {
 /// - No TTL: entries persist until manually cleaned up
 ///
 /// For production distributed use, implement IdempotencyStore with Redis or PostgreSQL.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct FileIdempotencyStore {
     base_path: std::path::PathBuf,
     /// In-process cache for speed and to reduce lock contention
     cache: Mutex<HashMap<String, PersistedEntry>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl FileIdempotencyStore {
     /// Create a new file-based idempotency store
     ///
@@ -145,6 +157,7 @@ impl FileIdempotencyStore {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl IdempotencyStore for FileIdempotencyStore {
     fn claim_or_check<'a>(
         &'a self,
@@ -230,6 +243,7 @@ impl IdempotencyStore for FileIdempotencyStore {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl std::fmt::Debug for FileIdempotencyStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileIdempotencyStore")

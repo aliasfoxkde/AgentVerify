@@ -76,10 +76,63 @@ jobs:
             ${{ matrix.artifact }}
             ${{ matrix.artifact }}.tar.gz
 
+  # Build WASM libraries for web/WASI deployment
+  build-wasm:
+    name: Build WASM
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # WASM WASI Preview 1
+          - target: wasm32-wasip1
+            artifact: agentverify-wasm32-wasip1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build WASM libraries
+        run: |
+          cargo build --release --target wasm32-wasip1 \
+            -p agentverify-core \
+            -p agentverify-engine \
+            -p agentverify-contract \
+            -p agentverify-runtime
+
+      - name: Package WASM artifacts
+        shell: bash
+        run: |
+          mkdir -p wasm-artifacts
+          # Copy WASM rlibs
+          cp target/wasm32-wasip1/release/libagentverify_core.wasm wasm-artifacts/ 2>/dev/null || true
+          cp target/wasm32-wasip1/release/libagentverify_engine.wasm wasm-artifacts/ 2>/dev/null || true
+          cp target/wasm32-wasip1/release/libagentverify_contract.wasm wasm-artifacts/ 2>/dev/null || true
+          cp target/wasm32-wasip1/release/libagentverify_runtime.wasm wasm-artifacts/ 2>/dev/null || true
+          # List what was built
+          ls -la target/wasm32-wasip1/release/*.rlib 2>/dev/null || echo "No rlibs found"
+          ls -la target/wasm32-wasip1/release/*.wasm 2>/dev/null || echo "No wasm files found"
+          # Create a tarball with the rlibs
+          tar czf ${{ matrix.artifact }}.tar.gz -C target/wasm32-wasip1/release $(ls target/wasm32-wasip1/release/*.rlib 2>/dev/null | xargs -I{} basename {}) || true
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.tar.gz
+            target/wasm32-wasip1/release/*.rlib
+
   # Create GitHub Release
   release:
     name: Create Release
-    needs: [build]
+    needs: [build, build-wasm]
     runs-on: ubuntu-latest
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
@@ -106,6 +159,7 @@ jobs:
             artifacts/**/*.tar.gz
             artifacts/**/agentverify
             artifacts/**/agentverify.exe
+            artifacts/**/lib*.rlib
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

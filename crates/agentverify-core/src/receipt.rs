@@ -334,6 +334,7 @@ impl Default for InMemoryReceiptStore {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// File-based receipt store for local persistence
 ///
 /// # Storage Format
@@ -356,6 +357,7 @@ pub struct FileReceiptStore {
     base_path: std::path::PathBuf,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl FileReceiptStore {
     /// Create a new file-based receipt store
     ///
@@ -402,6 +404,7 @@ impl FileReceiptStore {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl ReceiptStore for FileReceiptStore {
     fn store<'a>(&'a self, receipt: &'a Receipt) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let base_path = self.base_path.clone();
@@ -492,6 +495,7 @@ impl ReceiptStore for FileReceiptStore {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl std::fmt::Debug for FileReceiptStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileReceiptStore")

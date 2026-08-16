@@ -14,5 +14,8 @@ pub use executor::{
     ClaimResult, Executor, ExecutorConfig, ExecutorError, IdempotencyRegistry, IdempotencyStore,
     Observer,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use idempotency_store::FileIdempotencyStore;
-pub use receipt_store::{FileReceiptStore, InMemoryReceiptStore, ReceiptStore};
+pub use receipt_store::{InMemoryReceiptStore, ReceiptStore};
+#[cfg(not(target_arch = "wasm32"))]
+pub use receipt_store::FileReceiptStore;
