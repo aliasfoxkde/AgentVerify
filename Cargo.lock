@@ -67,6 +67,7 @@ dependencies = [
  "agentverify-runtime",
  "async-trait",
  "js-sys",
+ "jsonpath-rust",
  "reqwest",
  "serde",
  "serde_json",
