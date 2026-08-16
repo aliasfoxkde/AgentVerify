@@ -66,11 +66,15 @@ dependencies = [
  "agentverify-core",
  "agentverify-runtime",
  "async-trait",
+ "js-sys",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "wiremock",
 ]
 
