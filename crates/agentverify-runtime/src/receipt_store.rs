@@ -3,5 +3,6 @@
 //! The ReceiptStore trait, InMemoryReceiptStore, and FileReceiptStore are defined
 //! in agentverify-core.
 
-#[allow(unused_imports)]
-pub use agentverify_core::{FileReceiptStore, InMemoryReceiptStore, ReceiptStore};
+pub use agentverify_core::{InMemoryReceiptStore, ReceiptStore};
+#[cfg(not(target_arch = "wasm32"))]
+pub use agentverify_core::FileReceiptStore;
