@@ -75,7 +75,7 @@ This document tracks all tasks for AgentVerify development. Organized by priorit
 | P1-001 | GitHub Actions CI workflow | ✅ | `.github/workflows/ci.yml` and `release.yml` exist |
 | P1-002 | Clippy enforcement (`-D warnings`) | ✅ | Configured; passes in workspace |
 | P1-003 | Format check in CI | ✅ | `cargo fmt --check` passes |
-| P1-004 | Cargo-dist / WASM support | ⚠️ Partial | CI exists; full WASM support requires wasm-compatible async runtime (tokio full features don't compile to WASM) |
+| P1-004 | WASM support | ⚠️ Deferred | Async Rust WASM ecosystem immaturity: tokio, async-std, and smol all depend on `polling` crate which doesn't support WASM. True WASM support requires either: (1) synchronous-only subset, (2) custom executor, or (3) wait for WASM-native async I/O |
 
 ### First Observer
 
