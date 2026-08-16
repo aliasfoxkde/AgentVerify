@@ -18,13 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `agentverify-runtime`: VerifiedExecutor implementation
   - `agentverify-http`: WASM-native HTTP client using web-sys fetch API
 
-- **WasmHttpClient**: New WASM-native HTTP client using JavaScript's fetch API via web-sys, enabling HTTP functionality on wasm32 targets where reqwest is unavailable.
+- **WasmHttpClient**: WASM-native HTTP client using JavaScript's fetch API via web-sys.
+
+- **WasmRestObserver**: WASM-native REST observer for observation during verification.
+
+- **WasmReceiptStore**: WASM-native receipt store using browser localStorage.
+
+- **WasmIdempotencyStore**: WASM-native idempotency store using browser localStorage.
 
 - **Property-Based Tests**: Added proptest-based property tests for predicate engine, verifying determinism across all predicate types.
 
 - **CI WASM Job**: Added dedicated WASM build job in CI workflow to verify wasm32-wasip1 compilation.
 
 - **Release WASM Target**: Added wasm32-wasip1 target to release workflow for distributing WASM libraries.
+
+- **WASM Architecture Guide**: `docs/WASM_ARCHITECTURE.md` documenting WASM support, limitations, and usage.
 
 ### Changed
 
@@ -38,8 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known Limitations
 
-- File-based storage (FileReceiptStore, FileIdempotencyStore) is not available on WASM targets.
-- CLI binary is platform-specific and cannot be built for WASM.
+- **WASM**: Standard `Observer` trait cannot be implemented due to `JsFuture` not being `Send`. Use `WasmRestObserver.observe()` directly instead.
+- **WASM**: FileReceiptStore/FileIdempotencyStore not available (use `WasmReceiptStore`/`WasmIdempotencyStore` with localStorage or distributed stores instead)
+- **WASM**: CLI binary is platform-specific and cannot be built for WASM.
 
 ## [0.0.1] - 2026-08-11
 
