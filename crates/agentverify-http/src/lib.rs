@@ -1,15 +1,15 @@
 //! AgentVerify HTTP
 //!
 //! HTTP-based observers and clients.
-//!
-//! Note: This crate is only available on non-WASM platforms due to
-//! reqwest limitations on wasm32-wasip1 target.
 
 #[cfg(not(target_arch = "wasm32"))]
 mod client;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod observer;
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_client;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use client::{
@@ -18,3 +18,6 @@ pub use client::{
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use observer::{RestObserver, RestObserverConfig, RestObserverError};
+
+#[cfg(target_arch = "wasm32")]
+pub use wasm_client::{WasmHttpClient, WasmFetchOptions, WasmHttpError};

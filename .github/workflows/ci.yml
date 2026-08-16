@@ -71,7 +71,8 @@ jobs:
             -p agentverify-core \
             -p agentverify-engine \
             -p agentverify-contract \
-            -p agentverify-runtime
+            -p agentverify-runtime \
+            -p agentverify-http
 
   security:
     name: Security Audit

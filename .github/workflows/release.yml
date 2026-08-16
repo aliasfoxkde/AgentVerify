@@ -104,7 +104,8 @@ jobs:
             -p agentverify-core \
             -p agentverify-engine \
             -p agentverify-contract \
-            -p agentverify-runtime
+            -p agentverify-runtime \
+            -p agentverify-http
 
       - name: Package WASM artifacts
         shell: bash
