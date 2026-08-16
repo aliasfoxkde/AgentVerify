@@ -7,7 +7,7 @@ use regex::Regex;
 use serde_json::Value;
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum EngineError {
     #[error("Invalid path: {0}")]
     InvalidPath(String),
@@ -1032,5 +1032,126 @@ mod tests {
         let predicate = Predicate::count("flag", CountOperator::Eq, 1);
         let result = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({})).unwrap();
         assert_eq!(result, VerificationResult::Failed);
+    }
+}
+
+// === Property-based tests ===
+
+#[cfg(test)]
+mod property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Helper to parse JSON string safely
+    fn parse_state(s: &str) -> Value {
+        serde_json::from_str(s).unwrap_or(Value::Null)
+    }
+
+    // Property: Exists predicate is deterministic
+    proptest! {
+        #[test]
+        fn exists_is_deterministic(state_json: String, path: String) {
+            let state = parse_state(&state_json);
+            let predicate = Predicate::exists(&path);
+            let result1 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            let result2 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            prop_assert_eq!(result1, result2);
+        }
+
+        #[test]
+        fn equals_is_deterministic(state_json: String, path: String, value: String) {
+            let state = parse_state(&state_json);
+            let expected: Value = serde_json::json!(value);
+            let predicate = Predicate::equals(&path, expected);
+            let result1 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            let result2 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            prop_assert_eq!(result1, result2);
+        }
+
+        #[test]
+        fn not_equals_is_deterministic(state_json: String, path: String, value: String) {
+            let state = parse_state(&state_json);
+            let expected: Value = serde_json::json!(value);
+            let predicate = Predicate::not_equals(&path, expected);
+            let result1 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            let result2 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            prop_assert_eq!(result1, result2);
+        }
+
+        #[test]
+        fn contains_is_deterministic(state_json: String, path: String, value: String) {
+            let state = parse_state(&state_json);
+            let predicate = Predicate::contains(&path, serde_json::json!(value));
+            let result1 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            let result2 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            prop_assert_eq!(result1, result2);
+        }
+
+        #[test]
+        fn not_exists_is_deterministic(state_json: String, path: String) {
+            let state = parse_state(&state_json);
+            let predicate = Predicate::not_exists(&path);
+            let result1 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            let result2 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            prop_assert_eq!(result1, result2);
+        }
+
+        #[test]
+        fn is_empty_is_deterministic(state_json: String, path: String) {
+            let state = parse_state(&state_json);
+            let predicate = Predicate::is_empty(&path);
+            let result1 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            let result2 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            prop_assert_eq!(result1, result2);
+        }
+
+        #[test]
+        fn is_not_empty_is_deterministic(state_json: String, path: String) {
+            let state = parse_state(&state_json);
+            let predicate = Predicate::is_not_empty(&path);
+            let result1 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            let result2 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            prop_assert_eq!(result1, result2);
+        }
+    }
+
+    // Property: All/Any with empty predicates
+    proptest! {
+        #[test]
+        fn all_with_empty_predicates(state_json: String) {
+            let state = parse_state(&state_json);
+            let predicate = Predicate::all(vec![]);
+            let result = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            prop_assert_eq!(result.unwrap(), VerificationResult::Verified);
+        }
+
+        #[test]
+        fn any_with_empty_predicates(state_json: String) {
+            let state = parse_state(&state_json);
+            let predicate = Predicate::any(vec![]);
+            let result = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            prop_assert_eq!(result.unwrap(), VerificationResult::Failed);
+        }
+    }
+
+    // Property: Count is deterministic
+    proptest! {
+        #[test]
+        fn count_is_deterministic(state_json: String, path: String, op: String, value: i64) {
+            let state = parse_state(&state_json);
+            let operator = match op.as_str() {
+                "eq" => CountOperator::Eq,
+                "ne" => CountOperator::Ne,
+                "gt" => CountOperator::Gt,
+                "ge" => CountOperator::Ge,
+                "lt" => CountOperator::Lt,
+                "le" => CountOperator::Le,
+                _ => CountOperator::Eq,
+            };
+            let predicate = Predicate::count(&path, operator, value);
+            let result1 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            let result2 = PredicateEngine::evaluate(&predicate, &state, &serde_json::json!({}));
+            prop_assert_eq!(result1, result2);
+        }
     }
 }

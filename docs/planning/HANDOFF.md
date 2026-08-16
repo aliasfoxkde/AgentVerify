@@ -4,7 +4,7 @@
 **Role:** outcome verification and signed evidence candidate
 **Audit boundary:** `codex/add-platform-handoff-2026-08-14` / `5e9ed9e` / dirty `20` (source, manifests, docs, and generated code-memory artifacts; preserve all existing work)
 **Updated:** 2026-08-14 (P1 doc reconciliation + P2 atomic idempotency complete)
-**Evidence boundary (central audit):** branch `codex/add-platform-handoff-2026-08-14`, committed HEAD `5e9ed9e`, with worktree modifications including P1 doc updates (TASKS.md, NEXT_STEPS.md) and P2 atomic idempotency changes (executor.rs). Refresh this boundary before any implementation claim.
+**Evidence boundary (central audit):** branch `codex/add-platform-handoff-2026-08-14`, HEAD `50784a775b3eb9ef6225840695f16886b8069e12`, 2 dirty status entries. Refresh this boundary before any implementation claim; the worktree modifications include P1/P2 source and generated artifacts and remain preserved.
 **Central planning:** `AUTHORITY_INDEX_2026-08-14.md`, `MASTER_EXECUTION_PLAN_2026-08-14.md`, and `CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md`
 **Provenance markers:** `HANDOFF_AUDIT_2026-08-13.md` and
 `CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md` remain recorded for the central

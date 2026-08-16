@@ -379,7 +379,7 @@ impl FileReceiptStore {
         &self,
     ) -> std::io::Result<std::collections::HashMap<String, Vec<String>>> {
         let index_path = self.index_path();
-        if !tokio::fs::try_exists(&index_path).await? {
+        if !index_path.exists() {
             return Ok(std::collections::HashMap::new());
         }
         let content = tokio::fs::read_to_string(&index_path).await?;
@@ -447,7 +447,7 @@ impl ReceiptStore for FileReceiptStore {
         let base_path = self.base_path.clone();
         Box::pin(async move {
             let path = base_path.join(format!("{}.json", id));
-            if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            if !path.exists() {
                 return None;
             }
             let content = tokio::fs::read_to_string(&path).await.ok()?;
@@ -488,11 +488,7 @@ impl ReceiptStore for FileReceiptStore {
 
     fn exists<'a>(&'a self, id: &'a ReceiptId) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
         let base_path = self.base_path.clone();
-        Box::pin(async move {
-            tokio::fs::try_exists(base_path.join(format!("{}.json", id)))
-                .await
-                .unwrap_or(false)
-        })
+        Box::pin(async move { base_path.join(format!("{}.json", id)).exists() })
     }
 }
 
@@ -648,16 +644,13 @@ mod tests {
         );
 
         // Store the receipt
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let store_ref = &store;
         let receipt_ref = &receipt;
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(store_ref.store(receipt_ref));
+        rt.block_on(store_ref.store(receipt_ref));
 
         // Retrieve it
-        let retrieved = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(store.get(&receipt.id));
+        let retrieved = rt.block_on(store.get(&receipt.id));
 
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
@@ -677,20 +670,15 @@ mod tests {
             1,
         );
 
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let store_ref = &store;
         let receipt_ref = &receipt;
-        tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(store_ref.store(receipt_ref));
+        rt.block_on(store_ref.store(receipt_ref));
 
-        let exists = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(store.exists(&receipt.id));
+        let exists = rt.block_on(store.exists(&receipt.id));
         assert!(exists);
 
-        let non_existent = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(store.exists(&ReceiptId::new()));
+        let non_existent = rt.block_on(store.exists(&ReceiptId::new()));
         assert!(!non_existent);
     }
 }
