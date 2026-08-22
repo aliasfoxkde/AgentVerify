@@ -24,12 +24,11 @@ pub use contract::{
 pub use id::ReceiptId;
 pub use observation::{Evidence, Observation, SourceId};
 pub use predicate::{CountOperator, Predicate};
-pub use receipt::{
-    InMemoryReceiptStore, PostconditionResult, Receipt, ReceiptStore,
-    RECEIPT_SCHEMA_VERSION,
-};
 #[cfg(not(target_arch = "wasm32"))]
 pub use receipt::FileReceiptStore;
+pub use receipt::{
+    InMemoryReceiptStore, PostconditionResult, Receipt, ReceiptStore, RECEIPT_SCHEMA_VERSION,
+};
 pub use state_machine::{State, StateMachine};
 pub use verification_result::VerificationResult;
 

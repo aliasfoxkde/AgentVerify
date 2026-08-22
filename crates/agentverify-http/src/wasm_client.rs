@@ -93,8 +93,8 @@ impl WasmHttpClient {
             let _ = opts.set_body(&JsValue::from_str(body_content));
         }
 
-        let request =
-            Request::new_with_str_and_init(url, &opts).map_err(|e| WasmHttpError::RequestFailed(format!("Invalid request: {:?}", e)))?;
+        let request = Request::new_with_str_and_init(url, &opts)
+            .map_err(|e| WasmHttpError::RequestFailed(format!("Invalid request: {:?}", e)))?;
 
         // Get window and call fetch_with_request which returns a Promise<Response>
         let window = web_sys::Window::from(JsValue::from(js_sys::global()));
@@ -109,7 +109,9 @@ impl WasmHttpClient {
         let response: Response = Response::from(resp_value);
 
         let status = response.status();
-        let body_text_promise = response.text().map_err(|e| WasmHttpError::RequestFailed(format!("Body error: {:?}", e)))?;
+        let body_text_promise = response
+            .text()
+            .map_err(|e| WasmHttpError::RequestFailed(format!("Body error: {:?}", e)))?;
         let body = JsFuture::from(body_text_promise)
             .await
             .map_err(|e| WasmHttpError::RequestFailed(format!("Body text failed: {:?}", e)))?

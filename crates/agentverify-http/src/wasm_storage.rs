@@ -27,9 +27,13 @@ pub struct WasmReceiptStore {
 impl WasmReceiptStore {
     /// Create a new WASM receipt store
     pub fn new(namespace: &str) -> Result<Self, WasmStorageError> {
-        let window = web_sys::window().ok_or_else(|| WasmStorageError::Storage("No window".to_string()))?;
-        let storage = window.local_storage().map_err(|e| WasmStorageError::Storage(format!("{:?}", e)))?.ok_or_else(|| WasmStorageError::Storage("No local storage".to_string()))?;
-        
+        let window =
+            web_sys::window().ok_or_else(|| WasmStorageError::Storage("No window".to_string()))?;
+        let storage = window
+            .local_storage()
+            .map_err(|e| WasmStorageError::Storage(format!("{:?}", e)))?
+            .ok_or_else(|| WasmStorageError::Storage("No local storage".to_string()))?;
+
         Ok(Self {
             storage,
             prefix: format!("av_receipts_{namespace}_"),
@@ -47,19 +51,25 @@ impl WasmReceiptStore {
     /// Store a receipt
     pub async fn store(&self, receipt: &Receipt) -> Result<(), WasmStorageError> {
         let key = self.key(&receipt.id);
-        let json = serde_json::to_string(receipt).map_err(|e| WasmStorageError::Serialization(e.to_string()))?;
-        
-        self.storage.set_item(&key, &json).map_err(|e| WasmStorageError::Storage(format!("{:?}", e)))?;
-        
+        let json = serde_json::to_string(receipt)
+            .map_err(|e| WasmStorageError::Serialization(e.to_string()))?;
+
+        self.storage
+            .set_item(&key, &json)
+            .map_err(|e| WasmStorageError::Storage(format!("{:?}", e)))?;
+
         // Update action index
         let action_key = self.action_key(&receipt.action_id);
         let mut ids: Vec<String> = self.get_action_ids(&receipt.action_id).unwrap_or_default();
         if !ids.contains(&receipt.id.to_string()) {
             ids.push(receipt.id.to_string());
-            let ids_json = serde_json::to_string(&ids).map_err(|e| WasmStorageError::Serialization(e.to_string()))?;
-            self.storage.set_item(&action_key, &ids_json).map_err(|e| WasmStorageError::Storage(format!("{:?}", e)))?;
+            let ids_json = serde_json::to_string(&ids)
+                .map_err(|e| WasmStorageError::Serialization(e.to_string()))?;
+            self.storage
+                .set_item(&action_key, &ids_json)
+                .map_err(|e| WasmStorageError::Storage(format!("{:?}", e)))?;
         }
-        
+
         Ok(())
     }
 
@@ -68,7 +78,8 @@ impl WasmReceiptStore {
         let key = self.key(id);
         match self.storage.get_item(&key) {
             Ok(Some(json)) => {
-                let receipt = serde_json::from_str(&json).map_err(|e| WasmStorageError::Serialization(e.to_string()))?;
+                let receipt = serde_json::from_str(&json)
+                    .map_err(|e| WasmStorageError::Serialization(e.to_string()))?;
                 Ok(Some(receipt))
             }
             Ok(None) => Ok(None),
@@ -77,7 +88,10 @@ impl WasmReceiptStore {
     }
 
     /// List receipts by action ID
-    pub async fn list_by_action(&self, action_id: &ActionId) -> Result<Vec<Receipt>, WasmStorageError> {
+    pub async fn list_by_action(
+        &self,
+        action_id: &ActionId,
+    ) -> Result<Vec<Receipt>, WasmStorageError> {
         let ids = self.get_action_ids(action_id)?;
         let mut receipts = Vec::new();
 
@@ -100,14 +114,19 @@ impl WasmReceiptStore {
     /// Check if a receipt exists
     pub async fn exists(&self, id: &ReceiptId) -> Result<bool, WasmStorageError> {
         let key = self.key(id);
-        Ok(self.storage.get_item(&key).map_err(|e| WasmStorageError::Storage(format!("{:?}", e)))?.is_some())
+        Ok(self
+            .storage
+            .get_item(&key)
+            .map_err(|e| WasmStorageError::Storage(format!("{:?}", e)))?
+            .is_some())
     }
 
     fn get_action_ids(&self, action_id: &ActionId) -> Result<Vec<String>, WasmStorageError> {
         let action_key = self.action_key(action_id);
         match self.storage.get_item(&action_key) {
             Ok(Some(json)) => {
-                let ids: Vec<String> = serde_json::from_str(&json).map_err(|e| WasmStorageError::Serialization(e.to_string()))?;
+                let ids: Vec<String> = serde_json::from_str(&json)
+                    .map_err(|e| WasmStorageError::Serialization(e.to_string()))?;
                 Ok(ids)
             }
             Ok(None) => Ok(Vec::new()),
@@ -137,9 +156,13 @@ pub struct WasmIdempotencyStore {
 impl WasmIdempotencyStore {
     /// Create a new WASM idempotency store
     pub fn new(namespace: &str) -> Result<Self, WasmStorageError> {
-        let window = web_sys::window().ok_or_else(|| WasmStorageError::Storage("No window".to_string()))?;
-        let storage = window.local_storage().map_err(|e| WasmStorageError::Storage(format!("{:?}", e)))?.ok_or_else(|| WasmStorageError::Storage("No local storage".to_string()))?;
-        
+        let window =
+            web_sys::window().ok_or_else(|| WasmStorageError::Storage("No window".to_string()))?;
+        let storage = window
+            .local_storage()
+            .map_err(|e| WasmStorageError::Storage(format!("{:?}", e)))?
+            .ok_or_else(|| WasmStorageError::Storage("No local storage".to_string()))?;
+
         Ok(Self {
             storage,
             prefix: format!("av_idempotency_{namespace}_"),
@@ -152,9 +175,12 @@ impl WasmIdempotencyStore {
 
     /// Claim an idempotency key
     /// Returns (ClaimResult, previous_result_if_completed)
-    pub async fn claim_or_check(&self, key: &str) -> Result<(ClaimResult, Option<VerificationResult>), WasmStorageError> {
+    pub async fn claim_or_check(
+        &self,
+        key: &str,
+    ) -> Result<(ClaimResult, Option<VerificationResult>), WasmStorageError> {
         let storage_key = self.key(key);
-        
+
         match self.storage.get_item(&storage_key) {
             Ok(Some(value)) => {
                 // Key exists - check state
@@ -168,14 +194,20 @@ impl WasmIdempotencyStore {
                         "unknown" => VerificationResult::Unknown,
                         "partial" => VerificationResult::Partial,
                         "duplicate" => VerificationResult::Duplicate,
-                        _ => return Err(WasmStorageError::Storage(format!("Invalid state: {}", value))),
+                        _ => {
+                            return Err(WasmStorageError::Storage(format!(
+                                "Invalid state: {}",
+                                value
+                            )))
+                        }
                     };
                     Ok((ClaimResult::Completed, Some(result)))
                 }
             }
             Ok(None) => {
                 // Key doesn't exist - claim it
-                self.storage.set_item(&storage_key, "in_flight")
+                self.storage
+                    .set_item(&storage_key, "in_flight")
                     .map_err(|e| WasmStorageError::Storage(format!("{:?}", e)))?;
                 Ok((ClaimResult::Claimed, None))
             }
@@ -184,7 +216,11 @@ impl WasmIdempotencyStore {
     }
 
     /// Mark a key as completed with result
-    pub async fn complete(&self, key: &str, result: VerificationResult) -> Result<(), WasmStorageError> {
+    pub async fn complete(
+        &self,
+        key: &str,
+        result: VerificationResult,
+    ) -> Result<(), WasmStorageError> {
         let storage_key = self.key(key);
         let value = match result {
             VerificationResult::Verified => "verified",
@@ -193,8 +229,9 @@ impl WasmIdempotencyStore {
             VerificationResult::Partial => "partial",
             VerificationResult::Duplicate => "duplicate",
         };
-        
-        self.storage.set_item(&storage_key, value)
+
+        self.storage
+            .set_item(&storage_key, value)
             .map_err(|e| WasmStorageError::Storage(format!("{:?}", e)))?;
         Ok(())
     }
@@ -202,7 +239,8 @@ impl WasmIdempotencyStore {
     /// Release a claimed key (e.g., on error)
     pub async fn release(&self, key: &str) -> Result<(), WasmStorageError> {
         let storage_key = self.key(key);
-        self.storage.remove_item(&storage_key)
+        self.storage
+            .remove_item(&storage_key)
             .map_err(|e| WasmStorageError::Storage(format!("{:?}", e)))?;
         Ok(())
     }

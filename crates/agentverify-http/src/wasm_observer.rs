@@ -157,9 +157,7 @@ impl WasmRestObserver {
 
     /// Truncate state if too large
     fn truncate(&self, state: Value) -> Value {
-        let size = serde_json::to_string(&state)
-            .map(|s| s.len())
-            .unwrap_or(0);
+        let size = serde_json::to_string(&state).map(|s| s.len()).unwrap_or(0);
 
         if size > self.config.max_evidence_size {
             serde_json::json!({
@@ -192,9 +190,7 @@ impl WasmRestObserver {
             }
         }
 
-        let mut state: Value = self
-            .fetch_json(&url)
-            .await?;
+        let mut state: Value = self.fetch_json(&url).await?;
 
         self.redact(&mut state, &self.config.redact_paths);
         state = self.truncate(state);
