@@ -35,6 +35,9 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+      - name: Validate contract examples
+        run: bash scripts/validate-contract-examples.sh
+
   doc:
     name: Documentation
     runs-on: ubuntu-latest
