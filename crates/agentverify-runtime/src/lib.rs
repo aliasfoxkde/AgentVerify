@@ -16,6 +16,6 @@ pub use executor::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use idempotency_store::FileIdempotencyStore;
-pub use receipt_store::{InMemoryReceiptStore, ReceiptStore};
 #[cfg(not(target_arch = "wasm32"))]
 pub use receipt_store::FileReceiptStore;
+pub use receipt_store::{InMemoryReceiptStore, ReceiptStore};

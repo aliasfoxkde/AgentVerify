@@ -26,10 +26,10 @@ pub use client::{
 pub use observer::{RestObserver, RestObserverConfig, RestObserverError};
 
 #[cfg(target_arch = "wasm32")]
-pub use wasm_client::{WasmHttpClient, WasmFetchOptions, WasmHttpError};
+pub use wasm_client::{WasmFetchOptions, WasmHttpClient, WasmHttpError};
 
 #[cfg(target_arch = "wasm32")]
 pub use wasm_observer::{WasmRestObserver, WasmRestObserverConfig};
 
 #[cfg(target_arch = "wasm32")]
-pub use wasm_storage::{WasmReceiptStore, WasmIdempotencyStore, WasmStorageError, ClaimResult};
+pub use wasm_storage::{ClaimResult, WasmIdempotencyStore, WasmReceiptStore, WasmStorageError};
