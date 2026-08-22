@@ -1,0 +1,8 @@
+# Rustfmt configuration for AgentVerify
+#
+# Stable configuration only
+
+max_width = 100
+edition = "2021"
+merge_derives = true
+use_small_heuristics = "Default"
