@@ -1,0 +1,80 @@
+# cargo-dist configuration
+#
+# See https://cargo-dist.net for full documentation
+
+[workspace]
+# The workspace members to include in releases
+members = [
+    "crates/agentverify-core",
+    "crates/agentverify-contract",
+    "crates/agentverify-engine",
+    "crates/agentverify-runtime",
+    "crates/agentverify-receipt",
+    "crates/agentverify-http",
+    "crates/agentverify-cli",
+    "crates/agentverify-mcp",
+    "crates/agentverify-otel",
+    "crates/agentverify-observe",
+    "crates/agentverify-testkit",
+]
+
+# CI configuration
+[ci]
+# Enable GitHub Actions
+github = { enabled = true }
+
+# Build runner configuration
+[ci.runner]
+# Useubuntu-latest for builds
+runs-on = "ubuntu-latest"
+
+# Build configuration
+[build]
+# Default target
+targets = ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-pc-windows-gnu"]
+
+# Release configuration
+[release]
+# Include executables
+binaries = true
+# Include library crates
+lib = true
+# Sign releases
+sign = true
+# Create GitHub releases
+github = { create-release = true }
+
+# Installers configuration
+[installers]
+# Create tarballs
+tarball = true
+# Create shell installers
+shell = { create = true }
+# Create MSI installers (Windows)
+msi = { create = true }
+# Create DMG installers (macOS)
+dmg = { create = true }
+
+# Repository configuration
+[repo]
+# Repository slug
+slug = "AgentVerify/AgentVerify"
+# Branch to tag releases on
+branch = "main"
+# Whether to generate a CHANGELOG
+changelog = true
+
+# Metadata
+[metadata]
+# Package name
+name = "agentverify"
+# Short description
+description = "Outcome verification library for AI agents"
+# Repository URL
+repository = "https://github.com/AgentVerify/AgentVerify"
+# Homepage URL
+homepage = "https://agentverify.io"
+# License
+license = "MIT OR Apache-2.0"
+# Version
+version = "0.1.0"
