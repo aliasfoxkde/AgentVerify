@@ -8,3 +8,34 @@ rust-version.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
+agentverify-runtime = { path = "../agentverify-runtime" }
+
+# Database
+deadpool-postgres = "0.12"
+tokio-postgres = "0.7"
+postgres-types = { version = "0.2", features = ["derive"] }
+
+# Redis
+deadpool-redis = { version = "0.14", features = ["serde"] }
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+
+# Async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Async trait
+async-trait = "0.1"
+
+# URL encoding
+urlencoding = "2.1"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["rt", "macros"] }
+mockall = "0.12"
