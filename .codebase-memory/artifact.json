@@ -1,11 +1,11 @@
 {
     "schema_version": 1,
-    "commit": "9ae6c58612d8cf7663c8bb900086249643bcab04",
-    "indexed_at": "2026-08-23T01:33:40Z",
+    "commit": "e3f47d0e117e7c93e4ae81aadfd5f15eef6b27f9",
+    "indexed_at": "2026-08-23T01:49:31Z",
     "project": "nas-Temp-repos-AgentVerify",
     "nodes": 1885,
-    "edges": 5445,
+    "edges": 5519,
     "original_size": 6619136,
-    "compressed_size": 963159,
+    "compressed_size": 965598,
     "compression_level": 3
 }
