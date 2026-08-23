@@ -8,3 +8,25 @@ rust-version.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
+
+# OpenTelemetry
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+opentelemetry-otlp = { workspace = true }
+
+# Tracing integration
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Async runtime
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros"] }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Prost for OTLP gRPC (required by opentelemetry-otlp)
+prost = "0.12"
+
+[dev-dependencies]
+tokio-test = "0.4"
