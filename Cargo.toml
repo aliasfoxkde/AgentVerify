@@ -9,6 +9,7 @@ members = [
     "crates/agentverify-cli",
     "crates/agentverify-testkit",
     "crates/agentverify-otel",
+    "crates/agentverify-mcp",
 ]
 # Deferred placeholder crates (not yet implemented):
 # - agentverify-observe: Observation adapters
@@ -58,6 +59,7 @@ prometheus = "0.13"
 regex = "1.0"
 jsonpath-rust = "0.6"
 cel-parser = "0.16"
+url = "2.5"
 
 # Crypto
 ed25519-dalek = { version = "2.0", features = ["rand_core"] }
