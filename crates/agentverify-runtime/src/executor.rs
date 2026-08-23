@@ -6,7 +6,8 @@ use crate::action_executor::{ActionExecutor, DispatchOutcome};
 use crate::receipt_store::ReceiptStore;
 use agentverify_contract::Contract;
 use agentverify_core::{
-    Action, Observation, Receipt, ReceiptId, SourceId, State, StateMachine, VerificationResult,
+    Action, BackoffType, Observation, Receipt, ReceiptId, RecoveryConfig,
+    RecoveryStrategy, SourceId, State, StateMachine, VerificationResult,
 };
 use agentverify_engine::PredicateEngine;
 use std::collections::HashMap;
@@ -14,6 +15,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::time::timeout as tokio_timeout;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -272,6 +274,57 @@ impl Executor {
         }
     }
 
+    /// Calculate the next backoff delay in milliseconds
+    ///
+    /// Uses the recovery config's backoff settings if available,
+    /// otherwise falls back to the executor config's default values.
+    fn calculate_backoff(
+        attempt: u32,
+        recovery: &Option<RecoveryConfig>,
+        default_initial: u64,
+        default_max: u64,
+        default_multiplier: f64,
+    ) -> u64 {
+        if let Some(ref config) = recovery {
+            if let Some(ref backoff) = config.backoff {
+                let initial_ms = backoff.initial.num_milliseconds() as u64;
+                let max_ms = backoff.max.num_milliseconds() as u64;
+                let multiplier = backoff.multiplier;
+
+                let delay = match backoff.backoff_type {
+                    BackoffType::Linear => initial_ms * (attempt as u64),
+                    BackoffType::Exponential => {
+                        (initial_ms as f64 * multiplier.powi(attempt as i32 - 1)) as u64
+                    }
+                };
+                return delay.min(max_ms);
+            }
+        }
+        // Fall back to exponential backoff with defaults
+        let delay = (default_initial as f64 * default_multiplier.powi(attempt as i32 - 1)) as u64;
+        delay.min(default_max)
+    }
+
+    /// Determine if we should retry based on recovery config
+    ///
+    /// Returns (should_retry, max_attempts) based on the recovery config
+    /// and the current attempt number.
+    fn should_retry(
+        attempts: u32,
+        recovery: &Option<RecoveryConfig>,
+        default_max_retries: u32,
+    ) -> bool {
+        if let Some(ref config) = recovery {
+            // NoAction strategy means no retry
+            if config.strategy == RecoveryStrategy::NoAction {
+                return false;
+            }
+            return attempts < config.max_attempts;
+        }
+        // Fall back to executor config
+        attempts < default_max_retries
+    }
+
     /// Execute an action with verification (simulated dispatch)
     ///
     /// This method simulates dispatch for testing/development. For real dispatch,
@@ -311,7 +364,6 @@ impl Executor {
         }
 
         let mut attempts = 0;
-        let mut backoff_ms: u64 = 100;
         let final_result: Option<VerificationResult>;
         let mut final_observation: Option<Observation> = None;
 
@@ -353,8 +405,18 @@ impl Executor {
                 .advance(State::Observing)
                 .map_err(|e| ExecutorError::Unknown(e.to_string()))?;
 
+            let timeout_duration = std::time::Duration::from_millis(self.config.verification_timeout_ms);
             let observation = if let Some(ref obs) = observer {
-                obs.observe(&action, &contract).await?
+                match tokio_timeout(timeout_duration, obs.observe(&action, &contract)).await {
+                    Ok(Ok(obs)) => obs,
+                    Ok(Err(e)) => return Err(e),
+                    Err(_) => {
+                        return Err(ExecutorError::Timeout(format!(
+                            "Observation timed out after {}ms",
+                            self.config.verification_timeout_ms
+                        )));
+                    }
+                }
             } else {
                 Observation::new(SourceId("none".into()), serde_json::json!({}))
             };
@@ -380,9 +442,18 @@ impl Executor {
                     break;
                 }
                 VerificationResult::Failed => {
-                    if self.config.verify_before_retry && attempts < self.config.max_retries {
+                    let backoff_ms = Self::calculate_backoff(
+                        attempts,
+                        &contract.recovery,
+                        100,  // default_initial
+                        5000, // default_max
+                        2.0,  // default_multiplier
+                    );
+                    // Only retry on Failed if verify_before_retry is enabled AND should_retry says to
+                    if self.config.verify_before_retry
+                        && Self::should_retry(attempts, &contract.recovery, self.config.max_retries)
+                    {
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                        backoff_ms = (backoff_ms * 2).min(5000);
                         continue;
                     }
                     state_machine
@@ -392,9 +463,15 @@ impl Executor {
                     break;
                 }
                 VerificationResult::Unknown => {
-                    if attempts < self.config.max_retries {
+                    let backoff_ms = Self::calculate_backoff(
+                        attempts,
+                        &contract.recovery,
+                        100,  // default_initial
+                        5000, // default_max
+                        2.0,  // default_multiplier
+                    );
+                    if Self::should_retry(attempts, &contract.recovery, self.config.max_retries) {
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                        backoff_ms = (backoff_ms * 2).min(5000);
                         continue;
                     }
                     final_result = Some(VerificationResult::Unknown);
@@ -541,7 +618,6 @@ impl Executor {
         };
 
         let mut attempts = 0;
-        let mut backoff_ms: u64 = 100; // Initial backoff
         let final_result: Option<VerificationResult>;
         let mut final_observation: Option<Observation> = None;
 
@@ -614,14 +690,21 @@ impl Executor {
                 .advance(State::Observing)
                 .map_err(|e| ExecutorError::Unknown(e.to_string()))?;
 
+            let timeout_duration = std::time::Duration::from_millis(self.config.verification_timeout_ms);
             let observation = match observer {
-                Some(ref obs) => match obs.observe(&action, &contract).await {
-                    Ok(obs) => obs,
-                    Err(ExecutorError::Unknown(_msg)) => {
+                Some(ref obs) => match tokio_timeout(timeout_duration, obs.observe(&action, &contract)).await {
+                    Ok(Ok(obs)) => obs,
+                    Ok(Err(ExecutorError::Unknown(_msg))) => {
                         final_result = Some(VerificationResult::Unknown);
                         break;
                     }
-                    Err(e) => return Err(e),
+                    Ok(Err(e)) => return Err(e),
+                    Err(_) => {
+                        return Err(ExecutorError::Timeout(format!(
+                            "Observation timed out after {}ms",
+                            self.config.verification_timeout_ms
+                        )));
+                    }
                 },
                 None => Observation::new(SourceId("none".into()), serde_json::json!({})),
             };
@@ -647,9 +730,17 @@ impl Executor {
                     break;
                 }
                 VerificationResult::Failed => {
-                    if self.config.verify_before_retry && attempts < self.config.max_retries {
+                    let backoff_ms = Self::calculate_backoff(
+                        attempts,
+                        &contract.recovery,
+                        100,  // default_initial
+                        5000, // default_max
+                        2.0,  // default_multiplier
+                    );
+                    if self.config.verify_before_retry
+                        && Self::should_retry(attempts, &contract.recovery, self.config.max_retries)
+                    {
                         sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                        backoff_ms = (backoff_ms * 2).min(5000);
                         continue;
                     }
                     state_machine
@@ -659,9 +750,15 @@ impl Executor {
                     break;
                 }
                 VerificationResult::Unknown => {
-                    if attempts < self.config.max_retries {
+                    let backoff_ms = Self::calculate_backoff(
+                        attempts,
+                        &contract.recovery,
+                        100,  // default_initial
+                        5000, // default_max
+                        2.0,  // default_multiplier
+                    );
+                    if Self::should_retry(attempts, &contract.recovery, self.config.max_retries) {
                         sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                        backoff_ms = (backoff_ms * 2).min(5000);
                         continue;
                     }
                     final_result = Some(VerificationResult::Unknown);
