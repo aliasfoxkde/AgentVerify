@@ -5,17 +5,17 @@ members = [
     "crates/agentverify-engine",
     "crates/agentverify-runtime",
     "crates/agentverify-receipt",
+    "crates/agentverify-recovery",
     "crates/agentverify-http",
     "crates/agentverify-cli",
     "crates/agentverify-testkit",
     "crates/agentverify-otel",
     "crates/agentverify-mcp",
+    "crates/agentverify-storage",
+    "crates/agentverify-policy",
 ]
 # Deferred placeholder crates (not yet implemented):
 # - agentverify-observe: Observation adapters
-# - agentverify-recovery: Recovery strategies
-# - agentverify-policy: Policy engine
-# - agentverify-storage: Storage adapters
 # - agentverify-mcp: MCP integration
 
 resolver = "2"
@@ -36,6 +36,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
+tokio = { version = "1.0", features = ["time", "sync", "rt", "macros"] }
 
 # Web
 reqwest = { version = "0.12", features = ["json"] }
@@ -81,6 +82,7 @@ testcontainers = "1.0"
 mockall = "0.12"
 fuzz-utils = "0.1"
 tempfile = "3.10"
+tokio-test = "0.4"
 
 [profile.release]
 opt-level = 3
