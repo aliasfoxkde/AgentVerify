@@ -128,7 +128,7 @@ pub trait IdempotencyStore: Send + Sync {
 /// In-memory idempotency registry for process-local use
 ///
 /// # Atomicity
-/// Uses `std::sync::Mutex` to serialize all claim/check/complete operations.
+/// Uses `tokio::sync::Mutex` to serialize all claim/check/complete operations.
 /// This provides atomic claim semantics: only the first concurrent caller to
 /// `claim_or_check` for a given key will receive `Claimed`; all others
 /// receive `AlreadyClaimed` with the in-flight or completed result.
