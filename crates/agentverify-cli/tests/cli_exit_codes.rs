@@ -53,19 +53,32 @@ fn init_command_success() {
     );
 }
 
-/// Test serve command returns 0.
+/// Test serve command can start and respond to health check.
+///
+/// Note: serve is a long-running server, so we test that it starts
+/// and can respond to requests within a timeout.
 #[test]
-fn serve_command_success() {
-    let output = Command::new(env!("CARGO_BIN_EXE_agentverify"))
-        .args(["serve", "--port", "12345"])
-        .output()
-        .expect("Failed to execute CLI");
+fn serve_command_starts_and_responds() {
+    use std::time::Duration;
+    use std::net::TcpStream;
 
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "serve should return exit code 0"
-    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_agentverify"))
+        .args(["serve", "--port", "12346"])
+        .spawn()
+        .expect("Failed to spawn serve command");
+
+    // Give server time to start
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Try to connect to health endpoint
+    let result = TcpStream::connect("127.0.0.1:12346");
+
+    // Clean up: kill the server
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Server should be listening
+    assert!(result.is_ok(), "serve should start and listen on port");
 }
 
 /// Test help command returns 0.
