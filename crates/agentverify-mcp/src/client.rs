@@ -77,8 +77,7 @@ impl Default for McpClientConfig {
 
 /// Pending request handle for correlating responses
 struct PendingRequest {
-    response_tx: oneshot::Sender<JsonRpcResponse>,
-    created_at: std::time::Instant,
+    _response_tx: oneshot::Sender<JsonRpcResponse>,
 }
 
 /// Unified transport type for MCP client
@@ -94,6 +93,7 @@ pub struct McpClient {
     server_capabilities: Arc<RwLock<Option<ServerCapabilities>>>,
     next_request_id: Arc<RwLock<u64>>,
     pending_requests: Arc<RwLock<HashMap<u64, PendingRequest>>>,
+    #[allow(dead_code)]
     notification_tx: mpsc::Sender<JsonRpcNotification>,
     _shutdown_tx: Arc<watch::Sender<bool>>,
 }
@@ -175,6 +175,7 @@ impl McpClient {
     }
 
     /// Receive a JSON-RPC message
+    #[allow(dead_code)]
     async fn recv_message(&self) -> Result<JsonRpcMessage, McpClientError> {
         match &self.transport {
             McpTransport::Stdio(t) => t.recv().await.map_err(Into::into),
@@ -200,8 +201,7 @@ impl McpClient {
             pending.insert(
                 request_id,
                 PendingRequest {
-                    response_tx,
-                    created_at: std::time::Instant::now(),
+                    _response_tx: response_tx,
                 },
             );
         }

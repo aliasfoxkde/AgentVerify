@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, ChildStdout};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex as TokioMutex};
 
 use crate::protocol::JsonRpcMessage;
 
@@ -116,7 +116,7 @@ impl StdioTransport {
 /// In-memory channel transport for testing
 pub struct ChannelTransport {
     tx: mpsc::Sender<JsonRpcMessage>,
-    rx: std::sync::Mutex<mpsc::Receiver<JsonRpcMessage>>,
+    rx: TokioMutex<mpsc::Receiver<JsonRpcMessage>>,
     connected: Arc<AtomicBool>,
 }
 
@@ -129,12 +129,12 @@ impl ChannelTransport {
 
         let t1 = Self {
             tx: tx1,
-            rx: std::sync::Mutex::new(rx2),
+            rx: TokioMutex::new(rx2),
             connected: connected.clone(),
         };
         let t2 = Self {
             tx: tx2,
-            rx: std::sync::Mutex::new(rx1),
+            rx: TokioMutex::new(rx1),
             connected,
         };
 
@@ -156,9 +156,8 @@ impl ChannelTransport {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(TransportError::NotConnected);
         }
-        let mut rx = self.rx.lock().map_err(|_| {
-            TransportError::Channel("Lock poisoned".to_string())
-        })?;
+
+        let mut rx = self.rx.lock().await;
         rx.recv().await.ok_or_else(|| {
             TransportError::Channel("Sender dropped".to_string())
         })
