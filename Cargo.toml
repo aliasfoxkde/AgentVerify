@@ -81,6 +81,7 @@ mockall = "0.12"
 fuzz-utils = "0.1"
 tempfile = "3.10"
 tokio-test = "0.4"
+criterion = "0.5"
 
 [profile.release]
 opt-level = 3
