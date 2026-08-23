@@ -136,7 +136,7 @@ fn validate_contract_cmd(file: &str, json: bool) -> Result<ExitCode> {
                     println!("  - {}", message);
                 }
             }
-            let exit_code = if matches!(error, ContractError::IoError(_)) {
+            let exit_code = if matches!(error, ContractError::IoError { .. }) {
                 ExitCode::from(1)
             } else {
                 ExitCode::from(2)
