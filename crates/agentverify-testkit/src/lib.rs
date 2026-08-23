@@ -10,6 +10,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+/// Result type for claim_or_check operations
+type ClaimCheckResult = (ClaimResult, Option<VerificationResult>);
+
 /// A mock implementation of [`IdempotencyStore`] for testing.
 ///
 /// This mock allows you to:
@@ -36,7 +39,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone)]
 pub struct MockIdempotencyStore {
     /// Results to return for specific keys
-    results: Arc<Mutex<HashMap<String, (ClaimResult, Option<VerificationResult>)>>>,
+    results: Arc<Mutex<HashMap<String, ClaimCheckResult>>>,
     /// Call history for claim_or_check
     claim_or_check_calls: Arc<Mutex<Vec<String>>>,
     /// Call history for complete
@@ -44,7 +47,7 @@ pub struct MockIdempotencyStore {
     /// Call history for release
     release_calls: Arc<Mutex<Vec<String>>>,
     /// Default result when no specific key is configured
-    default_result: Arc<Mutex<Option<(ClaimResult, Option<VerificationResult>)>>>,
+    default_result: Arc<Mutex<Option<ClaimCheckResult>>>,
     /// Whether to return AlreadyClaimed on second claim of same key
     return_already_claimed: Arc<Mutex<bool>>,
 }
