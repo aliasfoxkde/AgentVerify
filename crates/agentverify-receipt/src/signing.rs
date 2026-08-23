@@ -1,11 +1,13 @@
 //! Receipt signing and verification
 //!
-//! Implements Ed25519 signing for receipts.
+//! Implements Ed25519 signing for receipts and provides a trait for
+//! pluggable signing backends.
 
 use agentverify_core::Receipt;
 use ed25519_dalek::Signer;
 use thiserror::Error;
 
+/// Errors that can occur during signing operations
 #[derive(Debug, Error)]
 pub enum SigningError {
     #[error("Signing key is missing")]
@@ -16,15 +18,77 @@ pub enum SigningError {
 
     #[error("Verification failed: {0}")]
     VerificationFailed(String),
+
+    #[error("Key error: {0}")]
+    KeyError(String),
+}
+
+/// Trait for pluggable receipt signing services
+///
+/// Implement this trait to provide custom signing backends:
+/// - Ed25519 for production use
+/// - HMAC-based for simpler deployments
+/// - KMS-based for cloud integrations
+/// - Mock signing for tests
+///
+/// # Example
+/// ```ignore
+/// struct HmacSigningService { key: [u8; 32] }
+///
+/// impl SigningService for HmacSigningService {
+///     fn sign(&self, receipt: &Receipt) -> Result<Vec<u8>, SigningError> {
+///         let data = self.canonicalize(receipt);
+///         Ok(HmacSha256::new(&self.key).chain(&data).finalize().to_vec())
+///     }
+///
+///     fn verify(&self, receipt: &Receipt) -> Result<bool, SigningError> {
+///         let signature = receipt.signature.as_ref().ok_or(SigningError::MissingKey)?;
+///         let expected = self.sign(receipt)?;
+///         Ok(signature == &expected)
+///     }
+///
+///     fn key_id(&self) -> String {
+///         "hmac-sha256".to_string()
+///     }
+/// }
+/// ```
+pub trait SigningService: Send + Sync {
+    /// Sign a receipt and return the signature bytes
+    fn sign(&self, receipt: &Receipt) -> Result<Vec<u8>, SigningError>;
+
+    /// Verify a receipt signature
+    ///
+    /// Returns `Ok(true)` if signature is valid,
+    /// `Ok(false)` if signature is invalid,
+    /// `Err(...)` on error (e.g., missing signature)
+    fn verify(&self, receipt: &Receipt) -> Result<bool, SigningError>;
+
+    /// Get the key identifier (fingerprint) for this signing service
+    fn key_id(&self) -> String;
+
+    /// Get canonical representation of receipt for signing
+    fn canonicalize(&self, receipt: &Receipt) -> Vec<u8> {
+        let data = serde_json::json!({
+            "id": receipt.id.to_string(),
+            "action_id": receipt.action_id.to_string(),
+            "contract_id": receipt.contract_id.to_string(),
+            "result": receipt.result.to_string(),
+            "attempts": receipt.attempts,
+            "observations": receipt.observations,
+            "postcondition_results": receipt.postcondition_results,
+            "timestamp": receipt.timestamp.to_rfc3339(),
+        });
+        serde_json::to_vec(&data).unwrap_or_default()
+    }
 }
 
 /// Receipt signing service using Ed25519
-pub struct SigningService {
+pub struct Ed25519SigningService {
     signing_key: ed25519_dalek::SigningKey,
     verifying_key: ed25519_dalek::VerifyingKey,
 }
 
-impl SigningService {
+impl Ed25519SigningService {
     /// Create a new signing service with a randomly generated key
     pub fn new() -> Self {
         let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
@@ -47,7 +111,9 @@ impl SigningService {
 
     /// Create a signing service from a base64-encoded key
     pub fn from_base64(encoded: &str) -> Result<Self, SigningError> {
-        let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
             .map_err(|e| SigningError::SigningFailed(format!("Invalid base64: {}", e)))?;
 
         if bytes.len() != 32 {
@@ -63,21 +129,19 @@ impl SigningService {
 
     /// Get the verifying key as base64
     pub fn verifying_key_base64(&self) -> String {
-        base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            self.verifying_key.as_bytes(),
-        )
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(self.verifying_key.as_bytes())
     }
+}
 
-    /// Sign a receipt and return the signed receipt
-    pub fn sign_receipt(&self, receipt: &Receipt) -> Result<Vec<u8>, SigningError> {
+impl SigningService for Ed25519SigningService {
+    fn sign(&self, receipt: &Receipt) -> Result<Vec<u8>, SigningError> {
         let canonical = self.canonicalize(receipt);
         let signature = self.signing_key.sign(&canonical);
         Ok(signature.to_vec())
     }
 
-    /// Verify a receipt signature
-    pub fn verify_receipt(&self, receipt: &Receipt) -> Result<bool, SigningError> {
+    fn verify(&self, receipt: &Receipt) -> Result<bool, SigningError> {
         let signature_bytes = receipt.signature.as_ref().ok_or(SigningError::MissingKey)?;
 
         if signature_bytes.len() != 64 {
@@ -86,10 +150,11 @@ impl SigningService {
             ));
         }
 
-        let signature =
-            ed25519_dalek::Signature::from_bytes(signature_bytes.as_slice().try_into().map_err(
-                |_| SigningError::VerificationFailed("Signature conversion failed".to_string()),
-            )?);
+        let signature = ed25519_dalek::Signature::from_bytes(
+            signature_bytes.as_slice().try_into().map_err(|_| {
+                SigningError::VerificationFailed("Signature conversion failed".to_string())
+            })?,
+        );
 
         let canonical = self.canonicalize(receipt);
         Ok(self
@@ -98,26 +163,14 @@ impl SigningService {
             .is_ok())
     }
 
-    /// Create a canonical JSON representation of the receipt for signing
-    fn canonicalize(&self, receipt: &Receipt) -> Vec<u8> {
-        // Include all fields that affect the receipt's validity
-        let data = serde_json::json!({
-            "id": receipt.id.to_string(),
-            "action_id": receipt.action_id.to_string(),
-            "contract_id": receipt.contract_id.to_string(),
-            "result": receipt.result.to_string(),
-            "attempts": receipt.attempts,
-            "observations": receipt.observations,
-            "postcondition_results": receipt.postcondition_results,
-            "timestamp": receipt.timestamp.to_rfc3339(),
-        });
-
-        // Canonical JSON (no extra whitespace)
-        serde_json::to_vec(&data).unwrap_or_default()
+    fn key_id(&self) -> String {
+        // Use the first 16 bytes of the verifying key as fingerprint
+        let bytes = self.verifying_key.as_bytes();
+        hex::encode(&bytes[..8])
     }
 }
 
-impl Default for SigningService {
+impl Default for Ed25519SigningService {
     fn default() -> Self {
         Self::new()
     }
@@ -130,7 +183,7 @@ mod tests {
 
     #[test]
     fn sign_and_verify_receipt() {
-        let service = SigningService::new();
+        let service = Ed25519SigningService::new();
 
         let receipt = Receipt::new(
             agentverify_core::ActionId::new(),
@@ -139,13 +192,13 @@ mod tests {
             1,
         );
 
-        let signature = service.sign_receipt(&receipt).unwrap();
+        let signature = service.sign(&receipt).unwrap();
         assert_eq!(signature.len(), 64);
     }
 
     #[test]
     fn verify_valid_receipt() {
-        let service = SigningService::new();
+        let service = Ed25519SigningService::new();
 
         let receipt = Receipt::new(
             agentverify_core::ActionId::new(),
@@ -154,14 +207,16 @@ mod tests {
             1,
         );
 
-        let signature = service.sign_receipt(&receipt).unwrap();
-        let signed_receipt = receipt.sign(signature);
-        assert!(service.verify_receipt(&signed_receipt).unwrap());
+        let signature = service.sign(&receipt).unwrap();
+        let mut signed_receipt = receipt.sign(signature);
+        signed_receipt.key_id = Some(service.key_id());
+
+        assert!(service.verify(&signed_receipt).unwrap());
     }
 
     #[test]
     fn verify_tampered_receipt_fails() {
-        let service = SigningService::new();
+        let service = Ed25519SigningService::new();
 
         let receipt = Receipt::new(
             agentverify_core::ActionId::new(),
@@ -170,12 +225,30 @@ mod tests {
             1,
         );
 
-        let signature = service.sign_receipt(&receipt).unwrap();
+        let signature = service.sign(&receipt).unwrap();
         let mut signed_receipt = receipt.sign(signature);
+        signed_receipt.key_id = Some(service.key_id());
 
         // Tamper with the result
         signed_receipt.result = VerificationResult::Failed;
 
-        assert!(!service.verify_receipt(&signed_receipt).unwrap());
+        assert!(!service.verify(&signed_receipt).unwrap());
+    }
+
+    #[test]
+    fn key_id_is_consistent() {
+        let service = Ed25519SigningService::new();
+        let key_id1 = service.key_id();
+        let key_id2 = service.key_id();
+        assert_eq!(key_id1, key_id2);
+    }
+
+    #[test]
+    fn from_base64_roundtrip() {
+        let service = Ed25519SigningService::new();
+        let b64 = service.verifying_key_base64();
+
+        // Should not error
+        let _service2 = Ed25519SigningService::from_base64(&b64).unwrap();
     }
 }

@@ -13,3 +13,4 @@ ed25519-dalek = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
+hex = { workspace = true }

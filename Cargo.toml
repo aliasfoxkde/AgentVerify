@@ -8,6 +8,7 @@ members = [
     "crates/agentverify-http",
     "crates/agentverify-cli",
     "crates/agentverify-testkit",
+    "crates/agentverify-otel",
 ]
 # Deferred placeholder crates (not yet implemented):
 # - agentverify-observe: Observation adapters
@@ -15,7 +16,6 @@ members = [
 # - agentverify-policy: Policy engine
 # - agentverify-storage: Storage adapters
 # - agentverify-mcp: MCP integration
-# - agentverify-otel: OpenTelemetry export
 
 resolver = "2"
 
@@ -50,7 +50,7 @@ redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 opentelemetry = "0.22"
-opentelemetry_sdk = "0.22"
+opentelemetry_sdk = { version = "0.22", features = ["rt-tokio"] }
 opentelemetry-otlp = "0.15"
 prometheus = "0.13"
 
