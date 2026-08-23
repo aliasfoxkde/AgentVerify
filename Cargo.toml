@@ -6,6 +6,7 @@ members = [
     "crates/agentverify-runtime",
     "crates/agentverify-receipt",
     "crates/agentverify-recovery",
+    "crates/agentverify-observe",
     "crates/agentverify-http",
     "crates/agentverify-cli",
     "crates/agentverify-testkit",
@@ -14,9 +15,6 @@ members = [
     "crates/agentverify-storage",
     "crates/agentverify-policy",
 ]
-# Deferred placeholder crates (not yet implemented):
-# - agentverify-observe: Observation adapters
-# - agentverify-mcp: MCP integration
 
 resolver = "2"
 

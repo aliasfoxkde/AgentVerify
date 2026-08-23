@@ -13,14 +13,12 @@
 //!
 //! # Implementations
 //!
-//! - [`RestObserver`] - HTTP/REST-based observation
-//! - PostgreSQL observer (via agentverify-postgres)
-//! - Redis observer (via agentverify-redis)
+//! - [`PostgresObserver`] - PostgreSQL-based observation via deadpool-postgres
+//! - [`RedisObserver`] - Redis-based observation via deadpool-redis
+//! - [`RestObserver`] - HTTP/REST-based observation (via agentverify-http)
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn placeholder() {
-        // Implementation pending
-    }
-}
+mod postgres;
+mod redis_observer;
+
+pub use postgres::{PostgresObserver, PostgresObserverConfig, PostgresObserverError};
+pub use redis_observer::{RedisObserver, RedisObserverConfig, RedisObserverError};
