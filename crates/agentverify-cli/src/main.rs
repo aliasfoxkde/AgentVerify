@@ -5,9 +5,40 @@ use agentverify_core::Action;
 use agentverify_http::{RestObserver, RestObserverConfig};
 use agentverify_runtime::{Executor, SimulatedActionExecutor};
 use anyhow::{Context, Result};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::get,
+    Router,
+};
 use clap::{Parser, Subcommand};
+use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::oneshot;
+use tower::ServiceBuilder;
+use tower_http::trace::TraceLayer;
+use tracing::info;
+use url::Url;
+
+/// Shared state for the HTTP server
+#[derive(Clone)]
+struct ServeState {
+    shutdown_flag: Arc<AtomicBool>,
+}
+
+/// Health check endpoint
+async fn health() -> Response {
+    (StatusCode::OK, "OK").into_response()
+}
+
+/// Shutdown endpoint - triggers graceful shutdown
+async fn shutdown(State(state): State<ServeState>) -> Response {
+    state.shutdown_flag.store(true, Ordering::SeqCst);
+    (StatusCode::OK, "Shutting down...").into_response()
+}
 
 #[derive(Parser)]
 #[command(name = "agentverify")]
@@ -40,7 +71,7 @@ enum Commands {
         #[arg(short, long, default_value = "{}")]
         args: String,
 
-        /// Observer URL (defaults to http://localhost:8080)
+        /// Observer URL (defaults to http://localhost:8080, or AGENTVERIFY_OBSERVER_URL env var)
         #[arg(short, long, default_value = "http://localhost:8080")]
         observer_url: String,
 
@@ -110,10 +141,98 @@ fn run() -> Result<ExitCode> {
             json,
         } => verify_contract_cmd(&contract, &args, &observer_url, max_retries, json),
         Commands::Serve { port } => {
-            println!("Starting server on port {}...", port);
-            Ok(ExitCode::SUCCESS)
+            let rt = tokio::runtime::Runtime::new().context("Failed to create Tokio runtime")?;
+            rt.block_on(serve(port))
         }
     }
+}
+
+/// Start the HTTP server with graceful shutdown support
+async fn serve(port: u16) -> Result<ExitCode> {
+    // Initialize tracing subscriber
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into()),
+        )
+        .init();
+
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    let shutdown_flag_clone = shutdown_flag.clone();
+
+    // Build the router
+    let state = ServeState {
+        shutdown_flag: shutdown_flag.clone(),
+    };
+
+    let app = Router::new()
+        .route("/health", get(health))
+        .route("/shutdown", get(shutdown))
+        .layer(
+            ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+                .into_inner(),
+        )
+        .with_state(state);
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("Failed to bind to port {}", port))?;
+
+    info!("AgentVerify server listening on {}", addr);
+
+    // Spawn signal handler task
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        // Setup SIGTERM signal stream
+        let mut sigterm = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        )
+        .expect("Failed to create SIGTERM signal handler");
+
+        // Wait for shutdown signal (SIGINT or SIGTERM)
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                info!("Received SIGINT (Ctrl+C)");
+            }
+            _ = sigterm.recv() => {
+                info!("Received SIGTERM");
+            }
+            _ = &mut shutdown_rx => {
+                info!("Received internal shutdown signal");
+            }
+        }
+        shutdown_flag_clone.store(true, Ordering::SeqCst);
+    });
+
+    // Start the server
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("Server error")
+    });
+
+    // Wait for either the server to stop or shutdown signal
+    tokio::select! {
+        _ = server_handle => {
+            info!("Server task completed");
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_secs(u64::MAX)) => {
+            // This branch should never be taken, but prevents the select from completing
+        }
+    }
+
+    // If we get here due to signal, wait for graceful shutdown
+    if shutdown_flag.load(Ordering::SeqCst) {
+        info!("Initiating graceful shutdown...");
+        // Give time for in-flight requests to complete
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        info!("Graceful shutdown complete");
+    }
+
+    // Send shutdown signal to signal handler
+    let _ = shutdown_tx.send(());
+
+    Ok(ExitCode::SUCCESS)
 }
 
 fn validate_contract_cmd(file: &str, json: bool) -> Result<ExitCode> {
@@ -199,6 +318,24 @@ fn verify_contract_cmd(
     _max_retries: u32,
     json_output: bool,
 ) -> Result<ExitCode> {
+    // Use environment variable if set, otherwise use provided URL
+    let observer_url =
+        std::env::var("AGENTVERIFY_OBSERVER_URL").unwrap_or_else(|_| observer_url.to_string());
+
+    // Validate observer URL
+    let observer_base_url = Url::parse(&observer_url).with_context(|| {
+        format!(
+            "Invalid observer URL '{}': must be a valid HTTP/HTTPS URL",
+            observer_url
+        )
+    })?;
+    if !matches!(observer_base_url.scheme(), "http" | "https") {
+        anyhow::bail!(
+            "Invalid observer URL scheme '{}': must be http or https",
+            observer_base_url.scheme()
+        );
+    }
+
     // Load contract
     let path = std::path::Path::new(contract_path);
     let contract = load_file(path)
