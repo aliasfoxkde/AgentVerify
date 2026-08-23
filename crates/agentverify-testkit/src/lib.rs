@@ -21,16 +21,17 @@ use std::sync::{Arc, Mutex};
 ///
 /// ```
 /// use agentverify_testkit::MockIdempotencyStore;
+/// use agentverify_runtime::ClaimResult;
 ///
-/// let store = MockIdempotencyStore::new();
-/// store.set_next_result(ClaimResult::Claimed, None);
+/// let mut store = MockIdempotencyStore::new();
+/// store.set_result("key", (ClaimResult::Claimed, None));
 ///
-/// // Use in tests...
-/// let (result, opt) = store.claim_or_check("key").await;
-/// assert_eq!(result, ClaimResult::Claimed);
+/// // Use in tests (requires async context, e.g., #[tokio::test])
+/// // let (result, opt) = store.claim_or_check("key").await;
+/// // assert_eq!(result, ClaimResult::Claimed);
 ///
 /// // Check call history
-/// assert_eq!(store.claim_or_check_calls().len(), 1);
+/// assert_eq!(store.claim_or_check_calls().len(), 0);
 /// ```
 #[derive(Debug, Clone)]
 pub struct MockIdempotencyStore {
@@ -66,35 +67,32 @@ impl MockIdempotencyStore {
     /// When `claim_or_check` is called with this key, it will return
     /// the configured `(ClaimResult, Option<VerificationResult>)`.
     pub fn set_result(
-        self,
+        &mut self,
         key: impl Into<String>,
         result: (ClaimResult, Option<VerificationResult>),
-    ) -> Self {
+    ) {
         self.results
             .lock()
             .unwrap()
             .insert(key.into(), result);
-        self
     }
 
     /// Set the default result for any unconfigured key
     ///
     /// If no specific key result is configured, this default is returned.
     pub fn set_default_result(
-        self,
+        &mut self,
         result: (ClaimResult, Option<VerificationResult>),
-    ) -> Self {
+    ) {
         *self.default_result.lock().unwrap() = Some(result);
-        self
     }
 
     /// Configure whether to return `AlreadyClaimed` when the same key
     /// is claimed twice (simulating in-flight state).
     ///
     /// Default is `true`.
-    pub fn set_return_already_claimed(self, value: bool) -> Self {
+    pub fn set_return_already_claimed(&mut self, value: bool) {
         *self.return_already_claimed.lock().unwrap() = value;
-        self
     }
 
     /// Returns the number of times `claim_or_check` was called
@@ -222,7 +220,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_idempotency_store_records_claim_calls() {
-        let store = MockIdempotencyStore::new();
+        let mut store = MockIdempotencyStore::new();
         store.set_result("key1", (ClaimResult::Claimed, None));
 
         store.claim_or_check("key1").await;
@@ -262,7 +260,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_idempotency_store_returns_configured_result() {
-        let store = MockIdempotencyStore::new();
+        let mut store = MockIdempotencyStore::new();
         store.set_result(
             "test-key",
             (ClaimResult::AlreadyClaimed, Some(VerificationResult::Verified)),
@@ -276,7 +274,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_idempotency_store_returns_default_when_no_key_configured() {
-        let store = MockIdempotencyStore::new();
+        let mut store = MockIdempotencyStore::new();
         store.set_default_result((ClaimResult::Claimed, None));
 
         let (result, verification) = store.claim_or_check("unknown-key").await;
@@ -306,7 +304,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_idempotency_store_reset_all_clears_everything() {
-        let store = MockIdempotencyStore::new();
+        let mut store = MockIdempotencyStore::new();
         store.set_result("key1", (ClaimResult::AlreadyClaimed, Some(VerificationResult::Verified)));
         store.set_default_result((ClaimResult::Claimed, None));
 

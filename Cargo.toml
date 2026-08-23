@@ -46,6 +46,8 @@ tower-http = { version = "0.5", features = ["cors", "trace"] }
 # Database
 sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "json"] }
 redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+deadpool = "0.12"
+deadpool-redis = "0.14"
 
 # Observability
 tracing = "0.1"

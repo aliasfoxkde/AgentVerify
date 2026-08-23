@@ -1,22 +1,13 @@
-//! File-based idempotency store for cross-process persistence
+//! Idempotency stores for tracking executed actions
 //!
-//! Provides a file-based implementation of the IdempotencyStore trait that persists
-//! idempotency entries to disk, enabling cross-process idempotency when multiple
-//! processes share a common filesystem.
+//! This module provides multiple implementations of the `IdempotencyStore` trait:
+//! - `FileIdempotencyStore`: File-based persistence for single-machine deployments
+//! - `RedisIdempotencyStore`: Distributed Redis-based store for multi-instance deployments
 //!
-//! # Storage Format
-//! - Each entry stored as a JSON file named `{key_hash}.json`
-//! - Directory structure: `{base_path}/{key_hash}.json`
-//!
-//! # Key Semantics
-//! - Uses file locking for atomicity across processes
-//! - Each key maps to an entry with state: InFlight or Completed(VerificationResult)
-//!
-//! # Limitations
-//! - Relies on filesystem locking for cross-process safety
-//! - No TTL: entries persist until manually cleaned up
-//! - Key hashing may cause collisions (mitigated by storing original key in entry)
-//! - Cross-process cache coherence not guaranteed without file locking
+//! # Storage Format (Redis)
+//! - Key format: `idempotency:{key}`
+//! - Value: JSON with `state`, `result`, and `created_at` fields
+//! - TTL: Configurable, defaults to 24 hours
 
 #[cfg(not(target_arch = "wasm32"))]
 use crate::executor::{ClaimResult, IdempotencyStore};
@@ -249,6 +240,274 @@ impl std::fmt::Debug for FileIdempotencyStore {
         f.debug_struct("FileIdempotencyStore")
             .field("base_path", &self.base_path)
             .finish()
+    }
+}
+
+// =============================================================================
+// Redis Idempotency Store
+// =============================================================================
+
+/// Redis key prefix for idempotency entries
+#[cfg(feature = "redis")]
+const REDIS_KEY_PREFIX: &str = "idempotency:";
+
+/// Redis-based distributed idempotency store
+///
+/// Uses Redis SETNX (SET if Not eXists) for atomic claim semantics and supports
+/// configurable TTL for automatic expiration of stale entries.
+///
+/// # Storage Format
+/// - Key: `idempotency:{key}`
+/// - Value: JSON `{"state":"InFlight"|"Completed","result":"verified"|"failed"|...,"created_at":"..."}`
+///
+/// # Atomic Semantics
+/// - `claim_or_check` uses SETNX for atomic claim
+/// - `complete` uses SET to update with result
+/// - `release` uses DEL to remove entry
+///
+/// # TTL
+/// Default TTL is 24 hours. Entries are automatically expired to prevent
+/// unbounded growth and allow retry of genuinely failed actions.
+#[cfg(all(not(target_arch = "wasm32"), feature = "redis"))]
+pub struct RedisIdempotencyStore {
+    pool: deadpool_redis::Pool,
+    /// Default TTL in seconds
+    ttl_secs: u64,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "redis"))]
+impl RedisIdempotencyStore {
+    /// Create a new Redis idempotency store
+    ///
+    /// # Arguments
+    /// * `pool` - deadpool-redis connection pool
+    /// * `ttl_secs` - Default TTL for entries in seconds (default: 86400 = 24 hours)
+    pub fn new(pool: deadpool_redis::Pool, ttl_secs: u64) -> Self {
+        Self { pool, ttl_secs }
+    }
+
+    /// Create from a Redis URL string
+    ///
+    /// # Arguments
+    /// * `url` - Redis connection URL (e.g., `redis://127.0.0.1:6379`)
+    /// * `ttl_secs` - Default TTL for entries in seconds
+    pub async fn from_url(url: &str, ttl_secs: u64) -> Result<Self, deadpool_redis::CreatePoolError> {
+        let pool = deadpool_redis::Config::from_url(url)
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))?;
+        Ok(Self::new(pool, ttl_secs))
+    }
+
+    fn redis_key(key: &str) -> String {
+        format!("{}{}", REDIS_KEY_PREFIX, key)
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "redis"))]
+impl IdempotencyStore for RedisIdempotencyStore {
+    fn claim_or_check<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> Pin<Box<dyn Future<Output = (ClaimResult, Option<VerificationResult>)> + Send + 'a>> {
+        let redis_key = Self::redis_key(key);
+        let ttl_secs = self.ttl_secs;
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let mut conn = match pool.get().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    eprintln!("warning: failed to get Redis connection: {}", e);
+                    return (ClaimResult::Claimed, None);
+                }
+            };
+
+            // Try to claim with SETNX (SET if Not eXists)
+            let entry = RedisEntry::new_in_flight(key.to_string());
+            let value = match serde_json::to_string(&entry) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("warning: failed to serialize entry: {}", e);
+                    return (ClaimResult::Claimed, None);
+                }
+            };
+
+            // SETNX with TTL - atomic claim operation
+            let setnx_result: Result<bool, _> = redis::cmd("SET")
+                .arg(&redis_key)
+                .arg(&value)
+                .arg("NX")
+                .arg("EX")
+                .arg(ttl_secs as i64)
+                .query_async(&mut conn)
+                .await;
+
+            match setnx_result {
+                Ok(true) => {
+                    // We successfully claimed the key
+                    (ClaimResult::Claimed, None)
+                }
+                Ok(false) => {
+                    // Key already exists - check its state
+                    let get_result: Option<String> = redis::cmd("GET")
+                        .arg(&redis_key)
+                        .query_async(&mut conn)
+                        .await
+                        .ok();
+
+                    match get_result {
+                        Some(raw) => {
+                            match serde_json::from_str::<RedisEntry>(&raw) {
+                                Ok(entry) => {
+                                    let result = entry.to_result();
+                                    (ClaimResult::AlreadyClaimed, result)
+                                }
+                                Err(_) => {
+                                    // Corrupted entry - treat as already claimed
+                                    (ClaimResult::AlreadyClaimed, None)
+                                }
+                            }
+                        }
+                        None => {
+                            // Race condition: entry expired between SETNX and GET
+                            // Try again (recursive retry once)
+                            let entry = RedisEntry::new_in_flight(key.to_string());
+                            let value = serde_json::to_string(&entry).unwrap();
+                            let retry_result: Result<bool, _> = redis::cmd("SET")
+                                .arg(&redis_key)
+                                .arg(&value)
+                                .arg("NX")
+                                .arg("EX")
+                                .arg(ttl_secs as i64)
+                                .query_async(&mut conn)
+                                .await;
+                            match retry_result {
+                                Ok(true) => (ClaimResult::Claimed, None),
+                                Ok(false) => (ClaimResult::AlreadyClaimed, None),
+                                Err(e) => {
+                                    eprintln!("warning: Redis retry failed: {}", e);
+                                    (ClaimResult::AlreadyClaimed, None)
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("warning: Redis SETNX failed: {}", e);
+                    (ClaimResult::AlreadyClaimed, None)
+                }
+            }
+        })
+    }
+
+    fn complete(
+        &self,
+        key: String,
+        result: VerificationResult,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        let redis_key = Self::redis_key(&key);
+        let ttl_secs = self.ttl_secs;
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            let mut conn = match pool.get().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    eprintln!("warning: failed to get Redis connection: {}", e);
+                    return;
+                }
+            };
+
+            let entry = RedisEntry::new_completed(key.clone(), result);
+            let value = match serde_json::to_string(&entry) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("warning: failed to serialize completion: {}", e);
+                    return;
+                }
+            };
+
+            // SET with TTL - update existing entry
+            let _: Result<(), _> = redis::cmd("SET")
+                .arg(&redis_key)
+                .arg(&value)
+                .arg("EX")
+                .arg(ttl_secs as i64)
+                .query_async(&mut conn)
+                .await;
+        })
+    }
+
+    fn release(&self, key: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        let redis_key = Self::redis_key(key);
+        let pool = self.pool.clone();
+        Box::pin(async move {
+            if let Ok(mut conn) = pool.get().await {
+                if let Err(e) = redis::cmd("DEL")
+                    .arg(&redis_key)
+                    .query_async::<_, ()>(&mut conn)
+                    .await
+                {
+                    eprintln!("warning: Redis DEL failed: {}", e);
+                }
+            }
+        })
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "redis"))]
+impl std::fmt::Debug for RedisIdempotencyStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisIdempotencyStore")
+            .field("ttl_secs", &self.ttl_secs)
+            .finish()
+    }
+}
+
+/// Entry stored in Redis
+#[cfg(feature = "redis")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RedisEntry {
+    original_key: String,
+    state: RedisEntryState,
+    created_at: String,
+}
+
+#[cfg(feature = "redis")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RedisEntryState {
+    InFlight,
+    Completed(String),
+}
+
+#[cfg(feature = "redis")]
+impl RedisEntry {
+    fn new_in_flight(key: String) -> Self {
+        Self {
+            original_key: key,
+            state: RedisEntryState::InFlight,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    fn new_completed(key: String, result: VerificationResult) -> Self {
+        Self {
+            original_key: key,
+            state: RedisEntryState::Completed(result.to_string()),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    fn to_result(&self) -> Option<VerificationResult> {
+        match &self.state {
+            RedisEntryState::InFlight => None,
+            RedisEntryState::Completed(s) => match s.as_str() {
+                "verified" => Some(VerificationResult::Verified),
+                "failed" => Some(VerificationResult::Failed),
+                "unknown" => Some(VerificationResult::Unknown),
+                "partial" => Some(VerificationResult::Partial),
+                "duplicate" => Some(VerificationResult::Duplicate),
+                _ => None,
+            },
+        }
     }
 }
 

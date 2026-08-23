@@ -9,3 +9,6 @@ rust-version.workspace = true
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
 agentverify-runtime = { path = "../agentverify-runtime" }
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }
