@@ -7,6 +7,7 @@ members = [
     "crates/agentverify-receipt",
     "crates/agentverify-http",
     "crates/agentverify-cli",
+    "crates/agentverify-testkit",
 ]
 # Deferred placeholder crates (not yet implemented):
 # - agentverify-observe: Observation adapters
@@ -15,7 +16,6 @@ members = [
 # - agentverify-storage: Storage adapters
 # - agentverify-mcp: MCP integration
 # - agentverify-otel: OpenTelemetry export
-# - agentverify-testkit: Testing utilities
 
 resolver = "2"
 

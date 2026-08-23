@@ -12,7 +12,8 @@ use agentverify_engine::PredicateEngine;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -165,7 +166,7 @@ impl IdempotencyStore for IdempotencyRegistry {
         key: &'a str,
     ) -> Pin<Box<dyn Future<Output = (ClaimResult, Option<VerificationResult>)> + Send + 'a>> {
         Box::pin(async move {
-            let mut guard = self.entries.lock().unwrap();
+            let mut guard = self.entries.lock().await;
             match guard.entry(key.to_string()) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     // Key doesn't exist — atomically claim it
@@ -191,7 +192,7 @@ impl IdempotencyStore for IdempotencyRegistry {
         result: VerificationResult,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
-            let mut guard = self.entries.lock().unwrap();
+            let mut guard = self.entries.lock().await;
             guard.insert(key, EntryState::Completed(result));
         })
     }
@@ -199,7 +200,7 @@ impl IdempotencyStore for IdempotencyRegistry {
     fn release(&self, key: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         let key = key.to_string();
         Box::pin(async move {
-            let mut guard = self.entries.lock().unwrap();
+            let mut guard = self.entries.lock().await;
             guard.remove(&key);
         })
     }
@@ -428,7 +429,7 @@ impl Executor {
     /// Validate preconditions against current state
     fn validate_preconditions(&self, _action: &Action, contract: &Contract) -> Result<(), String> {
         for precond in &contract.preconditions {
-            let result = PredicateEngine::evaluate(
+            let result = PredicateEngine::default().evaluate(
                 &precond.predicate,
                 &serde_json::json!({}), // No state yet
                 &serde_json::json!({}), // No args yet
@@ -453,7 +454,7 @@ impl Executor {
         let mut mandatory_failed = false;
 
         for postcond in &contract.postconditions {
-            let result = PredicateEngine::evaluate(
+            let result = PredicateEngine::default().evaluate(
                 &postcond.predicate,
                 &observation.state,
                 &action.arguments,
@@ -704,7 +705,7 @@ impl Executor {
         Receipt::with_contract_version_and_key(
             action.id,
             contract.id,
-            "",
+            contract.schema_version.clone(),
             result,
             attempts,
             idempotency_key,
@@ -724,7 +725,7 @@ impl Executor {
         Receipt::with_contract_version_and_key(
             action.id,
             contract.id,
-            "",
+            contract.schema_version.clone(),
             result,
             attempts,
             idempotency_key,
