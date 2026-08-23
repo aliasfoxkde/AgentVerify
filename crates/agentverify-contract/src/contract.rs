@@ -90,7 +90,8 @@ impl std::fmt::Display for ContractContext {
 /// Predicate path context for nested predicate errors
 #[derive(Debug, Clone)]
 pub struct PredicatePath {
-    /// The path to the predicate (e.g., "postconditions[0]", "preconditions[2].not")
+    /// The path to the predicate (e.g., "postconditions\[0\]", "preconditions\[2\].not").
+    /// Note: brackets are literal here, not array indexing syntax.
     pub path: String,
 }
 
