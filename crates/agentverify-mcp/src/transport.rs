@@ -52,7 +52,9 @@ impl StdioTransport {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|e| TransportError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, e)))?;
+            .map_err(|e| {
+                TransportError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, e))
+            })?;
 
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
@@ -146,9 +148,10 @@ impl ChannelTransport {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(TransportError::NotConnected);
         }
-        self.tx.send(msg).await.map_err(|_| {
-            TransportError::Channel("Receiver dropped".to_string())
-        })
+        self.tx
+            .send(msg)
+            .await
+            .map_err(|_| TransportError::Channel("Receiver dropped".to_string()))
     }
 
     /// Receive a JSON-RPC message
@@ -158,9 +161,9 @@ impl ChannelTransport {
         }
 
         let mut rx = self.rx.lock().await;
-        rx.recv().await.ok_or_else(|| {
-            TransportError::Channel("Sender dropped".to_string())
-        })
+        rx.recv()
+            .await
+            .ok_or_else(|| TransportError::Channel("Sender dropped".to_string()))
     }
 
     /// Check if connected
@@ -182,10 +185,8 @@ mod tests {
     async fn test_channel_transport() {
         let (t1, t2) = ChannelTransport::channel();
 
-        let msg = JsonRpcMessage::Notification(crate::protocol::JsonRpcNotification::new(
-            "test",
-            None,
-        ));
+        let msg =
+            JsonRpcMessage::Notification(crate::protocol::JsonRpcNotification::new("test", None));
 
         t1.send(msg.clone()).await.unwrap();
         let received = t2.recv().await.unwrap();

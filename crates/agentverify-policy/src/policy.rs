@@ -232,7 +232,11 @@ impl RateLimitTracker {
     }
 
     /// Get or create a bucket for an action
-    fn get_or_create_bucket(&mut self, action_name: &str, limit: &RateLimit) -> &mut RateLimitBucket {
+    fn get_or_create_bucket(
+        &mut self,
+        action_name: &str,
+        limit: &RateLimit,
+    ) -> &mut RateLimitBucket {
         self.buckets
             .entry(action_name.to_string())
             .or_insert_with(|| RateLimitBucket {
@@ -255,9 +259,8 @@ impl RateLimitTracker {
 
     /// Clean up expired buckets
     pub fn cleanup_expired(&mut self) {
-        self.buckets.retain(|_, bucket| {
-            bucket.window_start.elapsed() < bucket.limit.window * 2
-        });
+        self.buckets
+            .retain(|_, bucket| bucket.window_start.elapsed() < bucket.limit.window * 2);
     }
 }
 
@@ -283,12 +286,7 @@ impl IdempotencyRateLimitTracker {
     }
 
     /// Check if an action with the given idempotency key is allowed
-    pub fn check_rate_limit(
-        &mut self,
-        key: &str,
-        action_name: &str,
-        limit: &RateLimit,
-    ) -> bool {
+    pub fn check_rate_limit(&mut self, key: &str, action_name: &str, limit: &RateLimit) -> bool {
         // For per-key limits, we use the action name as part of the key
         // so different actions with same key have separate limits
         let effective_key = format!("{}:{}", action_name, key);
@@ -306,9 +304,8 @@ impl IdempotencyRateLimitTracker {
 
     /// Clean up expired buckets
     pub fn cleanup_expired(&mut self) {
-        self.buckets.retain(|_, bucket| {
-            bucket.window_start.elapsed() < bucket.limit.window * 2
-        });
+        self.buckets
+            .retain(|_, bucket| bucket.window_start.elapsed() < bucket.limit.window * 2);
     }
 }
 
@@ -371,8 +368,7 @@ impl Policy {
 
     /// Add an allowed action name
     pub fn allow_action_name(mut self, name: impl Into<String>) -> Self {
-        self.allowed_actions
-            .push(ActionPattern::Exact(name.into()));
+        self.allowed_actions.push(ActionPattern::Exact(name.into()));
         self
     }
 
@@ -389,7 +385,12 @@ impl Policy {
     }
 
     /// Add a rate limit for an action
-    pub fn with_rate_limit(mut self, action_name: impl Into<String>, max: u32, window: Duration) -> Self {
+    pub fn with_rate_limit(
+        mut self,
+        action_name: impl Into<String>,
+        max: u32,
+        window: Duration,
+    ) -> Self {
         self.rate_limits
             .insert(action_name.into(), RateLimit::new(max, window));
         self
@@ -417,9 +418,12 @@ impl Policy {
     }
 
     /// Require a specific access level for an action
-    pub fn require_access_level(mut self, action_name: impl Into<String>, level: AccessLevel) -> Self {
-        self.access_requirements
-            .insert(action_name.into(), level);
+    pub fn require_access_level(
+        mut self,
+        action_name: impl Into<String>,
+        level: AccessLevel,
+    ) -> Self {
+        self.access_requirements.insert(action_name.into(), level);
         self
     }
 

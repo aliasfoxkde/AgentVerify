@@ -31,7 +31,11 @@ impl JsonRpcRequest {
     }
 
     /// Create a new request with string ID
-    pub fn with_string_id(id: impl Into<String>, method: impl Into<String>, params: Option<Value>) -> Self {
+    pub fn with_string_id(
+        id: impl Into<String>,
+        method: impl Into<String>,
+        params: Option<Value>,
+    ) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
             id: Value::String(id.into()),

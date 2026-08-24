@@ -6,9 +6,7 @@ use agentverify_core::{
     Action, ActionId, BackoffConfig, Contract as CoreContract, IdempotencyKey, Observation,
     Predicate, RecoveryConfig, RecoveryStrategy, SourceId, VerificationResult,
 };
-use agentverify_runtime::{
-    ClaimResult, Executor, ExecutorConfig, IdempotencyStore, Observer,
-};
+use agentverify_runtime::{ClaimResult, Executor, ExecutorConfig, IdempotencyStore, Observer};
 use async_trait::async_trait;
 use chrono::Utc;
 use std::sync::{Arc, Mutex};
@@ -64,7 +62,9 @@ impl IdempotencyStore for MockIdempotencyStore {
         &'a self,
         key: &'a str,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = (ClaimResult, Option<VerificationResult>)> + Send + 'a>,
+        Box<
+            dyn std::future::Future<Output = (ClaimResult, Option<VerificationResult>)> + Send + 'a,
+        >,
     > {
         let key = key.to_string();
         Box::pin(async move {
@@ -220,7 +220,8 @@ async fn test_mock_idempotency_store_complete() {
     let (result, _) = store.claim_or_check("key-2").await;
     assert_eq!(result, ClaimResult::Claimed);
 
-    store.complete("key-2".to_string(), VerificationResult::Verified)
+    store
+        .complete("key-2".to_string(), VerificationResult::Verified)
         .await;
 
     // Now claim should return the completed result
@@ -276,7 +277,10 @@ fn test_executor_config_clone() {
     };
     let config2 = config.clone();
 
-    assert_eq!(config.verification_timeout_ms, config2.verification_timeout_ms);
+    assert_eq!(
+        config.verification_timeout_ms,
+        config2.verification_timeout_ms
+    );
     assert_eq!(config.max_retries, config2.max_retries);
     assert_eq!(config.verify_before_retry, config2.verify_before_retry);
 }

@@ -17,8 +17,8 @@ mod verification_result;
 
 pub use action::{Action, IdempotencyKey};
 pub use contract::{
-    BackoffConfig, BackoffType, ConsistencyMode, Contract, ContractValidationError,
-    Postcondition, Precondition, RecoveryAction, RecoveryConfig, RecoveryStrategy, SchemaVersion,
+    BackoffConfig, BackoffType, ConsistencyMode, Contract, ContractValidationError, Postcondition,
+    Precondition, RecoveryAction, RecoveryConfig, RecoveryStrategy, SchemaVersion,
     CONTRACT_SCHEMA_VERSION,
 };
 pub use id::{ActionId, ContractId, ReceiptId, SourceId};

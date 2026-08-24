@@ -150,11 +150,10 @@ impl SigningService for Ed25519SigningService {
             ));
         }
 
-        let signature = ed25519_dalek::Signature::from_bytes(
-            signature_bytes.as_slice().try_into().map_err(|_| {
-                SigningError::VerificationFailed("Signature conversion failed".to_string())
-            })?,
-        );
+        let signature =
+            ed25519_dalek::Signature::from_bytes(signature_bytes.as_slice().try_into().map_err(
+                |_| SigningError::VerificationFailed("Signature conversion failed".to_string()),
+            )?);
 
         let canonical = self.canonicalize(receipt);
         Ok(self

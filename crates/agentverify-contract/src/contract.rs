@@ -216,7 +216,11 @@ impl std::fmt::Display for ContractError {
                 actual,
                 context,
             } => {
-                write!(f, "Schema version mismatch: expected {}, got {}", expected, actual)?;
+                write!(
+                    f,
+                    "Schema version mismatch: expected {}, got {}",
+                    expected, actual
+                )?;
                 fmt_ctx(f, &None, context)
             }
             ContractError::UnknownFileExtension {
@@ -420,23 +424,19 @@ pub fn parse_yaml(yaml: &str) -> Result<Contract, ContractError> {
 
 /// Load a contract from a file (auto-detects format by extension)
 pub fn load_file(path: impl AsRef<Path>) -> Result<Contract, ContractError> {
-    let content = fs::read_to_string(path.as_ref()).map_err(|e| {
-        ContractError::IoError {
-            source: e,
-            location: Some(SourceLocation::new(path.as_ref().display().to_string(), 1)),
-            context: None,
-        }
+    let content = fs::read_to_string(path.as_ref()).map_err(|e| ContractError::IoError {
+        source: e,
+        location: Some(SourceLocation::new(path.as_ref().display().to_string(), 1)),
+        context: None,
     })?;
     let path = path.as_ref();
 
     if let Some(ext) = path.extension() {
         match ext.to_str() {
-            Some("json") => parse_json(&content).map_err(|e| {
-                e.with_location(SourceLocation::new(path.display().to_string(), 1))
-            }),
-            Some("yaml") | Some("yml") => parse_yaml(&content).map_err(|e| {
-                e.with_location(SourceLocation::new(path.display().to_string(), 1))
-            }),
+            Some("json") => parse_json(&content)
+                .map_err(|e| e.with_location(SourceLocation::new(path.display().to_string(), 1))),
+            Some("yaml") | Some("yml") => parse_yaml(&content)
+                .map_err(|e| e.with_location(SourceLocation::new(path.display().to_string(), 1))),
             _ => Err(ContractError::UnknownFileExtension {
                 extension: ext.to_string_lossy().into_owned(),
                 location: Some(SourceLocation::new(path.display().to_string(), 1)),
@@ -447,10 +447,7 @@ pub fn load_file(path: impl AsRef<Path>) -> Result<Contract, ContractError> {
         // Try JSON first, then YAML
         parse_json(&content)
             .or_else(|_| parse_yaml(&content))
-            .map_err(|e| e.with_location(SourceLocation::new(
-                path.display().to_string(),
-                1,
-            )))
+            .map_err(|e| e.with_location(SourceLocation::new(path.display().to_string(), 1)))
     }
 }
 
@@ -585,12 +582,11 @@ pub fn to_json(contract: &Contract) -> Result<String, ContractError> {
 
 /// Convert a contract to YAML string
 pub fn to_yaml(contract: &Contract) -> Result<String, ContractError> {
-    serde_yaml::to_string(contract)
-        .map_err(|e| ContractError::YamlError {
-            source: e,
-            location: None,
-            context: None,
-        })
+    serde_yaml::to_string(contract).map_err(|e| ContractError::YamlError {
+        source: e,
+        location: None,
+        context: None,
+    })
 }
 
 #[cfg(test)]
