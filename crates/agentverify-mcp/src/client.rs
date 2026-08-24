@@ -11,11 +11,11 @@ use tokio::time::{timeout, Duration};
 
 use crate::protocol::{
     CallToolParams, CallToolResult, ClientCapabilities, ContentBlock, Implementation,
-    InitializeParams, InitializeResult, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
-    JsonRpcNotification, JsonRpcMessage, MCP_PROTOCOL_VERSION, ServerCapabilities, Tool,
-    Resource, Prompt,
+    InitializeParams, InitializeResult, JsonRpcError, JsonRpcMessage, JsonRpcNotification,
+    JsonRpcRequest, JsonRpcResponse, Prompt, Resource, ServerCapabilities, Tool,
+    MCP_PROTOCOL_VERSION,
 };
-use crate::transport::{StdioTransport, ChannelTransport, TransportError};
+use crate::transport::{ChannelTransport, StdioTransport, TransportError};
 
 /// MCP Client error types
 #[derive(Debug, thiserror::Error)]
@@ -147,8 +147,8 @@ impl McpClient {
             .request("initialize", Some(serde_json::to_value(params).unwrap()))
             .await?;
 
-        let response: InitializeResult = serde_json::from_value(result)
-            .map_err(|e| McpClientError::InvalidResponse {
+        let response: InitializeResult =
+            serde_json::from_value(result).map_err(|e| McpClientError::InvalidResponse {
                 expected: "InitializeResult".to_string(),
                 got: e.to_string(),
             })?;
@@ -161,7 +161,8 @@ impl McpClient {
 
         // Send initialized notification
         let notification = JsonRpcNotification::new("initialized", None);
-        self.send_message(JsonRpcMessage::Notification(notification)).await?;
+        self.send_message(JsonRpcMessage::Notification(notification))
+            .await?;
 
         Ok(response)
     }
@@ -184,7 +185,11 @@ impl McpClient {
     }
 
     /// Send a JSON-RPC request and wait for response
-    async fn request(&self, method: &str, params: Option<serde_json::Value>) -> Result<serde_json::Value, McpClientError> {
+    async fn request(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, McpClientError> {
         let request_id = {
             let mut id_guard = self.next_request_id.write().await;
             let id = *id_guard;
@@ -210,8 +215,10 @@ impl McpClient {
         self.send_message(JsonRpcMessage::Request(request)).await?;
 
         // Wait for response with timeout
-        let timeout_result: Result<Result<JsonRpcResponse, tokio::sync::oneshot::error::RecvError>, tokio::time::error::Elapsed> =
-            timeout(Duration::from_secs(self.config.timeout_secs), response_rx).await;
+        let timeout_result: Result<
+            Result<JsonRpcResponse, tokio::sync::oneshot::error::RecvError>,
+            tokio::time::error::Elapsed,
+        > = timeout(Duration::from_secs(self.config.timeout_secs), response_rx).await;
 
         // Remove pending request
         {
@@ -221,7 +228,11 @@ impl McpClient {
 
         let response: JsonRpcResponse = match timeout_result {
             Ok(Ok(resp)) => resp,
-            Ok(Err(_)) => return Err(McpClientError::Channel("Response receiver dropped".to_string())),
+            Ok(Err(_)) => {
+                return Err(McpClientError::Channel(
+                    "Response receiver dropped".to_string(),
+                ))
+            }
             Err(_) => return Err(McpClientError::Timeout),
         };
 
@@ -239,8 +250,8 @@ impl McpClient {
     pub async fn list_tools(&self) -> Result<Vec<Tool>, McpClientError> {
         let result = self.request("tools/list", None).await?;
 
-        let response: ToolsListResponse = serde_json::from_value(result)
-            .map_err(|e| McpClientError::InvalidResponse {
+        let response: ToolsListResponse =
+            serde_json::from_value(result).map_err(|e| McpClientError::InvalidResponse {
                 expected: "ToolsListResponse".to_string(),
                 got: e.to_string(),
             })?;
@@ -249,7 +260,11 @@ impl McpClient {
     }
 
     /// Call a tool on the server
-    pub async fn call_tool(&self, name: &str, arguments: serde_json::Value) -> Result<CallToolResult, McpClientError> {
+    pub async fn call_tool(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<CallToolResult, McpClientError> {
         let params = CallToolParams {
             name: name.to_string(),
             arguments,
@@ -257,14 +272,11 @@ impl McpClient {
         };
 
         let result = self
-            .request(
-                "tools/call",
-                Some(serde_json::to_value(params).unwrap()),
-            )
+            .request("tools/call", Some(serde_json::to_value(params).unwrap()))
             .await?;
 
-        let response: CallToolResult = serde_json::from_value(result)
-            .map_err(|e| McpClientError::InvalidResponse {
+        let response: CallToolResult =
+            serde_json::from_value(result).map_err(|e| McpClientError::InvalidResponse {
                 expected: "CallToolResult".to_string(),
                 got: e.to_string(),
             })?;
@@ -276,8 +288,8 @@ impl McpClient {
     pub async fn list_resources(&self) -> Result<Vec<Resource>, McpClientError> {
         let result = self.request("resources/list", None).await?;
 
-        let response: ResourcesListResponse = serde_json::from_value(result)
-            .map_err(|e| McpClientError::InvalidResponse {
+        let response: ResourcesListResponse =
+            serde_json::from_value(result).map_err(|e| McpClientError::InvalidResponse {
                 expected: "ResourcesListResponse".to_string(),
                 got: e.to_string(),
             })?;
@@ -289,8 +301,8 @@ impl McpClient {
     pub async fn list_prompts(&self) -> Result<Vec<Prompt>, McpClientError> {
         let result = self.request("prompts/list", None).await?;
 
-        let response: PromptsListResponse = serde_json::from_value(result)
-            .map_err(|e| McpClientError::InvalidResponse {
+        let response: PromptsListResponse =
+            serde_json::from_value(result).map_err(|e| McpClientError::InvalidResponse {
                 expected: "PromptsListResponse".to_string(),
                 got: e.to_string(),
             })?;
@@ -299,21 +311,22 @@ impl McpClient {
     }
 
     /// Get a specific prompt by name
-    pub async fn get_prompt(&self, name: &str, arguments: Option<HashMap<String, String>>) -> Result<GetPromptResult, McpClientError> {
+    pub async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: Option<HashMap<String, String>>,
+    ) -> Result<GetPromptResult, McpClientError> {
         let params = GetPromptParams {
             name: name.to_string(),
             arguments,
         };
 
         let result = self
-            .request(
-                "prompts/get",
-                Some(serde_json::to_value(params).unwrap()),
-            )
+            .request("prompts/get", Some(serde_json::to_value(params).unwrap()))
             .await?;
 
-        let response: GetPromptResult = serde_json::from_value(result)
-            .map_err(|e| McpClientError::InvalidResponse {
+        let response: GetPromptResult =
+            serde_json::from_value(result).map_err(|e| McpClientError::InvalidResponse {
                 expected: "GetPromptResult".to_string(),
                 got: e.to_string(),
             })?;

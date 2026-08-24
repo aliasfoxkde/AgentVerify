@@ -6,17 +6,17 @@ use crate::action_executor::{ActionExecutor, DispatchOutcome};
 use crate::receipt_store::ReceiptStore;
 use agentverify_contract::Contract;
 use agentverify_core::{
-    Action, BackoffType, Observation, Receipt, ReceiptId, RecoveryConfig,
-    RecoveryStrategy, SourceId, State, StateMachine, VerificationResult,
+    Action, BackoffType, Observation, Receipt, ReceiptId, RecoveryConfig, RecoveryStrategy,
+    SourceId, State, StateMachine, VerificationResult,
 };
 use agentverify_engine::PredicateEngine;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio::time::timeout as tokio_timeout;
-use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ExecutorError {
@@ -405,7 +405,8 @@ impl Executor {
                 .advance(State::Observing)
                 .map_err(|e| ExecutorError::Unknown(e.to_string()))?;
 
-            let timeout_duration = std::time::Duration::from_millis(self.config.verification_timeout_ms);
+            let timeout_duration =
+                std::time::Duration::from_millis(self.config.verification_timeout_ms);
             let observation = if let Some(ref obs) = observer {
                 match tokio_timeout(timeout_duration, obs.observe(&action, &contract)).await {
                     Ok(Ok(obs)) => obs,
@@ -506,12 +507,13 @@ impl Executor {
     /// Validate preconditions against current state
     fn validate_preconditions(&self, _action: &Action, contract: &Contract) -> Result<(), String> {
         for precond in &contract.preconditions {
-            let result = PredicateEngine::default().evaluate(
-                &precond.predicate,
-                &serde_json::json!({}), // No state yet
-                &serde_json::json!({}), // No args yet
-            )
-            .map_err(|e| e.to_string())?;
+            let result = PredicateEngine::default()
+                .evaluate(
+                    &precond.predicate,
+                    &serde_json::json!({}), // No state yet
+                    &serde_json::json!({}), // No args yet
+                )
+                .map_err(|e| e.to_string())?;
 
             if !matches!(result, VerificationResult::Verified) {
                 return Err(format!("Precondition failed: {}", precond.description));
@@ -531,12 +533,9 @@ impl Executor {
         let mut mandatory_failed = false;
 
         for postcond in &contract.postconditions {
-            let result = PredicateEngine::default().evaluate(
-                &postcond.predicate,
-                &observation.state,
-                &action.arguments,
-            )
-            .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
+            let result = PredicateEngine::default()
+                .evaluate(&postcond.predicate, &observation.state, &action.arguments)
+                .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
 
             match result {
                 VerificationResult::Verified => {}
@@ -690,22 +689,25 @@ impl Executor {
                 .advance(State::Observing)
                 .map_err(|e| ExecutorError::Unknown(e.to_string()))?;
 
-            let timeout_duration = std::time::Duration::from_millis(self.config.verification_timeout_ms);
+            let timeout_duration =
+                std::time::Duration::from_millis(self.config.verification_timeout_ms);
             let observation = match observer {
-                Some(ref obs) => match tokio_timeout(timeout_duration, obs.observe(&action, &contract)).await {
-                    Ok(Ok(obs)) => obs,
-                    Ok(Err(ExecutorError::Unknown(_msg))) => {
-                        final_result = Some(VerificationResult::Unknown);
-                        break;
+                Some(ref obs) => {
+                    match tokio_timeout(timeout_duration, obs.observe(&action, &contract)).await {
+                        Ok(Ok(obs)) => obs,
+                        Ok(Err(ExecutorError::Unknown(_msg))) => {
+                            final_result = Some(VerificationResult::Unknown);
+                            break;
+                        }
+                        Ok(Err(e)) => return Err(e),
+                        Err(_) => {
+                            return Err(ExecutorError::Timeout(format!(
+                                "Observation timed out after {}ms",
+                                self.config.verification_timeout_ms
+                            )));
+                        }
                     }
-                    Ok(Err(e)) => return Err(e),
-                    Err(_) => {
-                        return Err(ExecutorError::Timeout(format!(
-                            "Observation timed out after {}ms",
-                            self.config.verification_timeout_ms
-                        )));
-                    }
-                },
+                }
                 None => Observation::new(SourceId("none".into()), serde_json::json!({})),
             };
 

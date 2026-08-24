@@ -15,8 +15,8 @@ use axum::{
 use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
@@ -186,10 +186,8 @@ async fn serve(port: u16) -> Result<ExitCode> {
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
     tokio::spawn(async move {
         // Setup SIGTERM signal stream
-        let mut sigterm = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        )
-        .expect("Failed to create SIGTERM signal handler");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to create SIGTERM signal handler");
 
         // Wait for shutdown signal (SIGINT or SIGTERM)
         tokio::select! {
@@ -207,9 +205,8 @@ async fn serve(port: u16) -> Result<ExitCode> {
     });
 
     // Start the server
-    let server_handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.expect("Server error")
-    });
+    let server_handle =
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("Server error") });
 
     // Wait for either the server to stop or shutdown signal
     tokio::select! {

@@ -291,7 +291,10 @@ impl RedisIdempotencyStore {
     /// # Arguments
     /// * `url` - Redis connection URL (e.g., `redis://127.0.0.1:6379`)
     /// * `ttl_secs` - Default TTL for entries in seconds
-    pub async fn from_url(url: &str, ttl_secs: u64) -> Result<Self, deadpool_redis::CreatePoolError> {
+    pub async fn from_url(
+        url: &str,
+        ttl_secs: u64,
+    ) -> Result<Self, deadpool_redis::CreatePoolError> {
         let pool = deadpool_redis::Config::from_url(url)
             .create_pool(Some(deadpool_redis::Runtime::Tokio1))?;
         Ok(Self::new(pool, ttl_secs))
