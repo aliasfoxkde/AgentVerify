@@ -11,5 +11,4 @@ target/
 .DS_Store
 
 # Rust
-Cargo.lock
 .codebase-memory/
