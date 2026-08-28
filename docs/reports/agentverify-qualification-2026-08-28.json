@@ -1,0 +1,243 @@
+{
+  "receipt_id": "qual-2026-08-28-001",
+  "qualification_date": "2026-08-28",
+  "checkout": "/home/mkinney/work/agentverify-audit-20260824",
+  "baseline_commit": "a955b4a",
+  "branch": "main",
+  "auditor": "MiniMax-M2.7",
+  "decision": "OBSERVE",
+  "decision_rationale": "Core library (predicate engine, contract types, state machine, receipt data model) is well-implemented with 63 passing unit tests and clean CI gates. However, no real action executor exists, no real HTTP observer makes live calls, no receipt persists across invocations, and CLI verify/serve are stubs. Not a runnable service or integrable product.",
+  "commands_executed": [
+    {
+      "command": "cargo fmt --all -- --check",
+      "description": "Formatting check",
+      "exit_code": 0,
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --workspace --all-targets -- -D warnings",
+      "description": "Strict Clippy with warnings as errors",
+      "exit_code": 0,
+      "result": "PASS"
+    },
+    {
+      "command": "cargo test --workspace",
+      "description": "Full workspace test suite",
+      "exit_code": 0,
+      "result": "PASS"
+    },
+    {
+      "command": "cargo build --release",
+      "description": "Release build",
+      "exit_code": 0,
+      "result": "PASS"
+    },
+    {
+      "command": "./target/release/agentverify contract validate /tmp/agentverify-test/valid-contract.json",
+      "description": "CLI validate valid JSON contract",
+      "exit_code": 0,
+      "result": "PASS"
+    },
+    {
+      "command": "./target/release/agentverify contract validate /tmp/agentverify-test/valid-contract.yaml",
+      "description": "CLI validate valid YAML contract",
+      "exit_code": 0,
+      "result": "PASS"
+    },
+    {
+      "command": "./target/release/agentverify contract validate /tmp/agentverify-test/invalid-no-postconditions.json",
+      "description": "CLI validate invalid contract (no postconditions)",
+      "exit_code": 1,
+      "result": "PASS (rejected as expected)"
+    },
+    {
+      "command": "./target/release/agentverify contract validate /tmp/agentverify-test/invalid-empty-action.json",
+      "description": "CLI validate invalid contract (empty action name)",
+      "exit_code": 1,
+      "result": "PASS (rejected as expected)"
+    },
+    {
+      "command": "./target/release/agentverify contract validate /tmp/agentverify-test/invalid-empty-all-predicate.json",
+      "description": "CLI validate invalid contract (empty all predicate)",
+      "exit_code": 1,
+      "result": "PASS (rejected as expected)"
+    },
+    {
+      "command": "./target/release/agentverify contract validate /tmp/agentverify-test/malformed-json.json",
+      "description": "CLI validate malformed JSON",
+      "exit_code": 1,
+      "result": "PASS (rejected as expected)"
+    },
+    {
+      "command": "./target/release/agentverify contract validate /tmp/agentverify-test/postcondition-failure.json",
+      "description": "CLI validate contract with postcondition that will fail at runtime",
+      "exit_code": 0,
+      "result": "PASS (contract parses as valid; postcondition failure is runtime evaluation, not validation)"
+    },
+    {
+      "command": "./target/release/agentverify contract validate /tmp/agentverify-test/valid-contract.json --json",
+      "description": "CLI validate with JSON output",
+      "exit_code": 0,
+      "result": "PASS"
+    }
+  ],
+  "test_summary": {
+    "total_tests": 63,
+    "passed": 63,
+    "failed": 0,
+    "by_crate": {
+      "agentverify-core": 12,
+      "agentverify-contract": 7,
+      "agentverify-engine": 24,
+      "agentverify-runtime": 6,
+      "agentverify-receipt": 3,
+      "agentverify-http": 11,
+      "agentverify-cli": 0
+    }
+  },
+  "crate_status": [
+    {
+      "crate": "agentverify-core",
+      "status": "IMPLEMENTED",
+      "notes": "Core types: Action, Contract, Predicate, Observation, Evidence, Receipt, StateMachine, VerificationResult. Schema version. All types are deterministic with no network dependencies."
+    },
+    {
+      "crate": "agentverify-contract",
+      "status": "IMPLEMENTED",
+      "notes": "JSON/YAML parsing, file loading, semantic validation. 7 unit tests."
+    },
+    {
+      "crate": "agentverify-engine",
+      "status": "IMPLEMENTED",
+      "notes": "Predicate engine with all operators: exists, not-exists, equals, not-equals, contains, matches (regex), greater-than, less-than, count, is-empty, is-not-empty, all, any, not, implies, $args resolution. 24 unit tests."
+    },
+    {
+      "crate": "agentverify-runtime",
+      "status": "PARTIAL_SIMULATED",
+      "notes": "Executor::execute() simulates execution with hardcoded State::Unknown advance. execute_with_executor() requires Arc<dyn ActionExecutor> but no concrete implementations exist in workspace. 6 tests use MockExecutor with predefined DispatchOutcome values. No real I/O."
+    },
+    {
+      "crate": "agentverify-receipt",
+      "status": "PARTIAL_INPROCESS",
+      "notes": "Ed25519 signing via SigningService. Keys generated in-memory per process. No persistent key storage. Receipt can only be verified in the same process that signed it. 3 tests pass with same key instance."
+    },
+    {
+      "crate": "agentverify-http",
+      "status": "PARTIAL_URL_BUILDER_ONLY",
+      "notes": "RestObserver::build_url() validates URLs against injection patterns. observe() method calls fetch_json() but no tests make actual HTTP calls. No testcontainers or mock servers. 11 tests cover URL construction, redaction, truncation only."
+    },
+    {
+      "crate": "agentverify-cli",
+      "status": "PARTIAL",
+      "notes": "contract validate works correctly (load, parse, validate, JSON/text output, stable exit codes). verify and serve are stubs (print message only). 0 unit tests."
+    }
+  ],
+  "deferred_removed": [
+    "agentverify-observe",
+    "agentverify-recovery",
+    "agentverify-policy",
+    "agentverify-storage",
+    "agentverify-mcp",
+    "agentverify-otel",
+    "agentverify-testkit"
+  ],
+  "limitations": [
+    "No real ActionExecutor implementations (no REST client, database driver, message queue integration)",
+    "No live HTTP calls in tests (RestObserver observe() never reaches reqwest in test suite)",
+    "No persistent ReceiptStore (receipts not durable across process restarts)",
+    "No key management (SigningService generates ephemeral keys, no KMS, no rotation, no certificate chain)",
+    "No integration tests (0 testcontainers, 0 external service mocks, 0 failure injection)",
+    "CLI verify and serve commands are stubs (primary user-facing commands unimplemented)",
+    "cargo audit not installed (dependency vulnerability scanning not performed)",
+    "No proptest property tests (proptest in dependencies but unused)",
+    "HTTP observer security: no redirect, IPv6, credentials-in-URL, HTTP desync, or response-timing tests"
+  ],
+  "missing_service_auth_receipt_contracts": [
+    {
+      "area": "Action Execution",
+      "items": [
+        "ActionExecutor concrete implementations for target systems (REST, Postgres, Redis)",
+        "Dispatch protocol definition (sync vs async, webhook vs polling)",
+        "Timeout behavior documentation per transport",
+        "Integration test with real HTTP endpoint"
+      ],
+      "gate": "testcontainers-based integration test with a real HTTP server returning deterministic responses"
+    },
+    {
+      "area": "Observer",
+      "items": [
+        "Observer configuration trait (timeout, retry, consistency, redaction, evidence-size limits)",
+        "Actual HTTP GET calls in tests (currently only URL construction is tested)",
+        "Redirect-following policy documentation",
+        "DNS rebinding protection",
+        "Testcontainers test with real HTTP server and fixture data"
+      ],
+      "gate": "testcontainers-based test with a real HTTP server returning fixture data"
+    },
+    {
+      "area": "Receipt",
+      "items": [
+        "Receipt canonicalization algorithm (what fields are signed, in what order)",
+        "Key management: generation, rotation, revocation",
+        "ReceiptStore trait with file-backed implementation",
+        "Cross-process receipt verification (sign in one process, verify in another)"
+      ],
+      "gate": "a receipt signed in one process can be verified in a different process using a persisted key"
+    },
+    {
+      "area": "Auth/Authorization",
+      "items": [
+        "Observer authentication to systems of record (API keys, OAuth, mTLS)",
+        "HTTP gateway client authentication",
+        "Secret injection and redaction in receipts/logs",
+        "Threat model document with attack trees"
+      ],
+      "gate": "threat model document with attack trees for auth bypass, secret exfiltration, receipt tampering"
+    },
+    {
+      "area": "CLI",
+      "items": [
+        "agentverify verify (implement dry-run with real executor + observer)",
+        "agentverify serve (implement HTTP gateway with auth, rate limits, TLS)",
+        "Documented deployment guide with TLS, auth, operational runbook"
+      ],
+      "gate": "documented deployment guide with TLS, auth, and operational runbook"
+    }
+  ],
+  "integration_proof_requirements_not_met": [
+    "No testcontainer tests (Postgres, Redis, HTTP mock servers not used)",
+    "No failure injection (no chaos testing for timeouts, network partitions, partial writes)",
+    "No end-to-end receipt flow (sign -> persist -> retrieve -> verify cross-process)",
+    "No real observer integration (RestObserver::observe() never called with live HTTP response in tests)",
+    "No MCP integration (agentverify-mcp crate removed from workspace)",
+    "No OpenTelemetry (agentverify-otel crate removed from workspace)"
+  ],
+  "test_classification": {
+    "unit_tests_engine": 24,
+    "unit_tests_contract": 7,
+    "unit_tests_core": 12,
+    "unit_tests_runtime": 6,
+    "unit_tests_receipt": 3,
+    "unit_tests_http_observer": 11,
+    "unit_tests_cli": 0,
+    "integration_tests": 0,
+    "total": 63,
+    "is_integration_proof": false,
+    "note": "All tests are unit tests. 0 integration tests. Suite does not constitute an integration proof."
+  },
+  "changed_files": [],
+  "worktree_state": "CLEAN before and after — no source modifications",
+  "next_gates": {
+    "PILOT": [
+      "All items in missing_service_auth_receipt_contracts section addressed with executable evidence"
+    ],
+    "PROMOTE": [
+      "Full integration test suite with testcontainers",
+      "End-to-end receipt flow (sign, persist, retrieve, cross-process verify)",
+      "Deployed HTTP gateway with documented auth/TLS/deployment",
+      "Operational runbook and threat model"
+    ]
+  },
+  "ranking": "OBSERVE",
+  "recommendation": "Do not integrate into Control Center or any production service at this time. The core library is sound and suitable for further development. Focus next efforts on: (1) real ActionExecutor implementation for at least one transport, (2) testcontainers-based HTTP observer tests, (3) persistent ReceiptStore with cross-process verification."
+}
