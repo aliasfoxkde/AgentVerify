@@ -9,20 +9,26 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use thiserror::Error;
 
+/// Errors produced while observing state over REST
 #[derive(Debug, Error)]
 pub enum RestObserverError {
+    /// Underlying HTTP transport failed
     #[error("HTTP request failed: {0}")]
     HttpError(#[from] reqwest::Error),
 
+    /// Constructed URL failed validation (traversal or empty segments)
     #[error("Invalid URL: {0}")]
     InvalidUrl(String),
 
+    /// Response body could not be read or parsed
     #[error("Response parse error: {0}")]
     ParseError(String),
 
+    /// Request exceeded the configured timeout
     #[error("Request timeout")]
     Timeout,
 
+    /// Observation path matched a configured redaction path
     #[error("Redacted value detected in path: {0}")]
     RedactedPath(String),
 }
@@ -43,7 +49,7 @@ pub struct RestObserverConfig {
 }
 
 impl RestObserverConfig {
-    /// Create a new config with required base_url
+    /// Create a new config with required `base_url`
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
@@ -55,18 +61,21 @@ impl RestObserverConfig {
     }
 
     /// Set the timeout
+    #[must_use]
     pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = timeout_ms;
         self
     }
 
     /// Add a path to redact
+    #[must_use]
     pub fn with_redact_path(mut self, path: impl Into<String>) -> Self {
         self.redact_paths.push(path.into());
         self
     }
 
     /// Add a header
+    #[must_use]
     pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.headers.push((key.into(), value.into()));
         self
@@ -87,6 +96,10 @@ pub struct RestObserver {
 
 impl RestObserver {
     /// Create a new REST observer with the given configuration
+    ///
+    /// # Errors
+    /// Returns [`RestObserverError::HttpError`] if the underlying HTTP client
+    /// cannot be built from the configured timeout.
     pub fn new(config: RestObserverConfig) -> Result<Self, RestObserverError> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_millis(config.timeout_ms))
@@ -143,12 +156,11 @@ impl RestObserver {
 
         if status.is_success() {
             response.json::<T>().await.map_err(|e| {
-                RestObserverError::ParseError(format!("Failed to parse response: {}", e))
+                RestObserverError::ParseError(format!("Failed to parse response: {e}"))
             })
         } else {
             Err(RestObserverError::ParseError(format!(
-                "HTTP error: {}",
-                status
+                "HTTP error: {status}"
             )))
         }
     }
@@ -180,6 +192,7 @@ impl RestObserver {
 
 impl RestObserverConfig {
     /// Helper to set max evidence size
+    #[must_use]
     pub fn with_max_evidence_size(mut self, size: usize) -> Self {
         self.max_evidence_size = size;
         self
@@ -195,14 +208,13 @@ impl agentverify_runtime::Observer for RestObserver {
     ) -> Result<Observation, ExecutorError> {
         let url = self
             .build_url(action, contract)
-            .map_err(|e| ExecutorError::Unknown(format!("Failed to build URL: {}", e)))?;
+            .map_err(|e| ExecutorError::Unknown(format!("Failed to build URL: {e}")))?;
 
         // Check for redacted paths before making request
         for path in &self.config.redact_paths {
             if url.contains(path) {
                 return Err(ExecutorError::Unknown(format!(
-                    "Redacted path in URL: {}",
-                    path
+                    "Redacted path in URL: {path}"
                 )));
             }
         }
@@ -210,7 +222,7 @@ impl agentverify_runtime::Observer for RestObserver {
         let mut state: Value = self
             .fetch_json(&url)
             .await
-            .map_err(|e| ExecutorError::Unknown(format!("Failed to fetch: {}", e)))?;
+            .map_err(|e| ExecutorError::Unknown(format!("Failed to fetch: {e}")))?;
 
         // Apply redaction
         self.redact(&mut state);

@@ -1,7 +1,8 @@
-//! AgentVerify Contract
+//! `AgentVerify` Contract
 //!
 //! JSON/YAML contract parsing and validation
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 pub mod contract;
 
 pub use agentverify_core::Contract;

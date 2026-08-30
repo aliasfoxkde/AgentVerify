@@ -18,10 +18,17 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 
 # Async runtime
-tokio = { version = "1.0", features = ["process", "io-util", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.0", features = ["macros", "process", "io-util", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
+# Tests drive the client with the multi-thread runtime, `#[tokio::test]`, and
+# real subprocess peers, so the dev profile needs the same tokio features the
+# library uses plus `macros`.
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread", "process", "io-util", "sync", "time"] }
 tokio-test = "0.4"
 
 [package.metadata.docs.rs]
 all-features = true
+
+[lints]
+workspace = true

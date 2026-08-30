@@ -1,5 +1,1 @@
-# Clippy configuration for AgentVerify
-#
-# Strict linting rules following best practices
-
-msrv = "1.75"
+msrv = "1.88"

@@ -14,18 +14,23 @@ use crate::protocol::JsonRpcMessage;
 /// Transport errors
 #[derive(Debug, thiserror::Error)]
 pub enum TransportError {
+    /// The underlying stream or process could not be read or written.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A message could not be serialized or deserialized.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// The in-process channel linking the two peers failed.
     #[error("Channel error: {0}")]
     Channel(String),
 
+    /// The peer process exited with the given status.
     #[error("Process exited: {0}")]
     ProcessExited(i32),
 
+    /// The transport has been closed.
     #[error("Not connected")]
     NotConnected,
 }
@@ -41,8 +46,21 @@ impl StdioTransport {
     /// Connect to an MCP server via stdio
     ///
     /// # Arguments
-    /// * `command` - The command to execute (e.g., "npx", "python")
-    /// * `args` - Command arguments (e.g., ["-m", "mcp_server"])
+    ///
+    /// * `command` - The command to execute, for example `npx` or `python`
+    /// * `args` - Command arguments passed to `command`
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError::Io` if the server process cannot be spawned,
+    /// and `TransportError::Channel` if its stdin or stdout streams are not
+    /// piped as requested.
+    ///
+    /// The signature is `async` for forward compatibility with asynchronous
+    /// process spawning, even though the body is currently synchronous.
+    // `unused_async_trait_impl` (clippy 1.98) fires on this signature in
+    // addition to `unused_async`, so both names are allowed.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn connect(command: &str, args: &[&str]) -> Result<Self, TransportError> {
         use std::process::Stdio;
 
@@ -56,8 +74,16 @@ impl StdioTransport {
                 TransportError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, e))
             })?;
 
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
+        // Both streams were configured as piped above, so they are present
+        // unless the child was already reaped; fail loudly but without panicking.
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| TransportError::Channel("child stdin was not piped".to_string()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| TransportError::Channel("child stdout was not piped".to_string()))?;
 
         let writer = Arc::new(tokio::sync::Mutex::new(stdin));
         let reader = Arc::new(tokio::sync::Mutex::new(BufReader::new(stdout)));
@@ -71,6 +97,11 @@ impl StdioTransport {
     }
 
     /// Send a JSON-RPC message as a newline-delimited JSON line
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError::NotConnected` if the transport has been
+    /// closed, and propagates serialization or write failures.
     pub async fn send(&self, msg: JsonRpcMessage) -> Result<(), TransportError> {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(TransportError::NotConnected);
@@ -86,6 +117,12 @@ impl StdioTransport {
     }
 
     /// Receive a JSON-RPC message (blocking read line)
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError::NotConnected` if the transport has been
+    /// closed or the peer sent an empty line, and propagates read or
+    /// deserialization failures.
     pub async fn recv(&self) -> Result<JsonRpcMessage, TransportError> {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(TransportError::NotConnected);
@@ -105,6 +142,7 @@ impl StdioTransport {
     }
 
     /// Check if connected
+    #[must_use]
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::SeqCst)
     }
@@ -124,6 +162,7 @@ pub struct ChannelTransport {
 
 impl ChannelTransport {
     /// Create a connected pair of channel transports
+    #[must_use]
     pub fn channel() -> (Self, Self) {
         let (tx1, rx1) = mpsc::channel(100);
         let (tx2, rx2) = mpsc::channel(100);
@@ -144,6 +183,12 @@ impl ChannelTransport {
     }
 
     /// Send a JSON-RPC message
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError::NotConnected` if the transport has been
+    /// closed, or `TransportError::Channel` if the receiving half has been
+    /// dropped.
     pub async fn send(&self, msg: JsonRpcMessage) -> Result<(), TransportError> {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(TransportError::NotConnected);
@@ -155,6 +200,12 @@ impl ChannelTransport {
     }
 
     /// Receive a JSON-RPC message
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError::NotConnected` if the transport has been
+    /// closed, or `TransportError::Channel` if the sending half has been
+    /// dropped.
     pub async fn recv(&self) -> Result<JsonRpcMessage, TransportError> {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(TransportError::NotConnected);
@@ -180,17 +231,117 @@ impl ChannelTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+
+    fn sample_request(id: u64) -> JsonRpcMessage {
+        JsonRpcMessage::Request(JsonRpcRequest::new(id, "tools/list", None))
+    }
+
+    fn sample_response(id: u64) -> JsonRpcMessage {
+        JsonRpcMessage::Response(JsonRpcResponse::Success {
+            jsonrpc: "2.0".to_string(),
+            id: serde_json::json!(id),
+            result: serde_json::json!({"tools": []}),
+        })
+    }
 
     #[tokio::test]
     async fn test_channel_transport() {
         let (t1, t2) = ChannelTransport::channel();
 
-        let msg =
-            JsonRpcMessage::Notification(crate::protocol::JsonRpcNotification::new("test", None));
+        let msg = JsonRpcMessage::Notification(JsonRpcNotification::new("test", None));
 
         t1.send(msg.clone()).await.unwrap();
         let received = t2.recv().await.unwrap();
 
         assert!(matches!(received, JsonRpcMessage::Notification(_)));
+    }
+
+    #[tokio::test]
+    async fn channel_transport_roundtrips_every_message_shape() {
+        let (client, server) = ChannelTransport::channel();
+
+        for message in [sample_request(1), sample_response(2)] {
+            client.send(message.clone()).await.unwrap();
+            let received = server.recv().await.unwrap();
+            assert_eq!(
+                serde_json::to_string(&received).unwrap(),
+                serde_json::to_string(&message).unwrap()
+            );
+        }
+
+        // The pair is symmetric: the server side can answer on the same
+        // transport it read from.
+        server.send(sample_response(1)).await.unwrap();
+        assert!(matches!(
+            client.recv().await.unwrap(),
+            JsonRpcMessage::Response(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn channel_transport_send_fails_when_the_receiver_is_dropped() {
+        let (client, server) = ChannelTransport::channel();
+        drop(server);
+
+        let err = client.send(sample_request(1)).await.unwrap_err();
+        assert!(
+            matches!(err, TransportError::Channel(ref message) if message == "Receiver dropped")
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_transport_recv_fails_when_the_sender_is_dropped() {
+        let (client, server) = ChannelTransport::channel();
+        drop(client);
+
+        let err = server.recv().await.unwrap_err();
+        assert!(matches!(err, TransportError::Channel(ref message) if message == "Sender dropped"));
+    }
+
+    #[test]
+    fn error_messages_are_stable() {
+        let io = TransportError::Io(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "pipe closed",
+        ));
+        assert_eq!(io.to_string(), "IO error: pipe closed");
+
+        let parse = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let json = TransportError::from(parse);
+        assert!(json.to_string().starts_with("JSON error: "));
+
+        assert_eq!(
+            TransportError::Channel("Receiver dropped".to_string()).to_string(),
+            "Channel error: Receiver dropped"
+        );
+        assert_eq!(
+            TransportError::ProcessExited(3).to_string(),
+            "Process exited: 3"
+        );
+        assert_eq!(TransportError::NotConnected.to_string(), "Not connected");
+    }
+
+    #[tokio::test]
+    async fn channel_transport_reports_a_closed_connection() {
+        let (client, server) = ChannelTransport::channel();
+
+        client.set_connected(false);
+        assert!(!client.is_connected());
+        // The connected flag is shared by both halves of the pair.
+        assert!(!server.is_connected());
+
+        let send = client.send(sample_request(1)).await.unwrap_err();
+        assert!(matches!(send, TransportError::NotConnected));
+        let recv = client.recv().await.unwrap_err();
+        assert!(matches!(recv, TransportError::NotConnected));
+
+        // Reconnecting restores the pair.
+        client.set_connected(true);
+        client.send(sample_request(1)).await.unwrap();
+        assert!(matches!(
+            server.recv().await.unwrap(),
+            JsonRpcMessage::Request(_)
+        ));
     }
 }

@@ -1,0 +1,91 @@
+name: Verification bug
+description: AgentVerify returned the wrong verification result — false VERIFIED, false FAILED, or mishandled UNKNOWN.
+labels: [bug, verification-integrity]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Wrong verification outcomes are the most serious class of bug in
+        AgentVerify. Please fill in everything you can — the contract,
+        observed state, and receipt are usually enough to reproduce and
+        diagnose.
+
+        Principles that should never be violated:
+
+        - A timeout or unreachable system of record is `UNKNOWN`, never `FAILED`
+        - `VERIFIED` requires every postcondition to be satisfied
+        - `PARTIAL` means some postconditions passed and others did not
+  - type: dropdown
+    id: wrong-result
+    attributes:
+      label: What was wrong?
+      options:
+        - Reported VERIFIED but the postconditions were NOT satisfied
+        - Reported FAILED but the postconditions WERE satisfied
+        - Reported a definite result (VERIFIED/FAILED) when it should have been UNKNOWN
+        - Reported UNKNOWN when the outcome was determinable
+        - Wrong PARTIAL / DUPLICATE handling
+        - Receipt evidence does not match the reported result
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Where did it happen?
+      options:
+        - Predicate evaluation (agentverify-engine)
+        - Contract parsing / validation (agentverify-contract)
+        - Executor lifecycle (agentverify-runtime)
+        - Observer (agentverify-observe / REST / Postgres / Redis)
+        - Receipt creation or persistence (agentverify-receipt)
+        - Policy evaluation (agentverify-policy)
+        - CLI
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Contract
+      description: The JSON/YAML contract used (trim to the relevant postconditions).
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: observed-state
+    attributes:
+      label: Observed state
+      description: The observation payload(s) returned by the system of record.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: receipt
+    attributes:
+      label: Receipt
+      description: The receipt produced, if you have one.
+      render: json
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What result should have been reported, and why.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Crate version, commit SHA, or "main".
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for a duplicate
+          required: true
+        - label: This is not a security vulnerability (those go to private reporting)
+          required: true

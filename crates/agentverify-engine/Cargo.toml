@@ -27,3 +27,6 @@ harness = false
 
 [package.metadata.docs.rs]
 all-features = true
+
+[lints]
+workspace = true

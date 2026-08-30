@@ -1,4 +1,4 @@
-//! AgentVerify MCP Client
+//! `AgentVerify` MCP Client
 //!
 //! Provides a Model Context Protocol (MCP) client implementation for connecting
 //! to MCP servers and accessing tools, resources, and prompts.
@@ -18,10 +18,11 @@
 //! let result = client.call_tool("my_tool", serde_json::json!({"arg": "value"})).await?;
 //! ```
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 mod client;
 mod protocol;
 mod transport;
 
 pub use client::{McpClient, McpClientConfig, McpClientError};
 pub use protocol::*;
-pub use transport::{ChannelTransport, StdioTransport};
+pub use transport::{ChannelTransport, StdioTransport, TransportError};

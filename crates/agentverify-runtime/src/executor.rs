@@ -6,8 +6,8 @@ use crate::action_executor::{ActionExecutor, DispatchOutcome};
 use crate::receipt_store::ReceiptStore;
 use agentverify_contract::Contract;
 use agentverify_core::{
-    Action, BackoffType, Observation, Receipt, ReceiptId, RecoveryConfig, RecoveryStrategy,
-    SourceId, State, StateMachine, VerificationResult,
+    Action, BackoffType, Observation, PostconditionResult, Receipt, ReceiptId, RecoveryConfig,
+    RecoveryStrategy, SourceId, State, StateMachine, VerificationResult,
 };
 use agentverify_engine::PredicateEngine;
 use std::collections::HashMap;
@@ -18,24 +18,37 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio::time::timeout as tokio_timeout;
 
+/// Errors raised while executing and verifying an action
 #[derive(Debug, Error)]
 pub enum ExecutorError {
+    /// No contract was registered for the action name
     #[error("Contract not found for action: {0}")]
     ContractNotFound(String),
+    /// A precondition evaluated to a non-verified result
     #[error("Precondition failed: {0}")]
     PreconditionFailed(String),
+    /// Dispatching or executing the action failed
     #[error("Execution failed: {0}")]
     ExecutionFailed(String),
+    /// A postcondition could not be evaluated
     #[error("Verification failed: {0}")]
     VerificationFailed(String),
+    /// An operation exceeded its allotted time
     #[error("Timeout: {0}")]
     Timeout(String),
+    /// The outcome could not be determined
     #[error("Unknown result: {0}")]
     Unknown(String),
+    /// The idempotency key was already claimed and completed elsewhere
     #[error("Idempotency conflict: action already executed")]
     IdempotencyConflict,
+    /// All retry attempts were consumed without a verified outcome
     #[error("Retry exhausted after {attempts} attempts")]
-    RetryExhausted { attempts: u32 },
+    RetryExhausted {
+        /// Number of attempts made before giving up
+        attempts: u32,
+    },
+    /// The action executor adapter reported an error
     #[error("Action executor error: {0}")]
     ActionExecutor(String),
 }
@@ -84,14 +97,14 @@ pub enum ClaimResult {
 /// Idempotency store trait for tracking executed actions
 ///
 /// Implement this trait to provide custom idempotency storage:
-/// - In-memory for tests (IdempotencyRegistry)
+/// - In-memory for tests (`IdempotencyRegistry`)
 /// - Redis for distributed systems (atomic SETNX + GET)
-/// - PostgreSQL for durable storage (ON CONFLICT DO UPDATE)
+/// - `PostgreSQL` for durable storage (ON CONFLICT DO UPDATE)
 ///
 /// # Atomic semantics
 /// The `claim_or_check` operation is atomic: it prevents two concurrent
 /// requests from both dispatching the same action. Only the first to call
-/// claim_or_check will receive `Claimed`; all others get `AlreadyClaimed`
+/// `claim_or_check` will receive `Claimed`; all others get `AlreadyClaimed`
 /// with the in-flight or completed result.
 ///
 /// # Key lifecycle
@@ -140,7 +153,7 @@ pub trait IdempotencyStore: Send + Sync {
 /// - No TTL: entries live until process exits
 /// - No graceful expiry: entries accumulate until process exit
 ///
-/// For production, use a distributed store (Redis, PostgreSQL) implementing IdempotencyStore.
+/// For production, use a distributed store (Redis, `PostgreSQL`) implementing `IdempotencyStore`.
 pub struct IdempotencyRegistry {
     entries: Mutex<HashMap<String, EntryState>>,
 }
@@ -155,6 +168,8 @@ enum EntryState {
 }
 
 impl IdempotencyRegistry {
+    /// Create an empty registry
+    #[must_use]
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
@@ -214,6 +229,18 @@ impl Default for IdempotencyRegistry {
     }
 }
 
+/// Aggregate outcome of postcondition verification
+///
+/// Pairs the final [`VerificationResult`] with the per-postcondition evidence
+/// recorded into the receipt.
+#[derive(Debug, Clone)]
+struct PostconditionEvaluation {
+    /// Aggregate verification outcome
+    result: VerificationResult,
+    /// Per-postcondition evidence, in contract order
+    details: Vec<PostconditionResult>,
+}
+
 /// Verified executor
 pub struct Executor {
     config: ExecutorConfig,
@@ -223,6 +250,7 @@ pub struct Executor {
 
 impl Executor {
     /// Create a new executor with default configuration
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(ExecutorConfig::default())
     }
@@ -237,6 +265,7 @@ impl Executor {
     }
 
     /// Create a new executor with custom configuration (uses in-memory store)
+    #[must_use]
     pub fn with_config(config: ExecutorConfig) -> Self {
         Self {
             config,
@@ -268,9 +297,18 @@ impl Executor {
     }
 
     /// Store a receipt in the attached receipt store (if any)
+    ///
+    /// A persistence failure is logged and does not abort verification: the
+    /// outcome was already determined, but the evidence gap is observable.
     async fn store_receipt(&self, receipt: &Receipt) {
         if let Some(store) = &self.receipt_store {
-            let _ = store.store(receipt).await;
+            if let Err(e) = store.store(receipt).await {
+                tracing::warn!(
+                    receipt_id = %receipt.id,
+                    error = %e,
+                    "failed to persist verification receipt"
+                );
+            }
         }
     }
 
@@ -278,21 +316,30 @@ impl Executor {
     ///
     /// Uses the recovery config's backoff settings if available,
     /// otherwise falls back to the executor config's default values.
+    // Backoff arithmetic intentionally mixes integer millisecond durations with
+    // floating-point multipliers; values are small and the result is clamped, so
+    // the lossy casts cannot change the resulting delay.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_wrap
+    )]
     fn calculate_backoff(
         attempt: u32,
-        recovery: &Option<RecoveryConfig>,
+        recovery: Option<&RecoveryConfig>,
         default_initial: u64,
         default_max: u64,
         default_multiplier: f64,
     ) -> u64 {
-        if let Some(ref config) = recovery {
+        if let Some(config) = recovery {
             if let Some(ref backoff) = config.backoff {
                 let initial_ms = backoff.initial.num_milliseconds() as u64;
                 let max_ms = backoff.max.num_milliseconds() as u64;
                 let multiplier = backoff.multiplier;
 
                 let delay = match backoff.backoff_type {
-                    BackoffType::Linear => initial_ms * (attempt as u64),
+                    BackoffType::Linear => initial_ms * u64::from(attempt),
                     BackoffType::Exponential => {
                         (initial_ms as f64 * multiplier.powi(attempt as i32 - 1)) as u64
                     }
@@ -307,14 +354,14 @@ impl Executor {
 
     /// Determine if we should retry based on recovery config
     ///
-    /// Returns (should_retry, max_attempts) based on the recovery config
+    /// Returns (`should_retry`, `max_attempts`) based on the recovery config
     /// and the current attempt number.
     fn should_retry(
         attempts: u32,
-        recovery: &Option<RecoveryConfig>,
+        recovery: Option<&RecoveryConfig>,
         default_max_retries: u32,
     ) -> bool {
-        if let Some(ref config) = recovery {
+        if let Some(config) = recovery {
             // NoAction strategy means no retry
             if config.strategy == RecoveryStrategy::NoAction {
                 return false;
@@ -337,6 +384,14 @@ impl Executor {
     /// 4. Observe the result state
     /// 5. Verify postconditions
     /// 6. Complete idempotency entry
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorError::PreconditionFailed`] when preconditions do not
+    /// hold, [`ExecutorError::ExecutionFailed`] when the state machine cannot
+    /// advance, and [`ExecutorError::VerificationFailed`] when postconditions
+    /// cannot be evaluated.
+    #[allow(clippy::too_many_lines)] // single linear pipeline; splitting it obscures the flow
     pub async fn execute(
         &self,
         action: Action,
@@ -352,12 +407,18 @@ impl Executor {
                 }
                 ClaimResult::AlreadyClaimed => {
                     if let Some(cached) = existing {
-                        let receipt = self.create_receipt(&action, &contract, cached, 0);
+                        let receipt =
+                            Self::create_receipt(&action, &contract, cached, 0, Vec::new());
                         return Ok((cached, receipt));
                     }
                     // In-flight — treat as duplicate
-                    let receipt =
-                        self.create_receipt(&action, &contract, VerificationResult::Duplicate, 0);
+                    let receipt = Self::create_receipt(
+                        &action,
+                        &contract,
+                        VerificationResult::Duplicate,
+                        0,
+                        Vec::new(),
+                    );
                     return Ok((VerificationResult::Duplicate, receipt));
                 }
             }
@@ -366,6 +427,7 @@ impl Executor {
         let mut attempts = 0;
         let final_result: Option<VerificationResult>;
         let mut final_observation: Option<Observation> = None;
+        let mut postcondition_details = Vec::new();
 
         // Main execution loop
         loop {
@@ -377,10 +439,37 @@ impl Executor {
                 .advance(State::Validating)
                 .map_err(|e| ExecutorError::PreconditionFailed(e.to_string()))?;
 
-            if let Err(e) = self.validate_preconditions(&action, &contract) {
+            // Preconditions need the state as it is *before* dispatch, so it is
+            // observed here rather than reusing the post-dispatch observation.
+            // Contracts without preconditions must not pay for an extra
+            // observer round-trip.
+            let pre_state = if contract.preconditions.is_empty() {
+                None
+            } else {
+                match self
+                    .observe_pre_state(&action, &contract, observer.as_ref())
+                    .await
+                {
+                    Ok(observation) => Some(observation.state),
+                    Err(message) => {
+                        tracing::warn!(
+                            contract = %contract.id,
+                            "action rejected before dispatch: {message}"
+                        );
+                        state_machine
+                            .advance(State::Rejected)
+                            .map_err(|_| ExecutorError::PreconditionFailed(message.clone()))?;
+                        // Precondition failure is terminal for this action — complete with Failed
+                        final_result = Some(VerificationResult::Failed);
+                        break;
+                    }
+                }
+            };
+
+            if let Err(e) = Self::validate_preconditions(&action, &contract, pre_state.as_ref()) {
                 state_machine
                     .advance(State::Rejected)
-                    .map_err(|_| ExecutorError::PreconditionFailed(e.to_string()))?;
+                    .map_err(|_| ExecutorError::PreconditionFailed(e.clone()))?;
                 // Precondition failure is terminal for this action — complete with Failed
                 final_result = Some(VerificationResult::Failed);
                 break;
@@ -427,10 +516,11 @@ impl Executor {
                 .advance(State::Verifying)
                 .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
 
-            let result = self.verify_postconditions(&action, &contract, &observation)?;
+            let evaluation = Self::verify_postconditions(&action, &contract, &observation)?;
+            postcondition_details = evaluation.details;
 
             // Determine final state
-            match result {
+            match evaluation.result {
                 VerificationResult::Verified => {
                     state_machine
                         .advance(State::Verified)
@@ -445,14 +535,18 @@ impl Executor {
                 VerificationResult::Failed => {
                     let backoff_ms = Self::calculate_backoff(
                         attempts,
-                        &contract.recovery,
+                        contract.recovery.as_ref(),
                         100,  // default_initial
                         5000, // default_max
                         2.0,  // default_multiplier
                     );
                     // Only retry on Failed if verify_before_retry is enabled AND should_retry says to
                     if self.config.verify_before_retry
-                        && Self::should_retry(attempts, &contract.recovery, self.config.max_retries)
+                        && Self::should_retry(
+                            attempts,
+                            contract.recovery.as_ref(),
+                            self.config.max_retries,
+                        )
                     {
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
@@ -466,12 +560,16 @@ impl Executor {
                 VerificationResult::Unknown => {
                     let backoff_ms = Self::calculate_backoff(
                         attempts,
-                        &contract.recovery,
+                        contract.recovery.as_ref(),
                         100,  // default_initial
                         5000, // default_max
                         2.0,  // default_multiplier
                     );
-                    if Self::should_retry(attempts, &contract.recovery, self.config.max_retries) {
+                    if Self::should_retry(
+                        attempts,
+                        contract.recovery.as_ref(),
+                        self.config.max_retries,
+                    ) {
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
@@ -480,7 +578,7 @@ impl Executor {
                 }
                 _ => {
                     // Partial, Duplicate — terminal
-                    final_result = Some(result);
+                    final_result = Some(evaluation.result);
                     break;
                 }
             }
@@ -493,9 +591,16 @@ impl Executor {
         }
 
         let receipt = if let Some(obs) = final_observation {
-            self.create_receipt_with_observation(&action, &contract, result, attempts, obs)
+            Self::create_receipt_with_observation(
+                &action,
+                &contract,
+                result,
+                attempts,
+                obs,
+                postcondition_details,
+            )
         } else {
-            self.create_receipt(&action, &contract, result, attempts)
+            Self::create_receipt(&action, &contract, result, attempts, postcondition_details)
         };
 
         // Persist receipt if a store is attached
@@ -504,15 +609,52 @@ impl Executor {
         Ok((result, receipt))
     }
 
-    /// Validate preconditions against current state
-    fn validate_preconditions(&self, _action: &Action, contract: &Contract) -> Result<(), String> {
+    /// Message reported when a contract declares preconditions but no
+    /// pre-execution state could be produced for them.
+    fn missing_pre_state_message(contract: &Contract) -> String {
+        format!(
+            "Contract '{}' declares {} precondition(s) but no pre-execution state was observed; \
+             configure an observer so preconditions can be checked before dispatch",
+            contract.id,
+            contract.preconditions.len()
+        )
+    }
+
+    /// Validate preconditions against the pre-execution state
+    ///
+    /// A precondition must hold *before* the action is dispatched, so it is
+    /// evaluated against the state observed immediately before dispatch (see
+    /// [`Self::observe_pre_state`]) rather than against the post-dispatch
+    /// state. The action's arguments are passed through unchanged, so
+    /// `$args.` references in a predicate resolve exactly as they do for
+    /// postconditions.
+    ///
+    /// A contract without preconditions returns `Ok(())` immediately, so
+    /// callers need not produce a pre-execution state at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns a descriptive message when a precondition is not satisfied, or
+    /// when the contract declares preconditions but `pre_state` is `None`.
+    /// The latter is fail-closed: a precondition that cannot be checked is
+    /// treated as unsatisfied, never skipped.
+    fn validate_preconditions(
+        action: &Action,
+        contract: &Contract,
+        pre_state: Option<&serde_json::Value>,
+    ) -> Result<(), String> {
+        // Fast path: nothing to check, so there is nothing to observe either.
+        if contract.preconditions.is_empty() {
+            return Ok(());
+        }
+
+        let Some(state) = pre_state else {
+            return Err(Self::missing_pre_state_message(contract));
+        };
+
         for precond in &contract.preconditions {
             let result = PredicateEngine::default()
-                .evaluate(
-                    &precond.predicate,
-                    &serde_json::json!({}), // No state yet
-                    &serde_json::json!({}), // No args yet
-                )
+                .evaluate(&precond.predicate, state, &action.arguments)
                 .map_err(|e| e.to_string())?;
 
             if !matches!(result, VerificationResult::Verified) {
@@ -522,15 +664,59 @@ impl Executor {
         Ok(())
     }
 
-    /// Verify postconditions against observed state
-    fn verify_postconditions(
+    /// Observe the pre-execution state used to check preconditions
+    ///
+    /// Called only for contracts that declare preconditions, immediately
+    /// before dispatch. Like the post-dispatch observation it is bounded by
+    /// the configured verification timeout, and like the precondition check
+    /// itself it is fail-closed: an unobservable precondition blocks dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a descriptive message when no observer is configured, when the
+    /// observer reports an error, or when the observation exceeds the
+    /// configured verification timeout.
+    async fn observe_pre_state(
         &self,
         action: &Action,
         contract: &Contract,
+        observer: Option<&Arc<dyn Observer>>,
+    ) -> Result<Observation, String> {
+        let Some(observer) = observer else {
+            return Err(Self::missing_pre_state_message(contract));
+        };
+
+        let timeout_duration =
+            std::time::Duration::from_millis(self.config.verification_timeout_ms);
+        match tokio_timeout(timeout_duration, observer.observe(action, contract)).await {
+            Ok(Ok(observation)) => Ok(observation),
+            Ok(Err(e)) => Err(format!(
+                "Precondition check failed: pre-execution observation error: {e}"
+            )),
+            Err(_) => Err(format!(
+                "Precondition check failed: pre-execution observation timed out after {}ms",
+                self.config.verification_timeout_ms
+            )),
+        }
+    }
+
+    /// Verify postconditions against observed state
+    ///
+    /// Returns the aggregate [`VerificationResult`] together with a
+    /// [`PostconditionResult`] per evaluated postcondition, so receipts carry
+    /// the per-predicate evidence rather than only the final outcome. When a
+    /// predicate evaluates to an indeterminate result (`Unknown`, `Partial`,
+    /// `Duplicate`), evaluation stops: the details cover exactly the
+    /// postconditions that were evaluated, and the indeterminate one is
+    /// recorded with its outcome in `error`.
+    fn verify_postconditions(
+        action: &Action,
+        contract: &Contract,
         observation: &Observation,
-    ) -> Result<VerificationResult, ExecutorError> {
+    ) -> Result<PostconditionEvaluation, ExecutorError> {
         let mut all_passed = true;
         let mut mandatory_failed = false;
+        let mut details = Vec::with_capacity(contract.postconditions.len());
 
         for postcond in &contract.postconditions {
             let result = PredicateEngine::default()
@@ -538,27 +724,53 @@ impl Executor {
                 .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
 
             match result {
-                VerificationResult::Verified => {}
+                VerificationResult::Verified => {
+                    details.push(PostconditionResult {
+                        predicate: postcond.predicate.clone(),
+                        description: postcond.description.clone(),
+                        passed: true,
+                        error: None,
+                    });
+                }
                 VerificationResult::Failed => {
                     if postcond.mandatory {
                         mandatory_failed = true;
                     }
                     all_passed = false;
+                    details.push(PostconditionResult {
+                        predicate: postcond.predicate.clone(),
+                        description: postcond.description.clone(),
+                        passed: false,
+                        error: None,
+                    });
                 }
                 other => {
-                    // Unknown, Partial, Duplicate
-                    return Ok(other);
+                    // Unknown, Partial, Duplicate — indeterminate: stop
+                    // evaluating and surface the outcome. The predicate was
+                    // not shown to fail, so `passed` stays false and the
+                    // indeterminate outcome is preserved in `error`.
+                    details.push(PostconditionResult {
+                        predicate: postcond.predicate.clone(),
+                        description: postcond.description.clone(),
+                        passed: false,
+                        error: Some(format!("evaluation returned {other}")),
+                    });
+                    return Ok(PostconditionEvaluation {
+                        result: other,
+                        details,
+                    });
                 }
             }
         }
 
-        if all_passed {
-            Ok(VerificationResult::Verified)
+        let result = if all_passed {
+            VerificationResult::Verified
         } else if mandatory_failed {
-            Ok(VerificationResult::Failed)
+            VerificationResult::Failed
         } else {
-            Ok(VerificationResult::Partial)
-        }
+            VerificationResult::Partial
+        };
+        Ok(PostconditionEvaluation { result, details })
     }
 
     /// Execute an action using a real action executor
@@ -574,6 +786,14 @@ impl Executor {
     /// Timeouts are treated as UNKNOWN, not failure. The caller must observe
     /// state before retrying. On transport error, the claim is released so
     /// a subsequent request may retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorError::PreconditionFailed`] when preconditions do not
+    /// hold, [`ExecutorError::ActionExecutor`] when dispatch fails, and
+    /// [`ExecutorError::VerificationFailed`] when postconditions cannot be
+    /// evaluated.
+    #[allow(clippy::too_many_lines)] // single linear pipeline; splitting it obscures the flow
     pub async fn execute_with_executor(
         &self,
         action: Action,
@@ -595,19 +815,26 @@ impl Executor {
                     // Another request is already handling this action
                     if let Some(cached) = existing {
                         // Already completed — return cached result
-                        let receipt = self.create_receipt(&action, &contract, cached, 0);
+                        let receipt =
+                            Self::create_receipt(&action, &contract, cached, 0, Vec::new());
                         return Ok((cached, receipt));
                     }
                     // In-flight — wait briefly and poll for completion
                     sleep(std::time::Duration::from_millis(50)).await;
                     let (_, existing) = self.idempotency.claim_or_check(&key.0).await;
                     if let Some(cached) = existing {
-                        let receipt = self.create_receipt(&action, &contract, cached, 0);
+                        let receipt =
+                            Self::create_receipt(&action, &contract, cached, 0, Vec::new());
                         return Ok((cached, receipt));
                     }
                     // Still in-flight after poll — treat as duplicate
-                    let receipt =
-                        self.create_receipt(&action, &contract, VerificationResult::Duplicate, 0);
+                    let receipt = Self::create_receipt(
+                        &action,
+                        &contract,
+                        VerificationResult::Duplicate,
+                        0,
+                        Vec::new(),
+                    );
                     return Ok((VerificationResult::Duplicate, receipt));
                 }
             }
@@ -619,6 +846,7 @@ impl Executor {
         let mut attempts = 0;
         let final_result: Option<VerificationResult>;
         let mut final_observation: Option<Observation> = None;
+        let mut postcondition_details = Vec::new();
 
         // Main execution loop
         loop {
@@ -630,10 +858,36 @@ impl Executor {
                 .advance(State::Validating)
                 .map_err(|e| ExecutorError::PreconditionFailed(e.to_string()))?;
 
-            if let Err(e) = self.validate_preconditions(&action, &contract) {
+            // Preconditions need the state as it is *before* dispatch, so it is
+            // observed here rather than reusing the post-dispatch observation.
+            // Contracts without preconditions must not pay for an extra
+            // observer round-trip.
+            let pre_state = if contract.preconditions.is_empty() {
+                None
+            } else {
+                match self
+                    .observe_pre_state(&action, &contract, observer.as_ref())
+                    .await
+                {
+                    Ok(observation) => Some(observation.state),
+                    Err(message) => {
+                        tracing::warn!(
+                            contract = %contract.id,
+                            "action rejected before dispatch: {message}"
+                        );
+                        state_machine
+                            .advance(State::Rejected)
+                            .map_err(|_| ExecutorError::PreconditionFailed(message.clone()))?;
+                        final_result = Some(VerificationResult::Failed);
+                        break;
+                    }
+                }
+            };
+
+            if let Err(e) = Self::validate_preconditions(&action, &contract, pre_state.as_ref()) {
                 state_machine
                     .advance(State::Rejected)
-                    .map_err(|_| ExecutorError::PreconditionFailed(e.to_string()))?;
+                    .map_err(|_| ExecutorError::PreconditionFailed(e.clone()))?;
                 final_result = Some(VerificationResult::Failed);
                 break;
             }
@@ -669,11 +923,12 @@ impl Executor {
                     if let Some(ref key) = action.idempotency_key {
                         self.idempotency.release(&key.0).await;
                     }
-                    let receipt = self.create_receipt(
+                    let receipt = Self::create_receipt(
                         &action,
                         &contract,
                         VerificationResult::Failed,
                         attempts,
+                        Vec::new(),
                     );
                     return Ok((VerificationResult::Failed, receipt));
                 }
@@ -682,7 +937,7 @@ impl Executor {
                     final_result = Some(VerificationResult::Unknown);
                     break;
                 }
-            };
+            }
 
             // Observe state
             state_machine
@@ -716,10 +971,11 @@ impl Executor {
                 .advance(State::Verifying)
                 .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
 
-            let result = self.verify_postconditions(&action, &contract, &observation)?;
+            let evaluation = Self::verify_postconditions(&action, &contract, &observation)?;
+            postcondition_details = evaluation.details;
 
             // Determine final state
-            match result {
+            match evaluation.result {
                 VerificationResult::Verified => {
                     state_machine
                         .advance(State::Verified)
@@ -734,13 +990,17 @@ impl Executor {
                 VerificationResult::Failed => {
                     let backoff_ms = Self::calculate_backoff(
                         attempts,
-                        &contract.recovery,
+                        contract.recovery.as_ref(),
                         100,  // default_initial
                         5000, // default_max
                         2.0,  // default_multiplier
                     );
                     if self.config.verify_before_retry
-                        && Self::should_retry(attempts, &contract.recovery, self.config.max_retries)
+                        && Self::should_retry(
+                            attempts,
+                            contract.recovery.as_ref(),
+                            self.config.max_retries,
+                        )
                     {
                         sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
@@ -754,12 +1014,16 @@ impl Executor {
                 VerificationResult::Unknown => {
                     let backoff_ms = Self::calculate_backoff(
                         attempts,
-                        &contract.recovery,
+                        contract.recovery.as_ref(),
                         100,  // default_initial
                         5000, // default_max
                         2.0,  // default_multiplier
                     );
-                    if Self::should_retry(attempts, &contract.recovery, self.config.max_retries) {
+                    if Self::should_retry(
+                        attempts,
+                        contract.recovery.as_ref(),
+                        self.config.max_retries,
+                    ) {
                         sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
@@ -768,7 +1032,7 @@ impl Executor {
                 }
                 _ => {
                     // Partial, Duplicate — terminal
-                    final_result = Some(result);
+                    final_result = Some(evaluation.result);
                     break;
                 }
             }
@@ -781,9 +1045,16 @@ impl Executor {
         }
 
         let receipt = if let Some(obs) = final_observation {
-            self.create_receipt_with_observation(&action, &contract, result, attempts, obs)
+            Self::create_receipt_with_observation(
+                &action,
+                &contract,
+                result,
+                attempts,
+                obs,
+                postcondition_details,
+            )
         } else {
-            self.create_receipt(&action, &contract, result, attempts)
+            Self::create_receipt(&action, &contract, result, attempts, postcondition_details)
         };
 
         // Persist receipt if a store is attached
@@ -793,35 +1064,44 @@ impl Executor {
     }
 
     /// Create a receipt for the action
+    ///
+    /// `postcondition_details` carries the per-postcondition evidence from
+    /// [`Self::verify_postconditions`]; paths that never evaluated
+    /// postconditions (duplicate claims, dispatch failures) pass an empty
+    /// vector, and the receipt records exactly what was evaluated.
     fn create_receipt(
-        &self,
         action: &Action,
         contract: &Contract,
         result: VerificationResult,
         attempts: u32,
+        postcondition_details: Vec<PostconditionResult>,
     ) -> Receipt {
         let idempotency_key = action.idempotency_key.as_ref().map(|k| k.0.clone());
-        Receipt::with_contract_version_and_key(
+        let mut receipt = Receipt::with_contract_version_and_key(
             action.id,
             contract.id,
             contract.schema_version.clone(),
             result,
             attempts,
             idempotency_key,
-        )
+        );
+        for detail in postcondition_details {
+            receipt = receipt.with_postcondition_result(detail);
+        }
+        receipt
     }
 
-    /// Create a receipt with observation
+    /// Create a receipt with an observation attached
     fn create_receipt_with_observation(
-        &self,
         action: &Action,
         contract: &Contract,
         result: VerificationResult,
         attempts: u32,
         observation: Observation,
+        postcondition_details: Vec<PostconditionResult>,
     ) -> Receipt {
         let idempotency_key = action.idempotency_key.as_ref().map(|k| k.0.clone());
-        Receipt::with_contract_version_and_key(
+        let mut receipt = Receipt::with_contract_version_and_key(
             action.id,
             contract.id,
             contract.schema_version.clone(),
@@ -829,7 +1109,11 @@ impl Executor {
             attempts,
             idempotency_key,
         )
-        .with_observation(observation)
+        .with_observation(observation);
+        for detail in postcondition_details {
+            receipt = receipt.with_postcondition_result(detail);
+        }
+        receipt
     }
 }
 
@@ -842,8 +1126,15 @@ impl Default for Executor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentverify_core::Predicate;
+    use crate::action_executor::DispatchError;
+    use crate::idempotency_store::FileIdempotencyStore;
+    use agentverify_core::{
+        BackoffConfig, BackoffType, IdempotencyKey, Postcondition, Predicate, RecoveryConfig,
+    };
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::time::sleep;
 
     #[tokio::test]
     async fn executor_returns_verified_on_empty_postconditions() {
@@ -853,9 +1144,6 @@ mod tests {
 
         // No observer, so observation will be empty
         let result = executor.execute(action, contract, None).await;
-        if let Err(e) = &result {
-            eprintln!("Executor error: {:?}", e);
-        }
         assert!(result.is_ok());
 
         let (verification_result, _receipt) = result.unwrap();
@@ -1268,12 +1556,12 @@ mod tests {
         // With atomic claim semantics:
         // - First request claims the key → executes dispatch → Verified
         // - Second concurrent request sees AlreadyClaimed → polls → Duplicate
-        let results = [(r1, receipt1.attempts), (r2, receipt2.attempts)];
-        let verified_count = results
+        let outcomes = [(r1, receipt1.attempts), (r2, receipt2.attempts)];
+        let verified_count = outcomes
             .iter()
             .filter(|(r, _)| *r == VerificationResult::Verified)
             .count();
-        let duplicate_count = results
+        let duplicate_count = outcomes
             .iter()
             .filter(|(r, _)| *r == VerificationResult::Duplicate)
             .count();
@@ -1468,8 +1756,7 @@ mod tests {
         // Should be Duplicate (already claimed) or Verified (cached)
         assert!(
             r2 == VerificationResult::Duplicate || r2 == VerificationResult::Verified,
-            "Expected Duplicate or Verified, got {:?}",
-            r2
+            "Expected Duplicate or Verified, got {r2:?}"
         );
         // Second execution should not have dispatched (attempts should be 0)
         assert_eq!(receipt2.attempts, 0);
@@ -1595,5 +1882,1141 @@ mod tests {
         // With no observer, empty state causes failure
         // But TimeoutAfterDispatch was the dispatch outcome
         assert_eq!(verification_result, VerificationResult::Failed);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Observers, recovery-driven retries, partial verification, precondition
+    // rejection, idempotency edge cases, receipt persistence.
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /// Observer that always reports the same state from a fixed source.
+    struct StaticObserver {
+        state: serde_json::Value,
+        source: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl Observer for StaticObserver {
+        async fn observe(
+            &self,
+            _action: &Action,
+            _contract: &Contract,
+        ) -> Result<Observation, ExecutorError> {
+            Ok(Observation::new(
+                SourceId(self.source.into()),
+                self.state.clone(),
+            ))
+        }
+    }
+
+    /// Observer that reports the required state only after a fixed delay, so the
+    /// caller's verification timeout expires first.
+    struct SlowObserver {
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl Observer for SlowObserver {
+        async fn observe(
+            &self,
+            _action: &Action,
+            _contract: &Contract,
+        ) -> Result<Observation, ExecutorError> {
+            sleep(self.delay).await;
+            Ok(Observation::new(
+                SourceId("slow".into()),
+                serde_json::json!({}),
+            ))
+        }
+    }
+
+    /// Observer that refuses to observe for a reason other than UNKNOWN.
+    struct UnavailableObserver;
+
+    #[async_trait::async_trait]
+    impl Observer for UnavailableObserver {
+        async fn observe(
+            &self,
+            _action: &Action,
+            _contract: &Contract,
+        ) -> Result<Observation, ExecutorError> {
+            Err(ExecutorError::ContractNotFound("state_source".to_string()))
+        }
+    }
+
+    /// Observer that counts every call and always reports the same state, so a
+    /// test can tell pre-dispatch observation from post-dispatch observation.
+    struct CountingObserver {
+        state: serde_json::Value,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CountingObserver {
+        /// Build an observer plus a handle onto its call counter.
+        fn new(state: serde_json::Value) -> (Arc<Self>, Arc<AtomicUsize>) {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observer = Arc::new(Self {
+                state,
+                calls: Arc::clone(&calls),
+            });
+            (observer, calls)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Observer for CountingObserver {
+        async fn observe(
+            &self,
+            _action: &Action,
+            _contract: &Contract,
+        ) -> Result<Observation, ExecutorError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Observation::new(
+                SourceId("counting".into()),
+                self.state.clone(),
+            ))
+        }
+    }
+
+    /// Action executor that counts dispatches and completes immediately.
+    struct CountingDispatch {
+        dispatches: Arc<AtomicUsize>,
+    }
+
+    impl CountingDispatch {
+        /// Build an executor plus a handle onto its dispatch counter.
+        fn new() -> (Arc<Self>, Arc<AtomicUsize>) {
+            let dispatches = Arc::new(AtomicUsize::new(0));
+            let executor = Arc::new(Self {
+                dispatches: Arc::clone(&dispatches),
+            });
+            (executor, dispatches)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ActionExecutor for CountingDispatch {
+        async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+            self.dispatches.fetch_add(1, Ordering::SeqCst);
+            Ok(DispatchOutcome::Completed)
+        }
+    }
+
+    /// Action executor that always reports the same dispatch outcome.
+    struct OutcomeExecutor {
+        outcome: DispatchOutcome,
+    }
+
+    #[async_trait::async_trait]
+    impl ActionExecutor for OutcomeExecutor {
+        async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+            Ok(self.outcome.clone())
+        }
+    }
+
+    /// Idempotency store modelling a sibling request: the key is already claimed
+    /// on the first check, and the sibling has finished by the second check (the
+    /// executor polls exactly once, 50ms later).
+    struct SiblingWinsStore {
+        result: VerificationResult,
+        first_check: AtomicBool,
+    }
+
+    impl IdempotencyStore for SiblingWinsStore {
+        fn claim_or_check<'a>(
+            &'a self,
+            _key: &'a str,
+        ) -> Pin<Box<dyn Future<Output = (ClaimResult, Option<VerificationResult>)> + Send + 'a>>
+        {
+            Box::pin(async move {
+                let sibling_finished = self.first_check.swap(true, Ordering::SeqCst);
+                if sibling_finished {
+                    // The sibling completed inside the executor's poll window.
+                    (ClaimResult::AlreadyClaimed, Some(self.result))
+                } else {
+                    // The sibling holds the claim and has not finished yet.
+                    (ClaimResult::AlreadyClaimed, None)
+                }
+            })
+        }
+
+        fn complete(
+            &self,
+            _key: String,
+            _result: VerificationResult,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(async move {})
+        }
+
+        fn release(&self, _key: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(async move {})
+        }
+    }
+
+    /// Recovery config with a short backoff so retry paths stay fast in tests.
+    fn fast_recovery(strategy: RecoveryStrategy, max_attempts: u32) -> RecoveryConfig {
+        RecoveryConfig {
+            strategy,
+            max_attempts,
+            backoff: Some(BackoffConfig {
+                backoff_type: BackoffType::Linear,
+                initial: chrono::Duration::milliseconds(1),
+                max: chrono::Duration::milliseconds(2),
+                multiplier: 2.0,
+            }),
+            on_unknown: vec![],
+        }
+    }
+
+    fn observing_executor(timeout_ms: u64) -> Executor {
+        Executor::with_config(ExecutorConfig {
+            verification_timeout_ms: timeout_ms,
+            max_retries: 3,
+            verify_before_retry: true,
+        })
+    }
+
+    #[test]
+    fn default_executor_is_ready_to_verify() {
+        let executor = Executor::default();
+        let contract = Contract::new("test").with_postcondition(Predicate::exists("x"), "x exists");
+
+        let (result, _) = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(executor.execute(Action::new("test", serde_json::json!({})), contract, None))
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    #[tokio::test]
+    async fn idempotency_registry_release_frees_the_key_and_default_is_empty() {
+        let registry = IdempotencyRegistry::default();
+        let (claim, _) = registry.claim_or_check("released-key").await;
+        assert_eq!(claim, ClaimResult::Claimed);
+
+        registry.release("released-key").await;
+
+        let (claim, observed) = registry.claim_or_check("released-key").await;
+        assert_eq!(
+            claim,
+            ClaimResult::Claimed,
+            "released key must be claimable"
+        );
+        assert_eq!(observed, None);
+    }
+
+    #[tokio::test]
+    async fn receipt_persistence_failure_does_not_change_the_outcome() {
+        use agentverify_core::FileReceiptStore;
+
+        // The receipt store is built while its directory exists, then the
+        // directory is removed so that every write fails for real.
+        let dir = tempfile::tempdir().unwrap();
+        let receipt_store = Arc::new(FileReceiptStore::new(dir.path()).unwrap());
+        drop(dir);
+
+        let executor = Executor::with_receipt_store(
+            ExecutorConfig::default(),
+            Arc::new(IdempotencyRegistry::new()),
+            receipt_store,
+        );
+
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        // Verification is already decided by the time the receipt is written, so
+        // a persistence failure must not surface as a verification error.
+        let (result, receipt) = executor
+            .execute(action, contract, None)
+            .await
+            .expect("verification must not fail when receipt persistence fails");
+
+        assert_eq!(result, VerificationResult::Failed);
+        assert_eq!(receipt.result, VerificationResult::Failed);
+        assert!(
+            executor.get_receipt(&receipt.id).await.is_none(),
+            "nothing was persisted, so the receipt is not retrievable"
+        );
+    }
+
+    #[test]
+    fn calculate_backoff_uses_the_contract_backoff_when_present() {
+        let linear = fast_recovery(RecoveryStrategy::VerifyThenRetry, 3);
+        assert_eq!(
+            Executor::calculate_backoff(1, Some(&linear), 100, 5_000, 2.0),
+            1
+        );
+        assert_eq!(
+            Executor::calculate_backoff(3, Some(&linear), 100, 5_000, 2.0),
+            2
+        );
+
+        let exponential = RecoveryConfig {
+            backoff: Some(BackoffConfig {
+                backoff_type: BackoffType::Exponential,
+                initial: chrono::Duration::milliseconds(10),
+                max: chrono::Duration::milliseconds(50),
+                multiplier: 3.0,
+            }),
+            ..fast_recovery(RecoveryStrategy::VerifyThenRetry, 3)
+        };
+        // 10ms * 3^(attempt-1), clamped to the configured maximum.
+        assert_eq!(
+            Executor::calculate_backoff(1, Some(&exponential), 100, 5_000, 2.0),
+            10
+        );
+        assert_eq!(
+            Executor::calculate_backoff(2, Some(&exponential), 100, 5_000, 2.0),
+            30
+        );
+        assert_eq!(
+            Executor::calculate_backoff(5, Some(&exponential), 100, 5_000, 2.0),
+            50
+        );
+
+        // No backoff in the contract: the executor defaults apply.
+        let without_backoff = RecoveryConfig {
+            backoff: None,
+            ..fast_recovery(RecoveryStrategy::VerifyThenRetry, 3)
+        };
+        assert_eq!(
+            Executor::calculate_backoff(2, Some(&without_backoff), 100, 5_000, 2.0),
+            200
+        );
+        assert_eq!(Executor::calculate_backoff(2, None, 100, 5_000, 2.0), 200);
+        assert_eq!(
+            Executor::calculate_backoff(20, None, 100, 5_000, 2.0),
+            5_000,
+            "default backoff must be clamped to the default maximum"
+        );
+    }
+
+    #[test]
+    fn should_retry_honours_recovery_config_and_no_action() {
+        let retry_twice = fast_recovery(RecoveryStrategy::VerifyThenRetry, 2);
+        assert!(Executor::should_retry(1, Some(&retry_twice), 3));
+        assert!(!Executor::should_retry(2, Some(&retry_twice), 3));
+
+        let never = fast_recovery(RecoveryStrategy::NoAction, 5);
+        assert!(
+            !Executor::should_retry(1, Some(&never), 3),
+            "NoAction must suppress retries regardless of max_attempts"
+        );
+
+        assert!(Executor::should_retry(2, None, 3));
+        assert!(!Executor::should_retry(3, None, 3));
+    }
+
+    #[test]
+    fn validate_preconditions_evaluates_against_the_pre_execution_state() {
+        let action = Action::new("test", serde_json::json!({"expected_status": "active"}));
+        let pre_state = serde_json::json!({"account": {"status": "active"}});
+
+        // A precondition satisfied by the pre-execution state passes.
+        let present = Contract::new("test").with_precondition(
+            Predicate::exists("account.status"),
+            "account must be present",
+        );
+        assert_eq!(
+            Executor::validate_preconditions(&action, &present, Some(&pre_state)),
+            Ok(())
+        );
+
+        // Absence of state satisfies a not-exists precondition.
+        let absent = Contract::new("test")
+            .with_precondition(Predicate::not_exists("audit_entry"), "no audit entry yet");
+        assert_eq!(
+            Executor::validate_preconditions(&action, &absent, Some(&serde_json::json!({}))),
+            Ok(())
+        );
+
+        // An unsatisfied precondition names the failed check.
+        let failing = Contract::new("test")
+            .with_precondition(Predicate::exists("ledger_row"), "ledger row must exist");
+        let error = Executor::validate_preconditions(&action, &failing, Some(&pre_state))
+            .expect_err("unsatisfied precondition must be rejected");
+        assert_eq!(error, "Precondition failed: ledger row must exist");
+
+        // Several preconditions are checked in order and the first failure wins.
+        let ordered = Contract::new("test")
+            .with_precondition(Predicate::exists("account"), "account present")
+            .with_precondition(Predicate::exists("second"), "second present");
+        assert_eq!(
+            Executor::validate_preconditions(&action, &ordered, Some(&pre_state)),
+            Err("Precondition failed: second present".to_string())
+        );
+
+        // A precondition may reference the action's arguments, so the real
+        // arguments must reach the predicate engine.
+        let on_args = Contract::new("test").with_precondition(
+            Predicate::equals("account.status", "$args.expected_status"),
+            "status must match the requested status",
+        );
+        assert_eq!(
+            Executor::validate_preconditions(&action, &on_args, Some(&pre_state)),
+            Ok(())
+        );
+        let other_args = Action::new("test", serde_json::json!({"expected_status": "closed"}));
+        assert_eq!(
+            Executor::validate_preconditions(&other_args, &on_args, Some(&pre_state)),
+            Err("Precondition failed: status must match the requested status".to_string())
+        );
+
+        // Preconditions without pre-execution state are fail-closed and the
+        // message says what is missing and how to fix it.
+        let error = Executor::validate_preconditions(&action, &present, None)
+            .expect_err("preconditions cannot be checked without pre-execution state");
+        assert!(
+            error.contains("1 precondition(s)")
+                && error.contains("no pre-execution state was observed")
+                && error.contains("configure an observer"),
+            "the error must be actionable: {error}"
+        );
+
+        // No preconditions and no state is still the fast path.
+        assert_eq!(
+            Executor::validate_preconditions(&action, &Contract::new("test"), None),
+            Ok(())
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_unsatisfied_preconditions_before_dispatch() {
+        let (observer, observations) =
+            CountingObserver::new(serde_json::json!({"x": 1, "gate": "closed"}));
+        let executor = observing_executor(1_000);
+        let action = Action::new("test", serde_json::json!({}));
+        let contract = Contract::new("test")
+            .with_precondition(
+                Predicate::equals("gate", serde_json::json!("open")),
+                "gate must be open",
+            )
+            .with_postcondition(Predicate::equals("x", serde_json::json!(1)), "x is 1");
+
+        let (result, receipt) = executor
+            .execute(action, contract, Some(observer))
+            .await
+            .unwrap();
+
+        // Rejected on preconditions even though the postcondition would hold.
+        assert_eq!(result, VerificationResult::Failed);
+        assert_eq!(receipt.attempts, 1);
+        assert!(
+            receipt.postcondition_results.is_empty(),
+            "postconditions are never evaluated for a rejected action"
+        );
+        assert_eq!(
+            observations.load(Ordering::SeqCst),
+            1,
+            "the pre-dispatch observation happens, the post-dispatch one does not"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_rejects_unsatisfied_preconditions() {
+        let (observer, _observations) =
+            CountingObserver::new(serde_json::json!({"gate": "closed"}));
+        let (action_executor, dispatches) = CountingDispatch::new();
+
+        let executor = observing_executor(1_000);
+        let action = Action::new("test", serde_json::json!({}));
+        let contract = Contract::new("test")
+            .with_precondition(
+                Predicate::equals("gate", serde_json::json!("open")),
+                "gate must be open",
+            )
+            .with_postcondition(Predicate::exists("result"), "result exists");
+
+        let (result, receipt) = executor
+            .execute_with_executor(action, contract, action_executor, Some(observer))
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Failed);
+        assert_eq!(
+            receipt.attempts, 1,
+            "a precondition rejection is terminal, not a retryable verification failure"
+        );
+        assert_eq!(
+            dispatches.load(Ordering::SeqCst),
+            0,
+            "a rejected action must never be dispatched"
+        );
+    }
+
+    #[tokio::test]
+    async fn precondition_free_contract_observes_only_after_dispatch() {
+        let (observer, observations) =
+            CountingObserver::new(serde_json::json!({"result": {"status": "completed"}}));
+        let (action_executor, dispatches) = CountingDispatch::new();
+
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test").with_postcondition(
+            Predicate::equals("result.status", serde_json::json!("completed")),
+            "status must be completed",
+        );
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                action_executor,
+                Some(observer),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Verified);
+        assert_eq!(receipt.attempts, 1);
+        assert_eq!(dispatches.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            observations.load(Ordering::SeqCst),
+            1,
+            "a contract without preconditions must not pay for a pre-dispatch observation"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_dispatches_when_pre_state_satisfies_preconditions() {
+        let (observer, observations) = CountingObserver::new(
+            serde_json::json!({"gate": "open", "result": {"status": "done"}}),
+        );
+        let (action_executor, dispatches) = CountingDispatch::new();
+
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test")
+            .with_precondition(
+                Predicate::equals("gate", serde_json::json!("open")),
+                "gate must be open",
+            )
+            .with_postcondition(
+                Predicate::equals("result.status", serde_json::json!("done")),
+                "result must be done",
+            );
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                action_executor,
+                Some(observer),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Verified);
+        assert_eq!(receipt.attempts, 1);
+        assert_eq!(
+            dispatches.load(Ordering::SeqCst),
+            1,
+            "a satisfied precondition must not block dispatch"
+        );
+        assert_eq!(
+            observations.load(Ordering::SeqCst),
+            2,
+            "the pre-dispatch and post-dispatch observations are separate calls"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_proceeds_when_pre_state_satisfies_preconditions() {
+        let observer = StaticObserver {
+            state: serde_json::json!({"gate": "open", "x": 1}),
+            source: "pre-dispatch",
+        };
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test")
+            .with_precondition(
+                Predicate::equals("gate", serde_json::json!("open")),
+                "gate must be open",
+            )
+            .with_postcondition(Predicate::equals("x", serde_json::json!(1)), "x is 1");
+
+        let (result, receipt) = executor
+            .execute(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                Some(Arc::new(observer)),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Verified);
+        assert_eq!(receipt.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn precondition_may_reference_the_action_arguments() {
+        let (observer, _observations) = CountingObserver::new(serde_json::json!({
+            "account": {"status": "active"}
+        }));
+        let (action_executor, dispatches) = CountingDispatch::new();
+
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test")
+            .with_precondition(
+                Predicate::equals("account.status", "$args.expected_status"),
+                "account must already be in the requested status",
+            )
+            .with_postcondition(
+                Predicate::equals("account.status", "$args.expected_status"),
+                "account is still in the requested status",
+            );
+
+        // The arguments carry the expected status, which the pre-execution
+        // state agrees with.
+        let action = Action::new("test", serde_json::json!({"expected_status": "active"}));
+
+        let (result, _receipt) = executor
+            .execute_with_executor(action, contract, action_executor, Some(observer))
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Verified);
+        assert_eq!(
+            dispatches.load(Ordering::SeqCst),
+            1,
+            "an argument-backed precondition must be evaluated against the real arguments"
+        );
+    }
+
+    #[tokio::test]
+    async fn preconditions_without_an_observer_fail_closed_before_dispatch() {
+        let (action_executor, dispatches) = CountingDispatch::new();
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test")
+            .with_precondition(Predicate::exists("gate"), "gate must be open")
+            .with_postcondition(Predicate::exists("result"), "result exists");
+
+        // The unobservable precondition is reported as unsatisfied rather than
+        // silently skipped.
+        let message = Executor::validate_preconditions(
+            &Action::new("test", serde_json::json!({})),
+            &contract,
+            None,
+        )
+        .expect_err("preconditions without state must be reported");
+        assert!(
+            message.contains("precondition"),
+            "the error must name the missing preconditions: {message}"
+        );
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                action_executor,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Failed);
+        assert_eq!(receipt.attempts, 1);
+        assert_eq!(
+            dispatches.load(Ordering::SeqCst),
+            0,
+            "an unchecked precondition must block dispatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_observation_error_fails_closed_without_dispatching() {
+        let (action_executor, dispatches) = CountingDispatch::new();
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test")
+            .with_precondition(Predicate::exists("gate"), "gate must be open")
+            .with_postcondition(Predicate::exists("result"), "result exists");
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                action_executor,
+                Some(Arc::new(UnavailableObserver)),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            VerificationResult::Failed,
+            "an unobservable precondition is treated as unsatisfied"
+        );
+        assert_eq!(receipt.attempts, 1);
+        assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn pre_observation_timeout_fails_closed_without_dispatching() {
+        let (action_executor, dispatches) = CountingDispatch::new();
+        let executor = observing_executor(40);
+        let contract = Contract::new("test")
+            .with_precondition(Predicate::exists("gate"), "gate must be open")
+            .with_postcondition(Predicate::exists("result"), "result exists");
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                action_executor,
+                Some(Arc::new(SlowObserver {
+                    delay: Duration::from_millis(250),
+                })),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Failed);
+        assert_eq!(receipt.attempts, 1);
+        assert_eq!(
+            dispatches.load(Ordering::SeqCst),
+            0,
+            "a precondition that cannot be observed in time must block dispatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_records_observation_and_per_postcondition_evidence() {
+        let observer = StaticObserver {
+            state: serde_json::json!({"result": "completed"}),
+            source: "postgres-primary",
+        };
+        let executor = observing_executor(1_000);
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("evidence-key"),
+        );
+        let contract = Contract::new("test").with_postcondition(
+            Predicate::equals("result", serde_json::json!("completed")),
+            "result must be completed",
+        );
+
+        let (result, receipt) = executor
+            .execute(action, contract, Some(Arc::new(observer)))
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Verified);
+        assert_eq!(receipt.result, VerificationResult::Verified);
+        assert_eq!(receipt.attempts, 1);
+        assert_eq!(receipt.idempotency_key, Some("evidence-key".to_string()));
+        assert_eq!(receipt.observations.len(), 1, "the observation is evidence");
+        assert_eq!(receipt.observations[0].source.0, "postgres-primary");
+        assert_eq!(receipt.postcondition_results.len(), 1);
+        assert!(receipt.postcondition_results[0].passed);
+        assert_eq!(receipt.postcondition_results[0].error, None);
+    }
+
+    #[tokio::test]
+    async fn execute_observer_failure_aborts_verification() {
+        let executor = observing_executor(1_000);
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let error = executor
+            .execute(action, contract, Some(Arc::new(UnavailableObserver)))
+            .await
+            .expect_err("an observer failure cannot produce a verdict");
+
+        assert!(
+            matches!(error, ExecutorError::ContractNotFound(ref name) if name == "state_source"),
+            "the observer error must be surfaced as-is, got {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_observation_timeout_is_reported_as_a_timeout() {
+        let executor = observing_executor(40);
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let error = executor
+            .execute(
+                action,
+                contract,
+                Some(Arc::new(SlowObserver {
+                    delay: Duration::from_millis(250),
+                })),
+            )
+            .await
+            .expect_err("an observation that never returns cannot produce a verdict");
+
+        match error {
+            ExecutorError::Timeout(message) => {
+                assert!(
+                    message.contains("40ms"),
+                    "timeout must name the budget: {message}"
+                );
+            }
+            other => assert!(
+                matches!(other, ExecutorError::Timeout(_)),
+                "expected ExecutorError::Timeout, got {other:?}"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_observer_failure_aborts_verification() {
+        let executor = observing_executor(1_000);
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let error = executor
+            .execute_with_executor(
+                action,
+                contract,
+                Arc::new(OutcomeExecutor {
+                    outcome: DispatchOutcome::Completed,
+                }),
+                Some(Arc::new(UnavailableObserver)),
+            )
+            .await
+            .expect_err("an observer failure cannot produce a verdict");
+
+        assert!(
+            matches!(error, ExecutorError::ContractNotFound(_)),
+            "got {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_observation_timeout_is_reported_as_a_timeout() {
+        let executor = observing_executor(40);
+        let action = Action::new("test", serde_json::json!({}));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let error = executor
+            .execute_with_executor(
+                action,
+                contract,
+                Arc::new(OutcomeExecutor {
+                    outcome: DispatchOutcome::Accepted,
+                }),
+                Some(Arc::new(SlowObserver {
+                    delay: Duration::from_millis(250),
+                })),
+            )
+            .await
+            .expect_err("an observation that never returns cannot produce a verdict");
+
+        assert!(
+            matches!(error, ExecutorError::Timeout(ref message) if message.contains("40ms")),
+            "got {error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_poll_returns_the_sibling_result() {
+        let store = Arc::new(SiblingWinsStore {
+            result: VerificationResult::Verified,
+            first_check: AtomicBool::new(false),
+        });
+        let executor = Executor::with_config_and_store(ExecutorConfig::default(), store.clone());
+
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("sibling-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                action,
+                contract,
+                Arc::new(OutcomeExecutor {
+                    outcome: DispatchOutcome::Completed,
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // The sibling finished inside the poll window, so its verdict is reused.
+        assert_eq!(result, VerificationResult::Verified);
+        assert_eq!(receipt.attempts, 0, "nothing was dispatched by this caller");
+
+        // This store never owns a claim of its own, so completing or releasing
+        // a key is inert; the calls must not panic.
+        store
+            .complete("sibling-key".to_string(), VerificationResult::Duplicate)
+            .await;
+        store.release("sibling-key").await;
+    }
+
+    #[tokio::test]
+    async fn execute_reports_a_claim_held_elsewhere_as_duplicate() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "duplicate-claim-key";
+
+        // Another store instance claims the key and leaves it in flight.
+        let first = FileIdempotencyStore::new(dir.path()).unwrap();
+        let (claim, _) = first.claim_or_check(key).await;
+        assert_eq!(claim, ClaimResult::Claimed);
+
+        let executor = Executor::with_config_and_store(
+            ExecutorConfig::default(),
+            Arc::new(FileIdempotencyStore::new(dir.path()).unwrap()),
+        );
+        let action =
+            Action::with_idempotency("test", serde_json::json!({}), IdempotencyKey::new(key));
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let (result, receipt) = executor.execute(action, contract, None).await.unwrap();
+
+        assert_eq!(result, VerificationResult::Duplicate);
+        assert_eq!(
+            receipt.attempts, 0,
+            "an in-flight claim must not be re-dispatched"
+        );
+        assert_eq!(receipt.result, VerificationResult::Duplicate);
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_partial_verification_is_terminal() {
+        let executor = observing_executor(1_000);
+
+        // One mandatory postcondition holds, one optional one does not.
+        let mut contract = Contract::new("test")
+            .with_postcondition(Predicate::not_exists("rollback_entry"), "no rollback entry");
+        contract.postconditions.push(Postcondition {
+            predicate: Predicate::exists("optional_receipt"),
+            description: "optional receipt recorded".to_string(),
+            mandatory: false,
+        });
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                Arc::new(OutcomeExecutor {
+                    outcome: DispatchOutcome::Completed,
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            VerificationResult::Partial,
+            "only optional postconditions failed"
+        );
+        assert_eq!(receipt.result, VerificationResult::Partial);
+        assert_eq!(receipt.attempts, 1, "partial outcomes are terminal");
+        assert_eq!(receipt.postcondition_results.len(), 2);
+        assert!(receipt.postcondition_results[0].passed);
+        assert!(!receipt.postcondition_results[1].passed);
+    }
+
+    #[tokio::test]
+    async fn execute_partial_verification_is_terminal() {
+        let executor = observing_executor(1_000);
+        let mut contract = Contract::new("test")
+            .with_postcondition(Predicate::not_exists("rollback_entry"), "no rollback entry");
+        contract.postconditions.push(Postcondition {
+            predicate: Predicate::exists("optional_receipt"),
+            description: "optional receipt recorded".to_string(),
+            mandatory: false,
+        });
+
+        let (result, receipt) = executor
+            .execute(Action::new("test", serde_json::json!({})), contract, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Partial);
+        assert_eq!(receipt.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn mandatory_postcondition_failure_is_failed_not_partial() {
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test")
+            .with_postcondition(Predicate::exists("required_receipt"), "required receipt");
+
+        let (result, receipt) = executor
+            .execute(Action::new("test", serde_json::json!({})), contract, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Failed);
+        assert!(!receipt.postcondition_results[0].passed);
+        assert_eq!(receipt.postcondition_results[0].error, None);
+    }
+
+    #[tokio::test]
+    async fn contract_recovery_config_drives_backoff_and_attempt_count() {
+        // Two attempts are allowed; verification fails both times because the
+        // observed state is stale. The contract's own backoff is applied.
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test")
+            .with_postcondition(
+                Predicate::equals("result.status", serde_json::json!("completed")),
+                "status must be completed",
+            )
+            .with_recovery(fast_recovery(RecoveryStrategy::VerifyThenRetry, 2));
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                Arc::new(OutcomeExecutor {
+                    outcome: DispatchOutcome::Completed,
+                }),
+                Some(Arc::new(StaticObserver {
+                    state: serde_json::json!({"result": {"status": "pending"}}),
+                    source: "stale",
+                })),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Failed);
+        assert_eq!(receipt.attempts, 2, "the contract allowed a second attempt");
+        // The receipt carries the evidence of the final attempt: one entry per
+        // postcondition, each recording how that predicate evaluated last.
+        assert_eq!(receipt.postcondition_results.len(), 1);
+        assert!(!receipt.postcondition_results[0].passed);
+    }
+
+    #[tokio::test]
+    async fn no_action_strategy_suppresses_retries() {
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test")
+            .with_postcondition(
+                Predicate::equals("result.status", serde_json::json!("completed")),
+                "status must be completed",
+            )
+            .with_recovery(fast_recovery(RecoveryStrategy::NoAction, 5));
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                Arc::new(OutcomeExecutor {
+                    outcome: DispatchOutcome::Completed,
+                }),
+                Some(Arc::new(StaticObserver {
+                    state: serde_json::json!({"result": {"status": "pending"}}),
+                    source: "stale",
+                })),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Failed);
+        assert_eq!(receipt.attempts, 1, "NoAction must not retry");
+    }
+
+    #[tokio::test]
+    async fn verify_before_retry_disabled_stops_after_the_first_failure() {
+        let executor = Executor::with_config(ExecutorConfig {
+            verification_timeout_ms: 1_000,
+            max_retries: 3,
+            verify_before_retry: false,
+        });
+        let contract = Contract::new("test")
+            .with_postcondition(
+                Predicate::equals("result.status", serde_json::json!("completed")),
+                "status must be completed",
+            )
+            .with_recovery(fast_recovery(RecoveryStrategy::VerifyThenRetry, 3));
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                Arc::new(OutcomeExecutor {
+                    outcome: DispatchOutcome::Completed,
+                }),
+                Some(Arc::new(StaticObserver {
+                    state: serde_json::json!({"result": {"status": "pending"}}),
+                    source: "stale",
+                })),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Failed);
+        assert_eq!(
+            receipt.attempts, 1,
+            "without verify-before-retry a failed verification is terminal"
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_error_releases_the_claim_so_the_key_can_be_retried() {
+        let store = Arc::new(IdempotencyRegistry::new());
+        let executor = Executor::with_config_and_store(ExecutorConfig::default(), store.clone());
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("transport-failure-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                action,
+                contract.clone(),
+                Arc::new(OutcomeExecutor {
+                    outcome: DispatchOutcome::TransportError("connection refused".into()),
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Failed);
+        assert_eq!(receipt.attempts, 1);
+
+        // The claim was released: this caller no longer owns the key.
+        let (claim, observed) = store.claim_or_check("transport-failure-key").await;
+        assert_eq!(
+            claim,
+            ClaimResult::Claimed,
+            "the failed dispatch must release its claim"
+        );
+        assert_eq!(observed, None);
+
+        store.release("transport-failure-key").await;
+    }
+
+    #[tokio::test]
+    async fn simulated_action_executor_completes_and_verifies() {
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test").with_postcondition(
+            Predicate::equals("result.status", serde_json::json!("completed")),
+            "status must be completed",
+        );
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                Arc::new(crate::SimulatedActionExecutor::new()),
+                Some(Arc::new(StaticObserver {
+                    state: serde_json::json!({"result": {"status": "completed"}}),
+                    source: "simulated",
+                })),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Verified);
+        assert_eq!(receipt.attempts, 1);
+        assert_eq!(receipt.observations.len(), 1);
     }
 }

@@ -1,0 +1,1804 @@
+    Checking agentverify-core v0.1.0 (/nas/Temp/repos/AgentVerify/crates/agentverify-core)
+    Checking plotters-backend v0.3.7
+    Checking ciborium-io v0.2.2
+    Checking ciborium-ll v0.2.2
+    Checking plotters-svg v0.3.7
+    Checking rayon-core v1.13.0
+    Checking itertools v0.10.5
+warning: item in documentation is missing backticks
+ --> crates/agentverify-core/src/lib.rs:1:5
+  |
+1 | //! AgentVerify Core
+  |     ^^^^^^^^^^^
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+  = note: `-W clippy::doc-markdown` implied by `-W clippy::pedantic`
+  = help: to override `-W clippy::pedantic` add `#[allow(clippy::doc_markdown)]`
+help: try
+  |
+1 - //! AgentVerify Core
+1 + //! `AgentVerify` Core
+  |
+
+warning: item in documentation is missing backticks
+  --> crates/agentverify-core/src/action.rs:15:29
+   |
+15 |     /// Action name (e.g., "create_customer")
+   |                             ^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+   |
+15 -     /// Action name (e.g., "create_customer")
+15 +     /// Action name (e.g., "`create_customer`")
+   |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/contract.rs:25:12
+   |
+25 |     pub fn new(version: &str) -> Option<Self> {
+   |            ^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+   = note: `-W clippy::must-use-candidate` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::must_use_candidate)]`
+help: add the attribute
+   |
+25 ~     #[must_use]
+26 ~     pub fn new(version: &str) -> Option<Self> {
+   |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/contract.rs:36:12
+   |
+36 |     pub fn is_compatible_with(&self, other: &Self) -> bool {
+   |            ^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+36 ~     #[must_use]
+37 ~     pub fn is_compatible_with(&self, other: &Self) -> bool {
+   |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/contract.rs:41:12
+   |
+41 |     pub fn version_string(&self) -> String {
+   |            ^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+41 ~     #[must_use]
+42 ~     pub fn version_string(&self) -> String {
+   |
+
+warning: missing `#[must_use]` attribute on a method returning `Self`
+   --> crates/agentverify-core/src/contract.rs:267:5
+    |
+267 | /     pub fn with_precondition(
+268 | |         mut self,
+269 | |         predicate: Predicate,
+270 | |         description: impl Into<String>,
+...   |
+276 | |         self
+277 | |     }
+    | |_____^
+    |
+    = help: consider adding the `#[must_use]` attribute to the method or directly to the `Self` type
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#return_self_not_must_use
+    = note: `-W clippy::return-self-not-must-use` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::return_self_not_must_use)]`
+
+warning: missing `#[must_use]` attribute on a method returning `Self`
+   --> crates/agentverify-core/src/contract.rs:280:5
+    |
+280 | /     pub fn with_postcondition(
+281 | |         mut self,
+282 | |         predicate: Predicate,
+283 | |         description: impl Into<String>,
+...   |
+290 | |         self
+291 | |     }
+    | |_____^
+    |
+    = help: consider adding the `#[must_use]` attribute to the method or directly to the `Self` type
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#return_self_not_must_use
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/contract.rs:294:12
+    |
+294 |     pub fn with_recovery(mut self, recovery: RecoveryConfig) -> Self {
+    |            ^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+294 ~     #[must_use]
+295 ~     pub fn with_recovery(mut self, recovery: RecoveryConfig) -> Self {
+    |
+
+warning: missing `#[must_use]` attribute on a method returning `Self`
+   --> crates/agentverify-core/src/contract.rs:294:5
+    |
+294 | /     pub fn with_recovery(mut self, recovery: RecoveryConfig) -> Self {
+295 | |         self.recovery = Some(recovery);
+296 | |         self
+297 | |     }
+    | |_____^
+    |
+    = help: consider adding the `#[must_use]` attribute to the method or directly to the `Self` type
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#return_self_not_must_use
+
+warning: item in documentation is missing backticks
+   --> crates/agentverify-core/src/contract.rs:307:28
+    |
+307 |     /// - Recovery config: max_attempts must be > 0
+    |                            ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+307 -     /// - Recovery config: max_attempts must be > 0
+307 +     /// - Recovery config: `max_attempts` must be > 0
+    |
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> crates/agentverify-core/src/contract.rs:316:5
+    |
+316 |     pub fn validate(&self) -> Result<(), ContractValidationError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_errors_doc
+    = note: `-W clippy::missing-errors-doc` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::missing_errors_doc)]`
+
+warning: these match arms have identical bodies
+   --> crates/agentverify-core/src/contract.rs:379:9
+    |
+379 |         Predicate::Exists { path } => path.clone(),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+380 |         Predicate::NotExists { path } => path.clone(),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+381 |         Predicate::Equals { path, .. } => path.clone(),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+382 |         Predicate::NotEquals { path, .. } => path.clone(),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+383 |         Predicate::Contains { path, .. } => path.clone(),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+384 |         Predicate::Matches { path, .. } => path.clone(),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+385 |         Predicate::GreaterThan { path, .. } => path.clone(),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+386 |         Predicate::LessThan { path, .. } => path.clone(),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+387 |         Predicate::Count { path, .. } => path.clone(),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+388 |         Predicate::IsEmpty { path } => path.clone(),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+389 |         Predicate::IsNotEmpty { path } => path.clone(),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is unintentional make the arms return different values
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#match_same_arms
+    = note: `-W clippy::match-same-arms` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::match_same_arms)]`
+help: otherwise merge the patterns into a single arm
+    |
+379 -         Predicate::Exists { path } => path.clone(),
+380 -         Predicate::NotExists { path } => path.clone(),
+381 -         Predicate::Equals { path, .. } => path.clone(),
+382 -         Predicate::NotEquals { path, .. } => path.clone(),
+383 -         Predicate::Contains { path, .. } => path.clone(),
+384 -         Predicate::Matches { path, .. } => path.clone(),
+385 -         Predicate::GreaterThan { path, .. } => path.clone(),
+386 -         Predicate::LessThan { path, .. } => path.clone(),
+387 -         Predicate::Count { path, .. } => path.clone(),
+388 -         Predicate::IsEmpty { path } => path.clone(),
+389 -         Predicate::IsNotEmpty { path } => path.clone(),
+379 +         Predicate::Exists { path } | Predicate::NotExists { path } | Predicate::Equals { path, .. } | Predicate::NotEquals { path, .. } | Predicate::Contains { path, .. } | Predicate::Matches { path, .. } | Predicate::GreaterThan { path, .. } | Predicate::LessThan { path, .. } | Predicate::Count { path, .. } | Predicate::IsEmpty { path } | Predicate::IsNotEmpty { path } => path.clone(),
+    |
+
+warning: these match arms have identical bodies
+   --> crates/agentverify-core/src/contract.rs:390:9
+    |
+390 | /         Predicate::All { predicates } => predicates
+391 | |             .first()
+392 | |             .map(extract_predicate_path)
+393 | |             .unwrap_or_default(),
+    | |________________________________^
+394 | /         Predicate::Any { predicates } => predicates
+395 | |             .first()
+396 | |             .map(extract_predicate_path)
+397 | |             .unwrap_or_default(),
+    | |________________________________^
+    |
+    = help: if this is unintentional make the arms return different values
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#match_same_arms
+help: otherwise merge the patterns into a single arm
+    |
+390 ~         Predicate::All { predicates } | Predicate::Any { predicates } => predicates
+391 |             .first()
+392 |             .map(extract_predicate_path)
+393 |             .unwrap_or_default(),
+394 ~         Predicate::Not { predicate } => extract_predicate_path(predicate),
+    |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/observation.rs:49:12
+   |
+49 |     pub fn new(source: SourceId, state: Value) -> Self {
+   |            ^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+49 ~     #[must_use]
+50 ~     pub fn new(source: SourceId, state: Value) -> Self {
+   |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/observation.rs:59:12
+   |
+59 |     pub fn with_evidence(mut self, evidence: Evidence) -> Self {
+   |            ^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+59 ~     #[must_use]
+60 ~     pub fn with_evidence(mut self, evidence: Evidence) -> Self {
+   |
+
+warning: missing `#[must_use]` attribute on a method returning `Self`
+  --> crates/agentverify-core/src/observation.rs:59:5
+   |
+59 | /     pub fn with_evidence(mut self, evidence: Evidence) -> Self {
+60 | |         self.evidence.push(evidence);
+61 | |         self
+62 | |     }
+   | |_____^
+   |
+   = help: consider adding the `#[must_use]` attribute to the method or directly to the `Self` type
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#return_self_not_must_use
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/observation.rs:65:12
+   |
+65 |     pub fn get(&self, path: &str) -> Option<&Value> {
+   |            ^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+65 ~     #[must_use]
+66 ~     pub fn get(&self, path: &str) -> Option<&Value> {
+   |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/predicate.rs:83:12
+   |
+83 |     pub fn all(predicates: Vec<Predicate>) -> Self {
+   |            ^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+83 ~     #[must_use]
+84 ~     pub fn all(predicates: Vec<Predicate>) -> Self {
+   |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/predicate.rs:88:12
+   |
+88 |     pub fn any(predicates: Vec<Predicate>) -> Self {
+   |            ^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+88 ~     #[must_use]
+89 ~     pub fn any(predicates: Vec<Predicate>) -> Self {
+   |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/predicate.rs:93:12
+   |
+93 |     pub fn negate(predicate: Predicate) -> Self {
+   |            ^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+93 ~     #[must_use]
+94 ~     pub fn negate(predicate: Predicate) -> Self {
+   |
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/receipt.rs:105:12
+    |
+105 |     pub fn new(
+    |            ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+105 ~     #[must_use]
+106 ~     pub fn new(
+    |
+
+warning: this argument is passed by value, but not consumed in the function body
+   --> crates/agentverify-core/src/receipt.rs:137:26
+    |
+137 |         idempotency_key: Option<String>,
+    |                          ^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#needless_pass_by_value
+    = note: `-W clippy::needless-pass-by-value` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::needless_pass_by_value)]`
+help: consider taking a reference instead
+    |
+137 |         idempotency_key: Option<&String>,
+    |                                 +
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/receipt.rs:166:12
+    |
+166 |     pub fn compute_digest(&self) -> String {
+    |            ^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+166 ~     #[must_use]
+167 ~     pub fn compute_digest(&self) -> String {
+    |
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/receipt.rs:192:12
+    |
+192 |     pub fn with_observation(mut self, observation: Observation) -> Self {
+    |            ^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+192 ~     #[must_use]
+193 ~     pub fn with_observation(mut self, observation: Observation) -> Self {
+    |
+
+warning: missing `#[must_use]` attribute on a method returning `Self`
+   --> crates/agentverify-core/src/receipt.rs:192:5
+    |
+192 | /     pub fn with_observation(mut self, observation: Observation) -> Self {
+193 | |         self.observations.push(observation);
+194 | |         self
+195 | |     }
+    | |_____^
+    |
+    = help: consider adding the `#[must_use]` attribute to the method or directly to the `Self` type
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#return_self_not_must_use
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/receipt.rs:198:12
+    |
+198 |     pub fn with_postcondition_result(mut self, result: PostconditionResult) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+198 ~     #[must_use]
+199 ~     pub fn with_postcondition_result(mut self, result: PostconditionResult) -> Self {
+    |
+
+warning: missing `#[must_use]` attribute on a method returning `Self`
+   --> crates/agentverify-core/src/receipt.rs:198:5
+    |
+198 | /     pub fn with_postcondition_result(mut self, result: PostconditionResult) -> Self {
+199 | |         self.postcondition_results.push(result);
+200 | |         self
+201 | |     }
+    | |_____^
+    |
+    = help: consider adding the `#[must_use]` attribute to the method or directly to the `Self` type
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#return_self_not_must_use
+
+warning: missing `#[must_use]` attribute on a method returning `Self`
+   --> crates/agentverify-core/src/receipt.rs:204:5
+    |
+204 | /     pub fn with_key_id(mut self, key_id: impl Into<String>) -> Self {
+205 | |         self.key_id = Some(key_id.into());
+206 | |         self
+207 | |     }
+    | |_____^
+    |
+    = help: consider adding the `#[must_use]` attribute to the method or directly to the `Self` type
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#return_self_not_must_use
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/receipt.rs:210:12
+    |
+210 |     pub fn sign(mut self, signature: Vec<u8>) -> Self {
+    |            ^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+210 ~     #[must_use]
+211 ~     pub fn sign(mut self, signature: Vec<u8>) -> Self {
+    |
+
+warning: missing `#[must_use]` attribute on a method returning `Self`
+   --> crates/agentverify-core/src/receipt.rs:210:5
+    |
+210 | /     pub fn sign(mut self, signature: Vec<u8>) -> Self {
+211 | |         self.signature = Some(signature);
+212 | |         self
+213 | |     }
+    | |_____^
+    |
+    = help: consider adding the `#[must_use]` attribute to the method or directly to the `Self` type
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#return_self_not_must_use
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/receipt.rs:216:12
+    |
+216 |     pub fn is_signed(&self) -> bool {
+    |            ^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+216 ~     #[must_use]
+217 ~     pub fn is_signed(&self) -> bool {
+    |
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/receipt.rs:221:12
+    |
+221 |     pub fn verify_digest(&self) -> bool {
+    |            ^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+221 ~     #[must_use]
+222 ~     pub fn verify_digest(&self) -> bool {
+    |
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/receipt.rs:226:12
+    |
+226 |     pub fn version(&self) -> &str {
+    |            ^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+226 ~     #[must_use]
+227 ~     pub fn version(&self) -> &str {
+    |
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/receipt.rs:231:12
+    |
+231 |     pub fn key_id(&self) -> Option<&str> {
+    |            ^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+231 ~     #[must_use]
+232 ~     pub fn key_id(&self) -> Option<&str> {
+    |
+
+warning: item in documentation is missing backticks
+   --> crates/agentverify-core/src/receipt.rs:244:41
+    |
+244 | /// - Key scope: receipts are stored by ReceiptId
+    |                                         ^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+244 - /// - Key scope: receipts are stored by ReceiptId
+244 + /// - Key scope: receipts are stored by `ReceiptId`
+    |
+
+warning: doc list item without indentation
+   --> crates/agentverify-core/src/receipt.rs:247:5
+    |
+247 | /// Errors that can occur while persisting a receipt.
+    |     ^
+    |
+    = help: if this is supposed to be its own paragraph, add a blank line
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_lazy_continuation
+    = note: `#[warn(clippy::doc_lazy_continuation)]` on by default
+help: indent this line
+    |
+247 | ///   Errors that can occur while persisting a receipt.
+    |     ++
+
+warning: item in documentation is missing backticks
+   --> crates/agentverify-core/src/receipt.rs:295:58
+    |
+295 | /// For production, use a distributed store implementing ReceiptStore.
+    |                                                          ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+295 - /// For production, use a distributed store implementing ReceiptStore.
+295 + /// For production, use a distributed store implementing `ReceiptStore`.
+    |
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/receipt.rs:302:12
+    |
+302 |     pub fn new() -> Self {
+    |            ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+302 ~     #[must_use]
+303 ~     pub fn new() -> Self {
+    |
+
+warning: item in documentation is missing backticks
+   --> crates/agentverify-core/src/receipt.rs:368:36
+    |
+368 | /// - Index file `index.json` maps action_id → list of receipt_ids
+    |                                    ^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+368 - /// - Index file `index.json` maps action_id → list of receipt_ids
+368 + /// - Index file `index.json` maps `action_id` → list of receipt_ids
+    |
+
+warning: item in documentation is missing backticks
+   --> crates/agentverify-core/src/receipt.rs:368:56
+    |
+368 | /// - Index file `index.json` maps action_id → list of receipt_ids
+    |                                                        ^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+368 - /// - Index file `index.json` maps action_id → list of receipt_ids
+368 + /// - Index file `index.json` maps action_id → list of `receipt_ids`
+    |
+
+warning: item in documentation is missing backticks
+   --> crates/agentverify-core/src/receipt.rs:372:37
+    |
+372 | /// - Key scope: receipts stored by ReceiptId
+    |                                     ^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+372 - /// - Key scope: receipts stored by ReceiptId
+372 + /// - Key scope: receipts stored by `ReceiptId`
+    |
+
+warning: item in documentation is missing backticks
+   --> crates/agentverify-core/src/receipt.rs:380:47
+    |
+380 | /// For production distributed use, implement ReceiptStore with a proper
+    |                                               ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+380 - /// For production distributed use, implement ReceiptStore with a proper
+380 + /// For production distributed use, implement `ReceiptStore` with a proper
+    |
+
+warning: variables can be used directly in the `format!` string
+   --> crates/agentverify-core/src/receipt.rs:449:47
+    |
+449 |             let receipt_path = base_path.join(format!("{}.json", receipt_id));
+    |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#uninlined_format_args
+    = note: `-W clippy::uninlined-format-args` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::uninlined_format_args)]`
+help: change this to
+    |
+449 -             let receipt_path = base_path.join(format!("{}.json", receipt_id));
+449 +             let receipt_path = base_path.join(format!("{receipt_id}.json"));
+    |
+
+warning: variables can be used directly in the `format!` string
+   --> crates/agentverify-core/src/receipt.rs:450:44
+    |
+450 |             let temp_path = base_path.join(format!("{}.tmp", receipt_id));
+    |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#uninlined_format_args
+help: change this to
+    |
+450 -             let temp_path = base_path.join(format!("{}.tmp", receipt_id));
+450 +             let temp_path = base_path.join(format!("{receipt_id}.tmp"));
+    |
+
+warning: variables can be used directly in the `format!` string
+   --> crates/agentverify-core/src/receipt.rs:480:39
+    |
+480 |             let path = base_path.join(format!("{}.json", id));
+    |                                       ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#uninlined_format_args
+help: change this to
+    |
+480 -             let path = base_path.join(format!("{}.json", id));
+480 +             let path = base_path.join(format!("{id}.json"));
+    |
+
+warning: this could be rewritten as `let...else`
+   --> crates/agentverify-core/src/receipt.rs:495:13
+    |
+495 | /             let store = match Self::new(base_path.clone()) {
+496 | |                 Ok(s) => s,
+497 | |                 Err(_) => return Vec::new(),
+498 | |             };
+    | |______________^ help: consider writing: `let Ok(store) = Self::new(base_path.clone()) else { return Vec::new() };`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_let_else
+    = note: `-W clippy::manual-let-else` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::manual_let_else)]`
+
+warning: this could be rewritten as `let...else`
+   --> crates/agentverify-core/src/receipt.rs:499:13
+    |
+499 | /             let index = match store.read_index_async().await {
+500 | |                 Ok(i) => i,
+501 | |                 Err(_) => return Vec::new(),
+502 | |             };
+    | |______________^ help: consider writing: `let Ok(index) = store.read_index_async().await else { return Vec::new() };`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#manual_let_else
+
+warning: variables can be used directly in the `format!` string
+   --> crates/agentverify-core/src/receipt.rs:509:43
+    |
+509 |                 let path = base_path.join(format!("{}.json", receipt_id));
+    |                                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#uninlined_format_args
+help: change this to
+    |
+509 -                 let path = base_path.join(format!("{}.json", receipt_id));
+509 +                 let path = base_path.join(format!("{receipt_id}.json"));
+    |
+
+warning: variables can be used directly in the `format!` string
+   --> crates/agentverify-core/src/receipt.rs:522:46
+    |
+522 |         Box::pin(async move { base_path.join(format!("{}.json", id)).exists() })
+    |                                              ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#uninlined_format_args
+help: change this to
+    |
+522 -         Box::pin(async move { base_path.join(format!("{}.json", id)).exists() })
+522 +         Box::pin(async move { base_path.join(format!("{id}.json")).exists() })
+    |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/state_machine.rs:83:12
+   |
+83 |     pub fn is_terminal(&self) -> bool {
+   |            ^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+83 ~     #[must_use]
+84 ~     pub fn is_terminal(&self) -> bool {
+   |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/state_machine.rs:91:12
+   |
+91 |     pub fn valid_transitions(&self) -> Vec<State> {
+   |            ^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+91 ~     #[must_use]
+92 ~     pub fn valid_transitions(&self) -> Vec<State> {
+   |
+
+warning: these match arms have identical bodies
+   --> crates/agentverify-core/src/state_machine.rs:95:13
+    |
+ 95 |             State::Rejected => vec![], // Terminal
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+113 |             State::Escalated => vec![], // Terminal
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+114 |             State::Committed => vec![], // Terminal
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is unintentional make the arms return different values
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#match_same_arms
+help: otherwise merge the patterns into a single arm
+    |
+ 95 ~             State::Rejected | State::Escalated | State::Committed => vec![], // Terminal
+ 96 |             State::Authorized => vec![State::Executing],
+...
+112 |             State::Recovered => vec![State::Verifying],
+113 ~             // Terminal
+114 ~             // Terminal
+    |
+
+warning: these match arms have identical bodies
+   --> crates/agentverify-core/src/state_machine.rs:103:13
+    |
+103 |             State::Executed => vec![State::Observing],
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+104 |             State::Failed => vec![State::Verifying],
+105 |             State::Timeout => vec![State::Observing],
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+106 |             State::Unknown => vec![State::Observing],
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is unintentional make the arms return different values
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#match_same_arms
+help: otherwise merge the patterns into a single arm
+    |
+103 ~             State::Executed | State::Timeout | State::Unknown => vec![State::Observing],
+104 |             State::Failed => vec![State::Verifying],
+105 ~             State::Observing => vec![State::Verifying],
+    |
+
+warning: these match arms have identical bodies
+   --> crates/agentverify-core/src/state_machine.rs:104:13
+    |
+104 |             State::Failed => vec![State::Verifying],
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+107 |             State::Observing => vec![State::Verifying],
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+112 |             State::Recovered => vec![State::Verifying],
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is unintentional make the arms return different values
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#match_same_arms
+help: otherwise merge the patterns into a single arm
+    |
+104 ~             State::Failed | State::Observing | State::Recovered => vec![State::Verifying],
+105 |             State::Timeout => vec![State::Observing],
+106 |             State::Unknown => vec![State::Observing],
+107 ~             State::Verifying => vec![State::Verified, State::VerificationFailed],
+108 |             State::Verified => vec![State::Committed],
+109 |             State::VerificationFailed => vec![State::Recovering],
+110 |             State::Recovering => vec![State::Recovered, State::Escalated],
+111 ~             State::Escalated => vec![], // Terminal
+    |
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> crates/agentverify-core/src/state_machine.rs:119:5
+    |
+119 |     pub fn transition(&self, next: State) -> Result<State, StateError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_errors_doc
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/state_machine.rs:142:12
+    |
+142 |     pub fn new() -> Self {
+    |            ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+142 ~     #[must_use]
+143 ~     pub fn new() -> Self {
+    |
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/state_machine.rs:149:12
+    |
+149 |     pub fn with_state(state: State) -> Self {
+    |            ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+149 ~     #[must_use]
+150 ~     pub fn with_state(state: State) -> Self {
+    |
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/state_machine.rs:154:12
+    |
+154 |     pub fn current(&self) -> State {
+    |            ^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+154 ~     #[must_use]
+155 ~     pub fn current(&self) -> State {
+    |
+
+warning: docs for function returning `Result` missing `# Errors` section
+   --> crates/agentverify-core/src/state_machine.rs:159:5
+    |
+159 |     pub fn advance(&mut self, next: State) -> Result<State, StateError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_errors_doc
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/verification_result.rs:43:12
+   |
+43 |     pub fn is_success(&self) -> bool {
+   |            ^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+43 ~     #[must_use]
+44 ~     pub fn is_success(&self) -> bool {
+   |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/verification_result.rs:48:12
+   |
+48 |     pub fn is_failure(&self) -> bool {
+   |            ^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+48 ~     #[must_use]
+49 ~     pub fn is_failure(&self) -> bool {
+   |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/verification_result.rs:53:12
+   |
+53 |     pub fn is_unknown(&self) -> bool {
+   |            ^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+53 ~     #[must_use]
+54 ~     pub fn is_unknown(&self) -> bool {
+   |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/verification_result.rs:59:12
+   |
+59 |     pub fn can_retry_without_verify(&self) -> bool {
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+59 ~     #[must_use]
+60 ~     pub fn can_retry_without_verify(&self) -> bool {
+   |
+
+warning: item in documentation is missing backticks
+  --> crates/agentverify-core/src/lib.rs:46:9
+   |
+46 |     /// ActionId is a type-safe wrapper around a UUID that identifies a specific
+   |         ^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+   |
+46 -     /// ActionId is a type-safe wrapper around a UUID that identifies a specific
+46 +     /// `ActionId` is a type-safe wrapper around a UUID that identifies a specific
+   |
+
+warning: item in documentation is missing backticks
+  --> crates/agentverify-core/src/lib.rs:48:63
+   |
+48 |     /// [`crate::Action::with_idempotency`] receives a unique ActionId.
+   |                                                               ^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+   |
+48 -     /// [`crate::Action::with_idempotency`] receives a unique ActionId.
+48 +     /// [`crate::Action::with_idempotency`] receives a unique `ActionId`.
+   |
+
+warning: item in documentation is missing backticks
+  --> crates/agentverify-core/src/lib.rs:62:35
+   |
+62 |         /// Generate a new unique ActionId.
+   |                                   ^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+   |
+62 -         /// Generate a new unique ActionId.
+62 +         /// Generate a new unique `ActionId`.
+   |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-core/src/lib.rs:63:16
+   |
+63 |         pub fn new() -> Self {
+   |                ^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+   |
+63 ~         #[must_use]
+64 ~         pub fn new() -> Self {
+   |
+
+warning: item in documentation is missing backticks
+  --> crates/agentverify-core/src/lib.rs:82:9
+   |
+82 |     /// IdempotencyKey ensures that the same logical action is not executed multiple times.
+   |         ^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+   |
+82 -     /// IdempotencyKey ensures that the same logical action is not executed multiple times.
+82 +     /// `IdempotencyKey` ensures that the same logical action is not executed multiple times.
+   |
+
+warning: item in documentation is missing backticks
+  --> crates/agentverify-core/src/lib.rs:83:43
+   |
+83 |     /// When an action is created with an IdempotencyKey, the verification system can detect
+   |                                           ^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+   |
+83 -     /// When an action is created with an IdempotencyKey, the verification system can detect
+83 +     /// When an action is created with an `IdempotencyKey`, the verification system can detect
+   |
+
+warning: item in documentation is missing backticks
+   --> crates/agentverify-core/src/lib.rs:107:47
+    |
+107 |         /// Create an idempotency key from an ActionId.
+    |                                               ^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+107 -         /// Create an idempotency key from an ActionId.
+107 +         /// Create an idempotency key from an `ActionId`.
+    |
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/lib.rs:110:16
+    |
+110 |         pub fn from_action_id(id: ActionId) -> Self {
+    |                ^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+110 ~         #[must_use]
+111 ~         pub fn from_action_id(id: ActionId) -> Self {
+    |
+
+warning: item in documentation is missing backticks
+   --> crates/agentverify-core/src/lib.rs:117:9
+    |
+117 |     /// ContractId is a type-safe wrapper around a UUID that identifies a specific
+    |         ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+117 -     /// ContractId is a type-safe wrapper around a UUID that identifies a specific
+117 +     /// `ContractId` is a type-safe wrapper around a UUID that identifies a specific
+    |
+
+warning: item in documentation is missing backticks
+   --> crates/agentverify-core/src/lib.rs:133:35
+    |
+133 |         /// Generate a new unique ContractId.
+    |                                   ^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+133 -         /// Generate a new unique ContractId.
+133 +         /// Generate a new unique `ContractId`.
+    |
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/lib.rs:134:16
+    |
+134 |         pub fn new() -> Self {
+    |                ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+134 ~         #[must_use]
+135 ~         pub fn new() -> Self {
+    |
+
+warning: item in documentation is missing backticks
+   --> crates/agentverify-core/src/lib.rs:153:9
+    |
+153 |     /// ReceiptId identifies a specific verification receipt. Receipts are created
+    |         ^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+153 -     /// ReceiptId identifies a specific verification receipt. Receipts are created
+153 +     /// `ReceiptId` identifies a specific verification receipt. Receipts are created
+    |
+
+warning: item in documentation is missing backticks
+   --> crates/agentverify-core/src/lib.rs:169:35
+    |
+169 |         /// Generate a new unique ReceiptId.
+    |                                   ^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+    |
+169 -         /// Generate a new unique ReceiptId.
+169 +         /// Generate a new unique `ReceiptId`.
+    |
+
+warning: this method could have a `#[must_use]` attribute
+   --> crates/agentverify-core/src/lib.rs:170:16
+    |
+170 |         pub fn new() -> Self {
+    |                ^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+help: add the attribute
+    |
+170 ~         #[must_use]
+171 ~         pub fn new() -> Self {
+    |
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/contract.rs:20:5
+   |
+20 |     pub major: u32,
+   |     ^^^^^^^^^^^^^^
+   |
+   = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/contract.rs:21:5
+   |
+21 |     pub minor: u32,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> crates/agentverify-core/src/contract.rs:25:5
+   |
+25 |     pub fn new(version: &str) -> Option<Self> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/agentverify-core/src/contract.rs:168:9
+    |
+168 |         interval: chrono::Duration,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/agentverify-core/src/contract.rs:169:9
+    |
+169 |         max_attempts: u32,
+    |         ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/agentverify-core/src/contract.rs:172:13
+    |
+172 |     Alert { severity: AlertSeverity },
+    |             ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/contract.rs:407:5
+    |
+407 |     InvalidSchemaVersion(String),
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/contract.rs:410:5
+    |
+410 |     IncompatibleSchemaVersion { expected: String, actual: String },
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/agentverify-core/src/contract.rs:410:33
+    |
+410 |     IncompatibleSchemaVersion { expected: String, actual: String },
+    |                                 ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/agentverify-core/src/contract.rs:410:51
+    |
+410 |     IncompatibleSchemaVersion { expected: String, actual: String },
+    |                                                   ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/contract.rs:413:5
+    |
+413 |     EmptyActionName,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/contract.rs:416:5
+    |
+416 |     NoPostconditions,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/contract.rs:419:5
+    |
+419 |     DuplicatePostconditionPath(String),
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/contract.rs:422:5
+    |
+422 |     InvalidMaxAttempts,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/contract.rs:425:5
+    |
+425 |     InvalidBackoff {
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/agentverify-core/src/contract.rs:426:9
+    |
+426 |         initial: chrono::Duration,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates/agentverify-core/src/contract.rs:427:9
+    |
+427 |         max: chrono::Duration,
+    |         ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/contract.rs:431:5
+    |
+431 |     InvalidBackoffMultiplier(f64),
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:12:14
+   |
+12 |     Exists { path: String },
+   |              ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:14:17
+   |
+14 |     NotExists { path: String },
+   |                 ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:16:14
+   |
+16 |     Equals { path: String, value: Value },
+   |              ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:16:28
+   |
+16 |     Equals { path: String, value: Value },
+   |                            ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:18:17
+   |
+18 |     NotEquals { path: String, value: Value },
+   |                 ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:18:31
+   |
+18 |     NotEquals { path: String, value: Value },
+   |                               ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:20:16
+   |
+20 |     Contains { path: String, value: Value },
+   |                ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:20:30
+   |
+20 |     Contains { path: String, value: Value },
+   |                              ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:22:15
+   |
+22 |     Matches { path: String, pattern: String },
+   |               ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:22:29
+   |
+22 |     Matches { path: String, pattern: String },
+   |                             ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:24:19
+   |
+24 |     GreaterThan { path: String, value: Value },
+   |                   ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:24:33
+   |
+24 |     GreaterThan { path: String, value: Value },
+   |                                 ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:26:16
+   |
+26 |     LessThan { path: String, value: Value },
+   |                ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:26:30
+   |
+26 |     LessThan { path: String, value: Value },
+   |                              ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:31:9
+   |
+31 |         path: String,
+   |         ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:32:9
+   |
+32 |         operator: CountOperator,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:33:9
+   |
+33 |         value: i64,
+   |         ^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:36:15
+   |
+36 |     IsEmpty { path: String },
+   |               ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:38:18
+   |
+38 |     IsNotEmpty { path: String },
+   |                  ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:42:11
+   |
+42 |     All { predicates: Vec<Predicate> },
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:44:11
+   |
+44 |     Any { predicates: Vec<Predicate> },
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:46:11
+   |
+46 |     Not { predicate: Box<Predicate> },
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:49:9
+   |
+49 |         antecedent: Box<Predicate>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> crates/agentverify-core/src/predicate.rs:50:9
+   |
+50 |         consequent: Box<Predicate>,
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/predicate.rs:154:5
+    |
+154 |     Eq,
+    |     ^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/predicate.rs:155:5
+    |
+155 |     Ne,
+    |     ^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/predicate.rs:156:5
+    |
+156 |     Lt,
+    |     ^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/predicate.rs:157:5
+    |
+157 |     Le,
+    |     ^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/predicate.rs:158:5
+    |
+158 |     Gt,
+    |     ^^
+
+warning: missing documentation for a variant
+   --> crates/agentverify-core/src/predicate.rs:159:5
+    |
+159 |     Ge,
+    |     ^^
+
+warning: missing documentation for a trait
+   --> crates/agentverify-core/src/receipt.rs:259:1
+    |
+259 | pub trait ReceiptStore: Send + Sync {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> crates/agentverify-core/src/receipt.rs:302:5
+    |
+302 |     pub fn new() -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: `agentverify-core` (lib) generated 127 warnings (run `cargo clippy --fix --lib -p agentverify-core -- ` to apply 57 suggestions)
+    Checking agentverify-engine v0.1.0 (/nas/Temp/repos/AgentVerify/crates/agentverify-engine)
+warning: item in documentation is missing backticks
+ --> crates/agentverify-engine/src/lib.rs:1:5
+  |
+1 | //! AgentVerify Predicate Engine
+  |     ^^^^^^^^^^^
+  |
+  = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+  = note: `-W clippy::doc-markdown` implied by `-W clippy::pedantic`
+  = help: to override `-W clippy::pedantic` add `#[allow(clippy::doc_markdown)]`
+help: try
+  |
+1 - //! AgentVerify Predicate Engine
+1 + //! `AgentVerify` Predicate Engine
+  |
+
+warning: item in documentation is missing backticks
+  --> crates/agentverify-engine/src/engine.rs:37:22
+   |
+37 |     /// Create a new PredicateEngine with an empty regex cache
+   |                      ^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#doc_markdown
+help: try
+   |
+37 -     /// Create a new PredicateEngine with an empty regex cache
+37 +     /// Create a new `PredicateEngine` with an empty regex cache
+   |
+
+warning: this method could have a `#[must_use]` attribute
+  --> crates/agentverify-engine/src/engine.rs:38:12
+   |
+38 |     pub fn new() -> Self {
+   |            ^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#must_use_candidate
+   = note: `-W clippy::must-use-candidate` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::must_use_candidate)]`
+help: add the attribute
+   |
+38 ~     #[must_use]
+39 ~     pub fn new() -> Self {
+   |
+
+warning: docs for function returning `Result` missing `# Errors` section
+  --> crates/agentverify-engine/src/engine.rs:45:5
+   |
+45 | /     pub fn evaluate(
+46 | |         &self,
+47 | |         predicate: &Predicate,
+48 | |         state: &Value,
+49 | |         args: &Value,
+50 | |     ) -> Result<VerificationResult, EngineError> {
+   | |________________________________________________^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#missing_errors_doc
+   = note: `-W clippy::missing-errors-doc` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::missing_errors_doc)]`
+
+warning: this function's return value is unnecessarily wrapped by `Result`
+  --> crates/agentverify-engine/src/engine.rs:79:5
+   |
+79 |     fn eval_exists(state: &Value, path: &str) -> Result<VerificationResult, EngineError> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_wraps
+   = note: `-W clippy::unnecessary-wraps` implied by `-W clippy::pedantic`
+   = help: to override `-W clippy::pedantic` add `#[allow(clippy::unnecessary_wraps)]`
+help: remove `Result` from the return type...
+   |
+79 -     fn eval_exists(state: &Value, path: &str) -> Result<VerificationResult, EngineError> {
+79 +     fn eval_exists(state: &Value, path: &str) -> agentverify_core::VerificationResult {
+   |
+help: ...and then remove the surrounding `Ok()` from returning expressions
+   |
+81 ~             VerificationResult::Verified
+82 |         } else {
+83 ~             VerificationResult::Failed
+   |
+
+warning: this function's return value is unnecessarily wrapped by `Result`
+  --> crates/agentverify-engine/src/engine.rs:87:5
+   |
+87 |     fn eval_not_exists(state: &Value, path: &str) -> Result<VerificationResult, EngineError> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_wraps
+help: remove `Result` from the return type...
+   |
+87 -     fn eval_not_exists(state: &Value, path: &str) -> Result<VerificationResult, EngineError> {
+87 +     fn eval_not_exists(state: &Value, path: &str) -> agentverify_core::VerificationResult {
+   |
+help: ...and then remove the surrounding `Ok()` from returning expressions
+   |
+89 ~             VerificationResult::Verified
+90 |         } else {
+91 ~             VerificationResult::Failed
+   |
+
+warning: this function's return value is unnecessarily wrapped by `Result`
+   --> crates/agentverify-engine/src/engine.rs:95:5
+    |
+ 95 | /     fn eval_equals(
+ 96 | |         state: &Value,
+ 97 | |         path: &str,
+ 98 | |         expected: &Value,
+ 99 | |         args: &Value,
+100 | |     ) -> Result<VerificationResult, EngineError> {
+    | |________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_wraps
+help: remove `Result` from the return type...
+    |
+100 -     ) -> Result<VerificationResult, EngineError> {
+100 +     ) -> agentverify_core::VerificationResult {
+    |
+help: ...and then remove the surrounding `Ok()` from returning expressions
+    |
+105 ~             Some(actual_val) if actual_val == &expected => VerificationResult::Verified,
+106 ~             Some(_) => VerificationResult::Failed,
+107 ~             None => VerificationResult::Failed,
+    |
+
+warning: these match arms have identical bodies
+   --> crates/agentverify-engine/src/engine.rs:106:13
+    |
+106 |             Some(_) => Ok(VerificationResult::Failed),
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+107 |             None => Ok(VerificationResult::Failed),
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: if this is unintentional make the arms return different values
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#match_same_arms
+    = note: `-W clippy::match-same-arms` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::match_same_arms)]`
+help: otherwise merge the patterns into a single arm
+    |
+106 ~             Some(_) | None => Ok(VerificationResult::Failed),
+107 ~             }
+    |
+
+warning: this function's return value is unnecessarily wrapped by `Result`
+   --> crates/agentverify-engine/src/engine.rs:111:5
+    |
+111 | /     fn eval_not_equals(
+112 | |         state: &Value,
+113 | |         path: &str,
+114 | |         value: &Value,
+115 | |         args: &Value,
+116 | |     ) -> Result<VerificationResult, EngineError> {
+    | |________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_wraps
+help: remove `Result` from the return type...
+    |
+116 -     ) -> Result<VerificationResult, EngineError> {
+116 +     ) -> agentverify_core::VerificationResult {
+    |
+help: ...and then remove the surrounding `Ok()` from returning expressions
+    |
+121 ~             Some(actual_val) if actual_val != &value => VerificationResult::Verified,
+122 ~             _ => VerificationResult::Failed,
+    |
+
+warning: this function's return value is unnecessarily wrapped by `Result`
+   --> crates/agentverify-engine/src/engine.rs:126:5
+    |
+126 | /     fn eval_contains(
+127 | |         state: &Value,
+128 | |         path: &str,
+129 | |         value: &Value,
+130 | |         args: &Value,
+131 | |     ) -> Result<VerificationResult, EngineError> {
+    | |________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_wraps
+help: remove `Result` from the return type...
+    |
+131 -     ) -> Result<VerificationResult, EngineError> {
+131 +     ) -> agentverify_core::VerificationResult {
+    |
+help: ...and then remove the surrounding `Ok()` from returning expressions
+    |
+137 ~                 VerificationResult::Verified
+138 |             }
+139 ~             Some(Value::Array(arr)) if arr.contains(&value) => VerificationResult::Verified,
+140 |             Some(Value::Object(obj)) => {
+...
+143 |                         if obj_str.contains(val_str) {
+144 ~                             return VerificationResult::Verified;
+145 |                         }
+146 |                     }
+147 |                 }
+148 ~                 VerificationResult::Failed
+149 |             }
+150 ~             _ => VerificationResult::Failed,
+    |
+
+error: used `unwrap()` on a `Result` value
+   --> crates/agentverify-engine/src/engine.rs:166:33
+    |
+166 |                     let cache = self.regex_cache.read().unwrap();
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+    = note: requested on the command line with `-D clippy::unwrap-used`
+
+warning: you seem to be trying to use `match` for destructuring a single pattern. Consider using `if let`
+   --> crates/agentverify-engine/src/engine.rs:170:29
+    |
+170 |                   let regex = match regex {
+    |  _____________________________^
+171 | |                     Some(r) => r,
+172 | |                     None => {
+...   |
+179 | |                 };
+    | |_________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#single_match_else
+    = note: `-W clippy::single-match-else` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::single_match_else)]`
+help: try
+    |
+170 ~                 let regex = if let Some(r) = regex { r } else {
+171 +                     // Not in cache, compile and store
+172 +                     let new_regex = Regex::new(pattern)?;
+173 +                     let mut cache = self.regex_cache.write().unwrap();
+174 +                     cache.insert(pattern.to_string(), new_regex.clone());
+175 +                     new_regex
+176 ~                 };
+    |
+
+error: used `unwrap()` on a `Result` value
+   --> crates/agentverify-engine/src/engine.rs:175:41
+    |
+175 |                         let mut cache = self.regex_cache.write().unwrap();
+    |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: if this value is an `Err`, it will panic
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unwrap_used
+
+warning: this function's return value is unnecessarily wrapped by `Result`
+   --> crates/agentverify-engine/src/engine.rs:191:5
+    |
+191 | /     fn eval_greater_than(
+192 | |         state: &Value,
+193 | |         path: &str,
+194 | |         value: &Value,
+195 | |         args: &Value,
+196 | |     ) -> Result<VerificationResult, EngineError> {
+    | |________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_wraps
+help: remove `Result` from the return type...
+    |
+196 -     ) -> Result<VerificationResult, EngineError> {
+196 +     ) -> agentverify_core::VerificationResult {
+    |
+help: ...and then remove the surrounding `Ok()` from returning expressions
+    |
+203 ~                     (Some(a), Some(e)) if a > e => VerificationResult::Verified,
+204 ~                     _ => VerificationResult::Failed,
+205 |                 }
+...
+208 |                 if actual_str.as_str() > expected_str.as_str() {
+209 ~                     VerificationResult::Verified
+210 |                 } else {
+211 ~                     VerificationResult::Failed
+212 |                 }
+213 |             }
+214 ~             _ => VerificationResult::Failed,
+    |
+
+warning: this function's return value is unnecessarily wrapped by `Result`
+   --> crates/agentverify-engine/src/engine.rs:218:5
+    |
+218 | /     fn eval_less_than(
+219 | |         state: &Value,
+220 | |         path: &str,
+221 | |         value: &Value,
+222 | |         args: &Value,
+223 | |     ) -> Result<VerificationResult, EngineError> {
+    | |________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_wraps
+help: remove `Result` from the return type...
+    |
+223 -     ) -> Result<VerificationResult, EngineError> {
+223 +     ) -> agentverify_core::VerificationResult {
+    |
+help: ...and then remove the surrounding `Ok()` from returning expressions
+    |
+230 ~                     (Some(a), Some(e)) if a < e => VerificationResult::Verified,
+231 ~                     _ => VerificationResult::Failed,
+232 |                 }
+...
+235 |                 if actual_str.as_str() < expected_str.as_str() {
+236 ~                     VerificationResult::Verified
+237 |                 } else {
+238 ~                     VerificationResult::Failed
+239 |                 }
+240 |             }
+241 ~             _ => VerificationResult::Failed,
+    |
+
+warning: this function's return value is unnecessarily wrapped by `Result`
+   --> crates/agentverify-engine/src/engine.rs:245:5
+    |
+245 | /     fn eval_count(
+246 | |         state: &Value,
+247 | |         path: &str,
+248 | |         operator: CountOperator,
+249 | |         expected: i64,
+250 | |     ) -> Result<VerificationResult, EngineError> {
+    | |________________________________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_wraps
+help: remove `Result` from the return type...
+    |
+250 -     ) -> Result<VerificationResult, EngineError> {
+250 +     ) -> agentverify_core::VerificationResult {
+    |
+help: ...and then remove the surrounding `Ok()` from returning expressions
+    |
+258 ~             _ => return VerificationResult::Failed,
+259 |         };
+...
+270 |         if result {
+271 ~             VerificationResult::Verified
+272 |         } else {
+273 ~             VerificationResult::Failed
+    |
+
+warning: casting `usize` to `i64` may wrap around the value on targets with 64-bit wide pointers
+   --> crates/agentverify-engine/src/engine.rs:254:40
+    |
+254 |             Some(Value::Array(arr)) => arr.len() as i64,
+    |                                        ^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_wrap
+    = note: `-W clippy::cast-possible-wrap` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::cast_possible_wrap)]`
+
+warning: casting `usize` to `i64` may wrap around the value on targets with 64-bit wide pointers
+   --> crates/agentverify-engine/src/engine.rs:255:41
+    |
+255 |             Some(Value::Object(obj)) => obj.len() as i64,
+    |                                         ^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_wrap
+
+warning: casting `usize` to `i64` may wrap around the value on targets with 64-bit wide pointers
+   --> crates/agentverify-engine/src/engine.rs:256:39
+    |
+256 |             Some(Value::String(s)) => s.len() as i64,
+    |                                       ^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#cast_possible_wrap
+
+warning: unused `self` argument
+   --> crates/agentverify-engine/src/engine.rs:277:22
+    |
+277 |     fn eval_is_empty(&self, state: &Value, path: &str) -> Result<VerificationResult, EngineError> {
+    |                      ^^^^^
+    |
+    = help: consider refactoring to an associated function
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unused_self
+    = note: `-W clippy::unused-self` implied by `-W clippy::pedantic`
+    = help: to override `-W clippy::pedantic` add `#[allow(clippy::unused_self)]`
+
+warning: this function's return value is unnecessarily wrapped by `Result`
+   --> crates/agentverify-engine/src/engine.rs:277:5
+    |
+277 |     fn eval_is_empty(&self, state: &Value, path: &str) -> Result<VerificationResult, EngineError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#unnecessary_wraps
+help: remove `Result` from the return type...
+    |
+277 -     fn eval_is_empty(&self, state: &Value, path: &str) -> Result<VerificationResult, EngineError> {
+277 +     fn eval_is_empty(&self, state: &Value, path: &str) -> agentverify_core::VerificationResult {
+    |
+help: ...and then remove the surrounding `Ok()` from returning expressions
+    |
+290 ~             VerificationResult::Verified
+291 |         } else {
+292 ~             VerificationResult::Failed
+    |
+
+warning: these match arms have identical bodies
+   --> crates/agentverify-engine/src/engine.rs:284:13
+    |
+284 |             Some(Value::Null) => true,
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^
+285 |             None => true,
+    |             ^^^^^^^^^^^^
+    |
+    = help: if this is unintentional make the arms return different values
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#match_same_arms
+help: otherwise merge the patterns into a single arm
+    |
+284 ~             Some(Value::Null) | None => true,
+285 ~             _ => false,
+    |
+
+warning: these match arms have identical bodies
+   --> crates/agentverify-engine/src/engine.rs:303:13
+    |
+303 |             VerificationResult::Verified => Ok(VerificationResult::Failed),
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+304 |             VerificationResult::Failed => Ok(VerificationResult::Verified),
+305 |             _ => Ok(VerificationResult::Failed),
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the wildcard arm
+    |
+    = help: if this is unintentional make the arms return different values
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.97.0/index.html#match_same_arms
+help: otherwise remove the non-wildcard arm
+    |
+303 -             VerificationResult::Verified => Ok(VerificationResult::Failed),
+    |
+
+warning: `agentverify-engine` (lib) generated 21 warnings
+error: could not compile `agentverify-engine` (lib) due to 2 previous errors; 21 warnings emitted
+warning: build failed, waiting for other jobs to finish...
