@@ -6,8 +6,8 @@ use crate::action_executor::{ActionExecutor, DispatchOutcome};
 use crate::receipt_store::ReceiptStore;
 use agentverify_contract::Contract;
 use agentverify_core::{
-    Action, BackoffType, Observation, Receipt, ReceiptId, RecoveryConfig, RecoveryStrategy,
-    SourceId, State, StateMachine, VerificationResult,
+    Action, BackoffType, Observation, PostconditionResult, Receipt, ReceiptId, RecoveryConfig,
+    RecoveryStrategy, SourceId, State, StateMachine, VerificationResult,
 };
 use agentverify_engine::PredicateEngine;
 use std::collections::HashMap;
@@ -229,6 +229,18 @@ impl Default for IdempotencyRegistry {
     }
 }
 
+/// Aggregate outcome of postcondition verification
+///
+/// Pairs the final [`VerificationResult`] with the per-postcondition evidence
+/// recorded into the receipt.
+#[derive(Debug, Clone)]
+struct PostconditionEvaluation {
+    /// Aggregate verification outcome
+    result: VerificationResult,
+    /// Per-postcondition evidence, in contract order
+    details: Vec<PostconditionResult>,
+}
+
 /// Verified executor
 pub struct Executor {
     config: ExecutorConfig,
@@ -395,12 +407,18 @@ impl Executor {
                 }
                 ClaimResult::AlreadyClaimed => {
                     if let Some(cached) = existing {
-                        let receipt = Self::create_receipt(&action, &contract, cached, 0);
+                        let receipt =
+                            Self::create_receipt(&action, &contract, cached, 0, Vec::new());
                         return Ok((cached, receipt));
                     }
                     // In-flight — treat as duplicate
-                    let receipt =
-                        Self::create_receipt(&action, &contract, VerificationResult::Duplicate, 0);
+                    let receipt = Self::create_receipt(
+                        &action,
+                        &contract,
+                        VerificationResult::Duplicate,
+                        0,
+                        Vec::new(),
+                    );
                     return Ok((VerificationResult::Duplicate, receipt));
                 }
             }
@@ -409,6 +427,7 @@ impl Executor {
         let mut attempts = 0;
         let final_result: Option<VerificationResult>;
         let mut final_observation: Option<Observation> = None;
+        let mut postcondition_details = Vec::new();
 
         // Main execution loop
         loop {
@@ -470,10 +489,11 @@ impl Executor {
                 .advance(State::Verifying)
                 .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
 
-            let result = Self::verify_postconditions(&action, &contract, &observation)?;
+            let evaluation = Self::verify_postconditions(&action, &contract, &observation)?;
+            postcondition_details = evaluation.details;
 
             // Determine final state
-            match result {
+            match evaluation.result {
                 VerificationResult::Verified => {
                     state_machine
                         .advance(State::Verified)
@@ -495,7 +515,11 @@ impl Executor {
                     );
                     // Only retry on Failed if verify_before_retry is enabled AND should_retry says to
                     if self.config.verify_before_retry
-                        && Self::should_retry(attempts, contract.recovery.as_ref(), self.config.max_retries)
+                        && Self::should_retry(
+                            attempts,
+                            contract.recovery.as_ref(),
+                            self.config.max_retries,
+                        )
                     {
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
@@ -514,7 +538,11 @@ impl Executor {
                         5000, // default_max
                         2.0,  // default_multiplier
                     );
-                    if Self::should_retry(attempts, contract.recovery.as_ref(), self.config.max_retries) {
+                    if Self::should_retry(
+                        attempts,
+                        contract.recovery.as_ref(),
+                        self.config.max_retries,
+                    ) {
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
@@ -523,7 +551,7 @@ impl Executor {
                 }
                 _ => {
                     // Partial, Duplicate — terminal
-                    final_result = Some(result);
+                    final_result = Some(evaluation.result);
                     break;
                 }
             }
@@ -536,9 +564,16 @@ impl Executor {
         }
 
         let receipt = if let Some(obs) = final_observation {
-            Self::create_receipt_with_observation(&action, &contract, result, attempts, obs)
+            Self::create_receipt_with_observation(
+                &action,
+                &contract,
+                result,
+                attempts,
+                obs,
+                postcondition_details,
+            )
         } else {
-            Self::create_receipt(&action, &contract, result, attempts)
+            Self::create_receipt(&action, &contract, result, attempts, postcondition_details)
         };
 
         // Persist receipt if a store is attached
@@ -566,13 +601,22 @@ impl Executor {
     }
 
     /// Verify postconditions against observed state
+    ///
+    /// Returns the aggregate [`VerificationResult`] together with a
+    /// [`PostconditionResult`] per evaluated postcondition, so receipts carry
+    /// the per-predicate evidence rather than only the final outcome. When a
+    /// predicate evaluates to an indeterminate result (`Unknown`, `Partial`,
+    /// `Duplicate`), evaluation stops: the details cover exactly the
+    /// postconditions that were evaluated, and the indeterminate one is
+    /// recorded with its outcome in `error`.
     fn verify_postconditions(
         action: &Action,
         contract: &Contract,
         observation: &Observation,
-    ) -> Result<VerificationResult, ExecutorError> {
+    ) -> Result<PostconditionEvaluation, ExecutorError> {
         let mut all_passed = true;
         let mut mandatory_failed = false;
+        let mut details = Vec::with_capacity(contract.postconditions.len());
 
         for postcond in &contract.postconditions {
             let result = PredicateEngine::default()
@@ -580,27 +624,53 @@ impl Executor {
                 .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
 
             match result {
-                VerificationResult::Verified => {}
+                VerificationResult::Verified => {
+                    details.push(PostconditionResult {
+                        predicate: postcond.predicate.clone(),
+                        description: postcond.description.clone(),
+                        passed: true,
+                        error: None,
+                    });
+                }
                 VerificationResult::Failed => {
                     if postcond.mandatory {
                         mandatory_failed = true;
                     }
                     all_passed = false;
+                    details.push(PostconditionResult {
+                        predicate: postcond.predicate.clone(),
+                        description: postcond.description.clone(),
+                        passed: false,
+                        error: None,
+                    });
                 }
                 other => {
-                    // Unknown, Partial, Duplicate
-                    return Ok(other);
+                    // Unknown, Partial, Duplicate — indeterminate: stop
+                    // evaluating and surface the outcome. The predicate was
+                    // not shown to fail, so `passed` stays false and the
+                    // indeterminate outcome is preserved in `error`.
+                    details.push(PostconditionResult {
+                        predicate: postcond.predicate.clone(),
+                        description: postcond.description.clone(),
+                        passed: false,
+                        error: Some(format!("evaluation returned {other}")),
+                    });
+                    return Ok(PostconditionEvaluation {
+                        result: other,
+                        details,
+                    });
                 }
             }
         }
 
-        if all_passed {
-            Ok(VerificationResult::Verified)
+        let result = if all_passed {
+            VerificationResult::Verified
         } else if mandatory_failed {
-            Ok(VerificationResult::Failed)
+            VerificationResult::Failed
         } else {
-            Ok(VerificationResult::Partial)
-        }
+            VerificationResult::Partial
+        };
+        Ok(PostconditionEvaluation { result, details })
     }
 
     /// Execute an action using a real action executor
@@ -645,19 +715,26 @@ impl Executor {
                     // Another request is already handling this action
                     if let Some(cached) = existing {
                         // Already completed — return cached result
-                        let receipt = Self::create_receipt(&action, &contract, cached, 0);
+                        let receipt =
+                            Self::create_receipt(&action, &contract, cached, 0, Vec::new());
                         return Ok((cached, receipt));
                     }
                     // In-flight — wait briefly and poll for completion
                     sleep(std::time::Duration::from_millis(50)).await;
                     let (_, existing) = self.idempotency.claim_or_check(&key.0).await;
                     if let Some(cached) = existing {
-                        let receipt = Self::create_receipt(&action, &contract, cached, 0);
+                        let receipt =
+                            Self::create_receipt(&action, &contract, cached, 0, Vec::new());
                         return Ok((cached, receipt));
                     }
                     // Still in-flight after poll — treat as duplicate
-                    let receipt =
-                        Self::create_receipt(&action, &contract, VerificationResult::Duplicate, 0);
+                    let receipt = Self::create_receipt(
+                        &action,
+                        &contract,
+                        VerificationResult::Duplicate,
+                        0,
+                        Vec::new(),
+                    );
                     return Ok((VerificationResult::Duplicate, receipt));
                 }
             }
@@ -669,6 +746,7 @@ impl Executor {
         let mut attempts = 0;
         let final_result: Option<VerificationResult>;
         let mut final_observation: Option<Observation> = None;
+        let mut postcondition_details = Vec::new();
 
         // Main execution loop
         loop {
@@ -724,6 +802,7 @@ impl Executor {
                         &contract,
                         VerificationResult::Failed,
                         attempts,
+                        Vec::new(),
                     );
                     return Ok((VerificationResult::Failed, receipt));
                 }
@@ -766,10 +845,11 @@ impl Executor {
                 .advance(State::Verifying)
                 .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
 
-            let result = Self::verify_postconditions(&action, &contract, &observation)?;
+            let evaluation = Self::verify_postconditions(&action, &contract, &observation)?;
+            postcondition_details = evaluation.details;
 
             // Determine final state
-            match result {
+            match evaluation.result {
                 VerificationResult::Verified => {
                     state_machine
                         .advance(State::Verified)
@@ -790,7 +870,11 @@ impl Executor {
                         2.0,  // default_multiplier
                     );
                     if self.config.verify_before_retry
-                        && Self::should_retry(attempts, contract.recovery.as_ref(), self.config.max_retries)
+                        && Self::should_retry(
+                            attempts,
+                            contract.recovery.as_ref(),
+                            self.config.max_retries,
+                        )
                     {
                         sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
@@ -809,7 +893,11 @@ impl Executor {
                         5000, // default_max
                         2.0,  // default_multiplier
                     );
-                    if Self::should_retry(attempts, contract.recovery.as_ref(), self.config.max_retries) {
+                    if Self::should_retry(
+                        attempts,
+                        contract.recovery.as_ref(),
+                        self.config.max_retries,
+                    ) {
                         sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
@@ -818,7 +906,7 @@ impl Executor {
                 }
                 _ => {
                     // Partial, Duplicate — terminal
-                    final_result = Some(result);
+                    final_result = Some(evaluation.result);
                     break;
                 }
             }
@@ -831,9 +919,16 @@ impl Executor {
         }
 
         let receipt = if let Some(obs) = final_observation {
-            Self::create_receipt_with_observation(&action, &contract, result, attempts, obs)
+            Self::create_receipt_with_observation(
+                &action,
+                &contract,
+                result,
+                attempts,
+                obs,
+                postcondition_details,
+            )
         } else {
-            Self::create_receipt(&action, &contract, result, attempts)
+            Self::create_receipt(&action, &contract, result, attempts, postcondition_details)
         };
 
         // Persist receipt if a store is attached
@@ -843,33 +938,44 @@ impl Executor {
     }
 
     /// Create a receipt for the action
+    ///
+    /// `postcondition_details` carries the per-postcondition evidence from
+    /// [`Self::verify_postconditions`]; paths that never evaluated
+    /// postconditions (duplicate claims, dispatch failures) pass an empty
+    /// vector, and the receipt records exactly what was evaluated.
     fn create_receipt(
         action: &Action,
         contract: &Contract,
         result: VerificationResult,
         attempts: u32,
+        postcondition_details: Vec<PostconditionResult>,
     ) -> Receipt {
         let idempotency_key = action.idempotency_key.as_ref().map(|k| k.0.clone());
-        Receipt::with_contract_version_and_key(
+        let mut receipt = Receipt::with_contract_version_and_key(
             action.id,
             contract.id,
             contract.schema_version.clone(),
             result,
             attempts,
             idempotency_key,
-        )
+        );
+        for detail in postcondition_details {
+            receipt = receipt.with_postcondition_result(detail);
+        }
+        receipt
     }
 
-    /// Create a receipt with observation
+    /// Create a receipt with an observation attached
     fn create_receipt_with_observation(
         action: &Action,
         contract: &Contract,
         result: VerificationResult,
         attempts: u32,
         observation: Observation,
+        postcondition_details: Vec<PostconditionResult>,
     ) -> Receipt {
         let idempotency_key = action.idempotency_key.as_ref().map(|k| k.0.clone());
-        Receipt::with_contract_version_and_key(
+        let mut receipt = Receipt::with_contract_version_and_key(
             action.id,
             contract.id,
             contract.schema_version.clone(),
@@ -877,7 +983,11 @@ impl Executor {
             attempts,
             idempotency_key,
         )
-        .with_observation(observation)
+        .with_observation(observation);
+        for detail in postcondition_details {
+            receipt = receipt.with_postcondition_result(detail);
+        }
+        receipt
     }
 }
 

@@ -342,10 +342,11 @@ impl PostgresObserver {
         query: &str,
         params: &[Value],
     ) -> Result<Value, PostgresObserverError> {
-        let client =
-            self.pool.get().await.map_err(|e| {
-                PostgresObserverError::QueryError(format!("Pool get failed: {e}"))
-            })?;
+        let client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| PostgresObserverError::QueryError(format!("Pool get failed: {e}")))?;
 
         // Convert JSON values to strings for postgres query
         let string_params: Vec<String> = params
@@ -462,10 +463,11 @@ impl PostgresObserver {
 
     /// Check connectivity by executing a simple query
     pub async fn health_check(&self) -> Result<(), PostgresObserverError> {
-        let client =
-            self.pool.get().await.map_err(|e| {
-                PostgresObserverError::QueryError(format!("Pool get failed: {e}"))
-            })?;
+        let client = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| PostgresObserverError::QueryError(format!("Pool get failed: {e}")))?;
 
         client
             .query_one("SELECT 1", &[])

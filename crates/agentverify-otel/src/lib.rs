@@ -298,7 +298,10 @@ impl OtlpExporter {
             receipt.contract_id.to_string(),
         ));
         span.set_attribute(KeyValue::new("receipt.result", receipt.result.to_string()));
-        span.set_attribute(KeyValue::new("receipt.attempts", i64::from(receipt.attempts)));
+        span.set_attribute(KeyValue::new(
+            "receipt.attempts",
+            i64::from(receipt.attempts),
+        ));
         span.set_attribute(KeyValue::new(
             "receipt.timestamp",
             receipt.timestamp.to_rfc3339(),

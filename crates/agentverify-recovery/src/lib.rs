@@ -141,8 +141,9 @@ impl Backoff {
             BackoffType::Linear => {
                 self.initial
                     + Duration::milliseconds(
-                        (self.initial.num_milliseconds() as f64 * self.multiplier * f64::from(attempt))
-                            as i64,
+                        (self.initial.num_milliseconds() as f64
+                            * self.multiplier
+                            * f64::from(attempt)) as i64,
                     )
             }
             BackoffType::Exponential => {
@@ -301,8 +302,7 @@ impl RecoveryStrategy for RetryStrategy {
                     // Durations here are always positive, so the cast is lossless.
                     #[allow(clippy::cast_sign_loss)]
                     let millis = delay.num_milliseconds() as u64;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(millis))
-                    .await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(millis)).await;
                 }
 
                 // Execute the operation
@@ -543,10 +543,19 @@ pub struct CircuitBreaker {
 impl Debug for CircuitBreaker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CircuitBreaker")
-            .field("state", &self.state.read().unwrap_or_else(PoisonError::into_inner))
+            .field(
+                "state",
+                &self.state.read().unwrap_or_else(PoisonError::into_inner),
+            )
             .field("failure_count", &self.failure_count.load(Ordering::SeqCst))
             .field("success_count", &self.success_count.load(Ordering::SeqCst))
-            .field("last_failure", &self.last_failure.read().unwrap_or_else(PoisonError::into_inner))
+            .field(
+                "last_failure",
+                &self
+                    .last_failure
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner),
+            )
             .field("config", &self.config)
             .finish()
     }
@@ -578,7 +587,10 @@ impl CircuitBreaker {
 
     /// Record a failure
     pub fn record_failure(&self) {
-        let mut last = self.last_failure.write().unwrap_or_else(PoisonError::into_inner);
+        let mut last = self
+            .last_failure
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
         *last = Some(Utc::now());
 
         let state = self.state();
@@ -586,7 +598,8 @@ impl CircuitBreaker {
             CircuitState::Closed => {
                 let failures = self.failure_count.fetch_add(1, Ordering::SeqCst) + 1;
                 if failures >= self.config.failure_threshold {
-                    *self.state.write().unwrap_or_else(PoisonError::into_inner) = CircuitState::Open;
+                    *self.state.write().unwrap_or_else(PoisonError::into_inner) =
+                        CircuitState::Open;
                     tracing::warn!(failures, "Circuit breaker opened");
                 }
             }
@@ -609,7 +622,8 @@ impl CircuitBreaker {
             CircuitState::HalfOpen => {
                 let successes = self.success_count.fetch_add(1, Ordering::SeqCst) + 1;
                 if successes >= self.config.success_threshold {
-                    *self.state.write().unwrap_or_else(PoisonError::into_inner) = CircuitState::Closed;
+                    *self.state.write().unwrap_or_else(PoisonError::into_inner) =
+                        CircuitState::Closed;
                     self.failure_count.store(0, Ordering::SeqCst);
                     self.success_count.store(0, Ordering::SeqCst);
                     tracing::info!("Circuit breaker closed");
@@ -623,10 +637,14 @@ impl CircuitBreaker {
     pub fn is_allowed(&self) -> bool {
         let state = self.state();
         if state == CircuitState::Open {
-            let last = self.last_failure.read().unwrap_or_else(PoisonError::into_inner);
+            let last = self
+                .last_failure
+                .read()
+                .unwrap_or_else(PoisonError::into_inner);
             if let Some(last_failure) = *last {
                 if Utc::now() - last_failure >= self.config.recovery_timeout {
-                    *self.state.write().unwrap_or_else(PoisonError::into_inner) = CircuitState::HalfOpen;
+                    *self.state.write().unwrap_or_else(PoisonError::into_inner) =
+                        CircuitState::HalfOpen;
                     tracing::info!("Circuit breaker entering half-open state");
                     return true;
                 }
