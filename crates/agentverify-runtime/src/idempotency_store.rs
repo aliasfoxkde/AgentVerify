@@ -289,7 +289,9 @@ impl RedisIdempotencyStore {
     ///
     /// The signature is `async` for parity with [`Self::new`]'s async
     /// counterparts on other stores; pool creation itself is synchronous.
-    #[allow(clippy::unused_async)]
+    // `unused_async_trait_impl` (clippy 1.98) fires on this signature in
+    // addition to `unused_async`, so both names are allowed.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn from_url(
         url: &str,
         ttl_secs: u64,

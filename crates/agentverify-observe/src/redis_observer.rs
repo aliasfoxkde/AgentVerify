@@ -144,7 +144,9 @@ impl RedisObserver {
     ///
     /// The signature is `async` for parity with the other observer
     /// constructors, even though pool creation itself is synchronous.
-    #[allow(clippy::unused_async)]
+    // `unused_async_trait_impl` (clippy 1.98) fires on this signature in
+    // addition to `unused_async`, so both names are allowed.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn new(config: RedisObserverConfig) -> Result<Self, RedisObserverError> {
         // `Config::from_url` leaves `connection` unset. Building the struct via
         // `..Default::default()` would populate `connection` as well, and

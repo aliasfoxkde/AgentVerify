@@ -58,7 +58,9 @@ impl StdioTransport {
     ///
     /// The signature is `async` for forward compatibility with asynchronous
     /// process spawning, even though the body is currently synchronous.
-    #[allow(clippy::unused_async)]
+    // `unused_async_trait_impl` (clippy 1.98) fires on this signature in
+    // addition to `unused_async`, so both names are allowed.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn connect(command: &str, args: &[&str]) -> Result<Self, TransportError> {
         use std::process::Stdio;
 

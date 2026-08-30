@@ -349,7 +349,9 @@ impl PostgresObserver {
     ///
     /// The signature is `async` for parity with [`Self::from_uri`], even though
     /// pool creation itself is synchronous.
-    #[allow(clippy::unused_async)]
+    // `unused_async_trait_impl` (clippy 1.98) fires on these signatures in
+    // addition to `unused_async`, so both names are allowed.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn from_config(
         config: PostgresObserverConfig,
     ) -> Result<Self, PostgresObserverError> {
@@ -401,7 +403,7 @@ impl PostgresObserver {
     ///
     /// The signature is `async` for parity with [`Self::from_config`], even
     /// though pool creation itself is synchronous.
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn from_uri(uri: &str) -> Result<Self, PostgresObserverError> {
         let parsed = parse_uri(uri)?;
 
