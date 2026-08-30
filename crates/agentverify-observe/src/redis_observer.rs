@@ -178,9 +178,7 @@ impl RedisObserver {
                 let extra_parts: Vec<&str> = extra.split(':').collect();
                 Ok((*op, *key, extra_parts))
             }
-            _ => Err(RedisObserverError::InvalidObservationSpec(
-                spec.to_string(),
-            )),
+            _ => Err(RedisObserverError::InvalidObservationSpec(spec.to_string())),
         }
     }
 
@@ -388,21 +386,33 @@ mod tests {
         let err = RedisObserverError::ConnectionFailed("refused".to_string());
         let err_str = err.to_string();
         // thiserror formats as "ConnectionFailed: refused"
-        assert!(err_str.contains("refused"), "error should contain 'refused', got: {}", err_str);
+        assert!(
+            err_str.contains("refused"),
+            "error should contain 'refused', got: {}",
+            err_str
+        );
     }
 
     #[test]
     fn error_display_key_not_found() {
         let err = RedisObserverError::KeyNotFound("mykey".to_string());
         let err_str = err.to_string();
-        assert!(err_str.contains("mykey"), "error should contain 'mykey', got: {}", err_str);
+        assert!(
+            err_str.contains("mykey"),
+            "error should contain 'mykey', got: {}",
+            err_str
+        );
     }
 
     #[test]
     fn error_display_invalid_spec() {
         let err = RedisObserverError::InvalidObservationSpec("bad spec".to_string());
         let err_str = err.to_string();
-        assert!(err_str.contains("bad spec"), "error should contain 'bad spec', got: {}", err_str);
+        assert!(
+            err_str.contains("bad spec"),
+            "error should contain 'bad spec', got: {}",
+            err_str
+        );
     }
 
     // Note: Full integration tests with a real Redis instance would require
@@ -420,9 +430,7 @@ mod tests {
                 let extra_parts: Vec<&str> = extra.split(':').collect();
                 Ok((*op, *key, extra_parts))
             }
-            _ => Err(RedisObserverError::InvalidObservationSpec(
-                spec.to_string(),
-            )),
+            _ => Err(RedisObserverError::InvalidObservationSpec(spec.to_string())),
         }
     }
 }

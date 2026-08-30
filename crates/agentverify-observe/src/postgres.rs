@@ -264,7 +264,9 @@ impl PostgresObserver {
         let (user_part, host_part) = if parts.len() == 2 {
             (parts[0], parts[1])
         } else {
-            return Err(PostgresObserverError::Config("Invalid URI format".to_string()));
+            return Err(PostgresObserverError::Config(
+                "Invalid URI format".to_string(),
+            ));
         };
 
         let user_pass: Vec<&str> = user_part.split(':').collect();
@@ -294,12 +296,18 @@ impl PostgresObserver {
             .unwrap_or(host_db[1])
             .to_string();
 
-        cfg.user = Some(urlencoding::decode(user_pass[0])
-            .map_err(|_| PostgresObserverError::Config("Invalid user encoding".to_string()))?
-            .to_string());
-        cfg.password = Some(urlencoding::decode(user_pass[1])
-            .map_err(|_| PostgresObserverError::Config("Invalid password encoding".to_string()))?
-            .to_string());
+        cfg.user = Some(
+            urlencoding::decode(user_pass[0])
+                .map_err(|_| PostgresObserverError::Config("Invalid user encoding".to_string()))?
+                .to_string(),
+        );
+        cfg.password = Some(
+            urlencoding::decode(user_pass[1])
+                .map_err(|_| {
+                    PostgresObserverError::Config("Invalid password encoding".to_string())
+                })?
+                .to_string(),
+        );
         cfg.host = Some(host);
         cfg.port = Some(port);
         cfg.dbname = Some(database);
@@ -329,11 +337,10 @@ impl PostgresObserver {
         query: &str,
         params: &[Value],
     ) -> Result<Value, PostgresObserverError> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| PostgresObserverError::QueryError(format!("Pool get failed: {}", e)))?;
+        let client =
+            self.pool.get().await.map_err(|e| {
+                PostgresObserverError::QueryError(format!("Pool get failed: {}", e))
+            })?;
 
         // Convert JSON values to strings for postgres query
         let string_params: Vec<String> = params
@@ -442,10 +449,7 @@ impl PostgresObserver {
 
         // Build query: SELECT * FROM <table> WHERE id = $1
         // The action ID is used as the primary key
-        let query = format!(
-            "SELECT * FROM {} WHERE id = $1 LIMIT 1",
-            table_name
-        );
+        let query = format!("SELECT * FROM {} WHERE id = $1 LIMIT 1", table_name);
 
         let params = vec![serde_json::json!(action.id.to_string())];
 
@@ -454,11 +458,10 @@ impl PostgresObserver {
 
     /// Check connectivity by executing a simple query
     pub async fn health_check(&self) -> Result<(), PostgresObserverError> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| PostgresObserverError::QueryError(format!("Pool get failed: {}", e)))?;
+        let client =
+            self.pool.get().await.map_err(|e| {
+                PostgresObserverError::QueryError(format!("Pool get failed: {}", e))
+            })?;
 
         client
             .query_one("SELECT 1", &[])
@@ -635,11 +638,7 @@ mod tests {
         for malicious in &malicious_contracts {
             let contract = Contract::new(*malicious);
             let result = observer.build_observation_query(&action, &contract);
-            assert!(
-                result.is_err(),
-                "Expected rejection for: {}",
-                malicious
-            );
+            assert!(result.is_err(), "Expected rejection for: {}", malicious);
         }
     }
 

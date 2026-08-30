@@ -37,8 +37,7 @@
 //! ```
 
 use agentverify_core::{
-    Action, Contract, Observation, PostconditionResult, Receipt,
-    State, VerificationResult,
+    Action, Contract, Observation, PostconditionResult, Receipt, State, VerificationResult,
 };
 use opentelemetry::trace::{Span, SpanKind, Status, Tracer};
 use opentelemetry::KeyValue;
@@ -127,11 +126,9 @@ impl OtlpExporter {
                     .tonic()
                     .with_export_config(export_config),
             )
-            .with_trace_config(
-                trace::Config::default().with_resource(Resource::new(vec![
-                    KeyValue::new("service.name", config.service_name.clone()),
-                ])),
-            )
+            .with_trace_config(trace::Config::default().with_resource(Resource::new(vec![
+                KeyValue::new("service.name", config.service_name.clone()),
+            ])))
             .install_batch(opentelemetry_sdk::runtime::Tokio)
             .map_err(|e| OtlpExporterError::Initialization(e.to_string()))?;
 
@@ -193,7 +190,10 @@ impl OtlpExporter {
             .start(&self.tracer);
 
         span.set_attribute(KeyValue::new("action.id", action_id.to_string()));
-        span.set_attribute(KeyValue::new("observation.source", observation.source.0.clone()));
+        span.set_attribute(KeyValue::new(
+            "observation.source",
+            observation.source.0.clone(),
+        ));
         span.set_attribute(KeyValue::new(
             "observation.timestamp",
             observation.timestamp.to_rfc3339(),
@@ -218,14 +218,8 @@ impl OtlpExporter {
 
         span.set_attribute(KeyValue::new("action.id", action_id.to_string()));
         span.set_attribute(KeyValue::new("verification.result", result.to_string()));
-        span.set_attribute(KeyValue::new(
-            "verification.success",
-            result.is_success(),
-        ));
-        span.set_attribute(KeyValue::new(
-            "verification.failure",
-            result.is_failure(),
-        ));
+        span.set_attribute(KeyValue::new("verification.success", result.is_success()));
+        span.set_attribute(KeyValue::new("verification.failure", result.is_failure()));
         span.set_attribute(KeyValue::new("verification.unknown", result.is_unknown()));
 
         // Set span status based on result
@@ -282,7 +276,10 @@ impl OtlpExporter {
             .start(&self.tracer);
 
         span.set_attribute(KeyValue::new("receipt.id", receipt.id.to_string()));
-        span.set_attribute(KeyValue::new("receipt.action_id", receipt.action_id.to_string()));
+        span.set_attribute(KeyValue::new(
+            "receipt.action_id",
+            receipt.action_id.to_string(),
+        ));
         span.set_attribute(KeyValue::new(
             "receipt.contract_id",
             receipt.contract_id.to_string(),
@@ -308,7 +305,10 @@ impl OtlpExporter {
 
         span.set_attribute(KeyValue::new("action.id", action_id.to_string()));
         span.set_attribute(KeyValue::new("contract.id", contract.id.to_string()));
-        span.set_attribute(KeyValue::new("contract.action_name", contract.action_name.clone()));
+        span.set_attribute(KeyValue::new(
+            "contract.action_name",
+            contract.action_name.clone(),
+        ));
         span.set_attribute(KeyValue::new("contract.valid", valid));
 
         if valid {

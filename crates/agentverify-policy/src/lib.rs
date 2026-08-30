@@ -36,8 +36,8 @@
 //! ```
 
 mod engine;
-mod policy;
 mod error;
+mod policy;
 
 pub use engine::PolicyEngine;
 pub use error::{PolicyError, PolicyViolation};
@@ -89,8 +89,10 @@ mod tests {
         ));
 
         // With contract - should be allowed
-        let contract = Contract::new("transfer")
-            .with_postcondition(Predicate::equals("status", "completed"), "transfer completed");
+        let contract = Contract::new("transfer").with_postcondition(
+            Predicate::equals("status", "completed"),
+            "transfer completed",
+        );
 
         assert!(matches!(
             engine.evaluate(&policy, &action, Some(&contract)),
