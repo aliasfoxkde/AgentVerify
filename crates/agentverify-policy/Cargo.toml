@@ -11,7 +11,7 @@ license.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
-thiserror = "1"
+thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"
