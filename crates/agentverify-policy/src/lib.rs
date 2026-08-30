@@ -159,8 +159,8 @@ mod tests {
     fn test_policy_multiple_allow_patterns() {
         let engine = PolicyEngine::new(PolicyConfig::default());
         let policy = Policy::new("multi_pattern")
-            .allow_action_pattern(ActionPattern::Exact("create_user".into()))
-            .allow_action_pattern(ActionPattern::Prefix("update_".into()))
+            .allow_action_pattern(ActionPattern::exact("create_user"))
+            .allow_action_pattern(ActionPattern::prefix("update_"))
             .allow_action_pattern(ActionPattern::regex("^delete_.*$").unwrap());
 
         // Exact match

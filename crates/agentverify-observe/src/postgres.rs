@@ -73,6 +73,102 @@ pub enum PostgresObserverError {
     NoPostconditions,
 }
 
+/// The fields [`PostgresObserver::from_uri`] extracts from a connection URI.
+struct ParsedUri {
+    /// Percent-decoded user
+    user: String,
+    /// Percent-decoded password; `None` when the URI supplies no password at
+    /// all and `Some(String::new())` for an explicitly empty one (`user:@host`)
+    password: Option<String>,
+    /// Hostname or IP address
+    host: String,
+    /// Port, defaulting to 5432 when the URI omits it
+    port: u16,
+    /// Percent-decoded database name, without any query parameters
+    database: String,
+}
+
+/// Percent-decode a single userinfo or database component.
+///
+/// Escapes such as `%FF` do not decode to valid UTF-8 and are rejected.
+fn decode_component(raw: &str, component: &str) -> Result<String, PostgresObserverError> {
+    urlencoding::decode(raw)
+        .map(|decoded| decoded.to_string())
+        .map_err(|_| PostgresObserverError::Config(format!("Invalid {component} encoding")))
+}
+
+/// Parse a `postgres://` or `postgresql://` connection URI.
+///
+/// See [`PostgresObserver::from_uri`] for the grammar this implements and the
+/// error returned for each malformed shape.
+fn parse_uri(uri: &str) -> Result<ParsedUri, PostgresObserverError> {
+    let rest = uri
+        .strip_prefix("postgres://")
+        .or_else(|| uri.strip_prefix("postgresql://"))
+        .ok_or_else(|| {
+            PostgresObserverError::Config(format!(
+                "Invalid URI scheme: expected `postgres://` or `postgresql://`, got `{uri}`"
+            ))
+        })?;
+
+    // The userinfo segment is delimited by the last `@`, so an unescaped `@` in
+    // a password still parses; percent-encoding (`build_uri`) is still the
+    // recommended way to write one.
+    let Some((userinfo, authority)) = rest.rsplit_once('@') else {
+        return Err(PostgresObserverError::Config(
+            "Invalid URI format: missing `user@host` userinfo".to_string(),
+        ));
+    };
+
+    // `user@host` supplies no password at all, matching libpq; `user:@host`
+    // supplies an explicitly empty one. Anything else with a stray `:` is
+    // ambiguous and rejected.
+    let (user, password) = match userinfo.split_once(':') {
+        Some((user, password)) => {
+            if password.contains(':') {
+                return Err(PostgresObserverError::Config(
+                    "Invalid user:password format: percent-encode ':' in the password".to_string(),
+                ));
+            }
+            (user, Some(decode_component(password, "password")?))
+        }
+        None => (userinfo, None),
+    };
+    let user = decode_component(user, "user")?;
+
+    let (host_port, database_raw) = authority.split_once('/').ok_or_else(|| {
+        PostgresObserverError::Config(
+            "Invalid host:port/database format: missing `/database`".to_string(),
+        )
+    })?;
+    // Query parameters are cut before decoding, so an encoded `%3F` stays part
+    // of the database name.
+    let database_raw = match database_raw.split_once('?') {
+        Some((database, _)) => database,
+        None => database_raw,
+    };
+    let database = decode_component(database_raw, "database name")?;
+
+    // An unparsable port is never silently replaced by the default: a typo
+    // would otherwise point the observer at an unintended server.
+    let (host, port): (&str, u16) = match host_port.rsplit_once(':') {
+        Some((host, port)) => (
+            host,
+            port.parse()
+                .map_err(|_| PostgresObserverError::Config(format!("Invalid port: `{port}`")))?,
+        ),
+        None => (host_port, 5432),
+    };
+
+    Ok(ParsedUri {
+        user,
+        password,
+        host: host.to_string(),
+        port,
+        database,
+    })
+}
+
 /// `PostgreSQL` observer configuration
 ///
 /// # Example
@@ -268,6 +364,25 @@ impl PostgresObserver {
 
     /// Create a new observer from a connection URI
     ///
+    /// # Accepted grammar
+    ///
+    /// ```text
+    /// (postgres|postgresql)://[user[:password]@]host[:port]/database[?params]
+    /// ```
+    ///
+    /// * `user`, `password`, and `database` are percent-decoded, so `:` and `@`
+    ///   inside them must be escaped as `%3A` and `%40` (as
+    ///   `PostgresObserverConfig::build_uri` does when composing a URI).
+    ///   An escape that does not decode to UTF-8 is rejected.
+    /// * The userinfo segment is delimited by the last `@`. A userinfo segment
+    ///   with no colon supplies **no** password, matching libpq:
+    ///   `postgres://user@host/db` configures the pool with no password, while
+    ///   `postgres://user:@host/db` configures an explicitly empty one.
+    /// * `port` defaults to 5432 and must parse as a `u16`.
+    /// * `params` are ignored: the database name is everything between the last
+    ///   `/` and the first `?`.
+    /// * Bracketed IPv6 literals (`[::1]:5432`) are not supported.
+    ///
     /// # Example
     ///
     /// ```ignore
@@ -278,69 +393,24 @@ impl PostgresObserver {
     ///
     /// # Errors
     ///
-    /// Returns [`PostgresObserverError::Config`] when `uri` is malformed or its
-    /// user and password are not percent-encoded, and
+    /// Returns [`PostgresObserverError::Config`] when `uri` does not match the
+    /// grammar above (wrong scheme, missing userinfo or `/database` segment,
+    /// more than one `:` in the userinfo, an unparsable port, or a user or
+    /// password that is not valid percent-encoded UTF-8), and
     /// [`PostgresObserverError::PoolCreation`] when the pool cannot be created.
     ///
     /// The signature is `async` for parity with [`Self::from_config`], even
     /// though pool creation itself is synchronous.
     #[allow(clippy::unused_async)]
     pub async fn from_uri(uri: &str) -> Result<Self, PostgresObserverError> {
+        let parsed = parse_uri(uri)?;
+
         let mut cfg = deadpool_postgres::Config::new();
-        // Parse the URI manually
-        // Format: postgres://user:password@host:port/database?sslmode=...
-        let uri = uri.replace("postgres://", "");
-        let parts: Vec<&str> = uri.splitn(2, '@').collect();
-        let (user_part, host_part) = if parts.len() == 2 {
-            (parts[0], parts[1])
-        } else {
-            return Err(PostgresObserverError::Config(
-                "Invalid URI format".to_string(),
-            ));
-        };
-
-        let user_pass: Vec<&str> = user_part.split(':').collect();
-        if user_pass.len() != 2 {
-            return Err(PostgresObserverError::Config(
-                "Invalid user:password format".to_string(),
-            ));
-        }
-
-        let host_db: Vec<&str> = host_part.split('/').collect();
-        if host_db.len() != 2 {
-            return Err(PostgresObserverError::Config(
-                "Invalid host:port/database format".to_string(),
-            ));
-        }
-
-        let host_port_parts: Vec<&str> = host_db[0].split(':').collect();
-        let host = host_port_parts[0].to_string();
-        let port: u16 = host_port_parts
-            .get(1)
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(5432);
-
-        let database = host_db[1]
-            .split('?')
-            .next()
-            .unwrap_or(host_db[1])
-            .to_string();
-
-        cfg.user = Some(
-            urlencoding::decode(user_pass[0])
-                .map_err(|_| PostgresObserverError::Config("Invalid user encoding".to_string()))?
-                .to_string(),
-        );
-        cfg.password = Some(
-            urlencoding::decode(user_pass[1])
-                .map_err(|_| {
-                    PostgresObserverError::Config("Invalid password encoding".to_string())
-                })?
-                .to_string(),
-        );
-        cfg.host = Some(host);
-        cfg.port = Some(port);
-        cfg.dbname = Some(database);
+        cfg.user = Some(parsed.user);
+        cfg.password = parsed.password;
+        cfg.host = Some(parsed.host);
+        cfg.port = Some(parsed.port);
+        cfg.dbname = Some(parsed.database);
 
         let pool = cfg
             .create_pool(Some(Runtime::Tokio1), NoTls)
@@ -410,6 +480,14 @@ impl PostgresObserver {
     }
 
     /// Convert a postgres column value to JSON
+    ///
+    /// Text columns surface as JSON when their contents parse as JSON and as
+    /// strings otherwise; `NULL` in any column becomes `Value::Null`.
+    ///
+    /// Only the `String` attempt is made for text: `String::accepts` is defined
+    /// as `&str::accepts` in `postgres-types`, so a `&str` retry can never
+    /// succeed where it failed, and `Option<String>` is only reachable when the
+    /// value was `NULL` — which falls through to `Value::Null` below anyway.
     fn pg_value_to_json(row: &tokio_postgres::Row, idx: usize) -> Value {
         // Try to get as JSON-compatible string first
         if let Ok(s) = row.try_get::<_, String>(idx) {
@@ -419,12 +497,6 @@ impl PostgresObserver {
             }
             // Return as string
             return Value::String(s);
-        }
-        if let Ok(s) = row.try_get::<_, &str>(idx) {
-            if let Ok(v) = serde_json::from_str::<Value>(s) {
-                return v;
-            }
-            return Value::String(s.to_string());
         }
         if let Ok(n) = row.try_get::<_, i64>(idx) {
             return Value::Number(n.into());
@@ -440,16 +512,8 @@ impl PostgresObserver {
         if let Ok(b) = row.try_get::<_, bool>(idx) {
             return Value::Bool(b);
         }
-        if row.try_get::<_, Option<String>>(idx).is_ok() {
-            // Null or string
-            if let Ok(Some(s)) = row.try_get::<_, Option<String>>(idx) {
-                if let Ok(v) = serde_json::from_str::<Value>(&s) {
-                    return v;
-                }
-                return Value::String(s);
-            }
-            return Value::Null;
-        }
+        // Everything left is either `NULL` (the `String` attempt above already
+        // failed for it) or a column type this converter does not handle.
         Value::Null
     }
 
@@ -745,9 +809,17 @@ mod tests {
 
     // --- construction and URI parsing ---
 
+    /// Parse `uri`, panicking with the rendered error when it is rejected.
+    fn parsed(uri: &str) -> ParsedUri {
+        match parse_uri(uri) {
+            Ok(parsed) => parsed,
+            Err(e) => panic!("parsing `{uri}` failed: {e}"),
+        }
+    }
+
     /// Render the error from a fallible call without requiring `Debug` on the
     /// success type (`PostgresObserver` has no `Debug` impl).
-    fn error_of(result: Result<PostgresObserver, PostgresObserverError>) -> String {
+    fn error_of<T>(result: Result<T, PostgresObserverError>) -> String {
         match result {
             Err(e) => e.to_string(),
             Ok(_) => String::from("<unexpected Ok>"),
@@ -779,10 +851,28 @@ mod tests {
         );
     }
 
+    // --- accepted shapes, through the public entry point ---
+
     #[tokio::test]
-    async fn from_uri_accepts_a_uri_with_an_empty_password() {
-        // `from_uri` requires the `user:password` shape, so a passwordless
-        // trust-auth endpoint is expressed with an empty password.
+    async fn from_uri_accepts_a_passwordless_userinfo_segment() {
+        // libpq accepts `user@host` for trust-authenticated servers, and so
+        // must the parser: such a URI carries no password at all.
+        let result =
+            PostgresObserver::from_uri("postgres://postgres@127.0.0.1:5433/agentverify_test").await;
+        assert!(result.is_ok(), "got: {}", error_of(result));
+    }
+
+    #[tokio::test]
+    async fn from_uri_accepts_a_user_and_password() {
+        let result = PostgresObserver::from_uri(
+            "postgres://postgres:secret@127.0.0.1:5433/agentverify_test",
+        )
+        .await;
+        assert!(result.is_ok(), "got: {}", error_of(result));
+    }
+
+    #[tokio::test]
+    async fn from_uri_accepts_an_explicitly_empty_password() {
         let result =
             PostgresObserver::from_uri("postgres://postgres:@127.0.0.1:5433/agentverify_test")
                 .await;
@@ -791,52 +881,192 @@ mod tests {
 
     #[tokio::test]
     async fn from_uri_accepts_query_parameters_and_percent_encoded_user() {
-        let result =
-            PostgresObserver::from_uri("postgres://post%67res:@127.0.0.1:5433/agentverify_test?sslmode=disable&application_name=agentverify-it")
-                .await;
+        let result = PostgresObserver::from_uri(
+            "postgres://post%67res@127.0.0.1:5433/agentverify_test?sslmode=disable&application_name=agentverify-it",
+        )
+        .await;
         assert!(result.is_ok(), "got: {}", error_of(result));
     }
 
-    #[tokio::test]
-    async fn from_uri_rejects_a_uri_without_a_userinfo_separator() {
-        let rendered = error_of(
-            PostgresObserver::from_uri("postgres://127.0.0.1:5433/agentverify_test").await,
+    // --- accepted shapes, field by field ---
+
+    #[test]
+    fn parse_uri_reads_user_password_host_port_and_database() {
+        let parsed = parsed("postgres://svc:secret@db.example.com:5434/prod_db");
+        assert_eq!(parsed.user, "svc");
+        assert_eq!(parsed.password.as_deref(), Some("secret"));
+        assert_eq!(parsed.host, "db.example.com");
+        assert_eq!(parsed.port, 5434);
+        assert_eq!(parsed.database, "prod_db");
+    }
+
+    #[test]
+    fn parse_uri_accepts_a_passwordless_userinfo_segment() {
+        let parsed = parsed("postgres://postgres@127.0.0.1:5433/agentverify_test");
+        assert_eq!(parsed.user, "postgres");
+        // No password at all, exactly as libpq treats it — distinct from "".
+        assert_eq!(parsed.password, None);
+        assert_eq!(parsed.host, "127.0.0.1");
+        assert_eq!(parsed.port, 5433);
+        assert_eq!(parsed.database, "agentverify_test");
+    }
+
+    #[test]
+    fn parse_uri_treats_a_bare_colon_as_an_explicitly_empty_password() {
+        let parsed = parsed("postgres://postgres:@127.0.0.1:5433/agentverify_test");
+        assert_eq!(parsed.user, "postgres");
+        assert_eq!(parsed.password, Some(String::new()));
+    }
+
+    #[test]
+    fn parse_uri_percent_decodes_a_password_with_special_characters() {
+        // `p@ss:w/123` is exactly what `build_uri` writes for that password.
+        let parsed = parsed("postgres://svc:p%40ss%3Aw%2F123@db.example.com/prod_db");
+        assert_eq!(parsed.user, "svc");
+        assert_eq!(parsed.password.as_deref(), Some("p@ss:w/123"));
+    }
+
+    #[test]
+    fn build_uri_output_round_trips_through_parse_uri() {
+        let password = "p@ss:w/123%";
+        let uri = PostgresObserverConfig::new()
+            .with_host("db.example.com")
+            .with_port(5434)
+            .with_user("svc user")
+            .with_password(password)
+            .with_database("prod db")
+            .build_uri();
+
+        let parsed = parsed(&uri);
+        assert_eq!(parsed.user, "svc user");
+        assert_eq!(parsed.password.as_deref(), Some(password));
+        assert_eq!(parsed.host, "db.example.com");
+        assert_eq!(parsed.port, 5434);
+        assert_eq!(parsed.database, "prod db");
+    }
+
+    #[test]
+    fn parse_uri_percent_decodes_the_user() {
+        let parsed = parsed("postgres://post%67res@127.0.0.1:5433/db");
+        assert_eq!(parsed.user, "postgres");
+    }
+
+    #[test]
+    fn parse_uri_defaults_the_port_to_5432() {
+        let parsed = parsed("postgres://postgres@127.0.0.1/agentverify_test");
+        assert_eq!(parsed.port, 5432);
+    }
+
+    #[test]
+    fn parse_uri_drops_query_parameters_from_the_database_name() {
+        let parsed = parsed(
+            "postgres://postgres@127.0.0.1:5433/agentverify_test?sslmode=disable&application_name=av",
         );
+        assert_eq!(parsed.database, "agentverify_test");
+    }
+
+    #[test]
+    fn parse_uri_takes_the_last_at_sign_as_the_userinfo_separator() {
+        let parsed = parsed("postgres://svc:p@ss@db.example.com/prod_db");
+        assert_eq!(parsed.user, "svc");
+        assert_eq!(parsed.password.as_deref(), Some("p@ss"));
+        assert_eq!(parsed.host, "db.example.com");
+    }
+
+    #[test]
+    fn parse_uri_accepts_the_postgresql_scheme() {
+        let parsed = parsed("postgresql://postgres@127.0.0.1:5433/agentverify_test");
+        assert_eq!(parsed.user, "postgres");
+        assert_eq!(parsed.database, "agentverify_test");
+    }
+
+    // --- rejected shapes ---
+
+    #[test]
+    fn parse_uri_rejects_a_non_postgres_scheme() {
+        let rendered = error_of(parse_uri("mysql://u:p@127.0.0.1:5433/db"));
+        assert!(
+            rendered.contains("Invalid URI scheme"),
+            "expected 'Invalid URI scheme', got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn parse_uri_rejects_a_uri_without_a_userinfo_segment() {
+        // No `@`: the URI names no user. libpq would fall back to `PGUSER` or
+        // the OS user, which this parser cannot guess at, so it is rejected.
+        let rendered = error_of(parse_uri("postgres://127.0.0.1:5433/agentverify_test"));
         assert!(
             rendered.contains("Invalid URI format"),
             "expected 'Invalid URI format', got: {rendered}"
         );
     }
 
-    #[tokio::test]
-    async fn from_uri_rejects_a_passwordless_userinfo_segment() {
-        // Known limitation: the `user`-only form (no ':' at all) is rejected,
-        // even though libpq itself accepts it for trust-authenticated servers.
-        let rendered = error_of(
-            PostgresObserver::from_uri("postgres://postgres@127.0.0.1:5433/agentverify_test").await,
-        );
+    #[test]
+    fn parse_uri_rejects_too_many_password_separators() {
+        let rendered = error_of(parse_uri("postgres://u:p:w@127.0.0.1:5433/db"));
         assert!(
             rendered.contains("Invalid user:password format"),
             "expected 'Invalid user:password format', got: {rendered}"
         );
     }
 
-    #[tokio::test]
-    async fn from_uri_rejects_too_many_password_separators() {
-        let rendered =
-            error_of(PostgresObserver::from_uri("postgres://u:p:w@127.0.0.1:5433/db").await);
-        assert!(
-            rendered.contains("Invalid user:password format"),
-            "got: {rendered}"
-        );
-    }
-
-    #[tokio::test]
-    async fn from_uri_rejects_a_missing_database_segment() {
-        let rendered = error_of(PostgresObserver::from_uri("postgres://u:p@127.0.0.1:5433").await);
+    #[test]
+    fn parse_uri_rejects_a_missing_database_segment() {
+        let rendered = error_of(parse_uri("postgres://u:p@127.0.0.1:5433"));
         assert!(
             rendered.contains("Invalid host:port/database format"),
             "expected 'Invalid host:port/database format', got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn parse_uri_rejects_a_non_numeric_port() {
+        let rendered = error_of(parse_uri("postgres://u:p@127.0.0.1:notaport/db"));
+        assert!(
+            rendered.contains("Invalid port"),
+            "expected 'Invalid port', got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn parse_uri_rejects_an_out_of_range_port() {
+        let rendered = error_of(parse_uri("postgres://u:p@127.0.0.1:99999/db"));
+        assert!(
+            rendered.contains("Invalid port"),
+            "expected 'Invalid port', got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn parse_uri_rejects_an_invalid_percent_encoded_user() {
+        // %FF decodes to a byte that is not valid UTF-8.
+        let rendered = error_of(parse_uri("postgres://%FF:pw@127.0.0.1:5433/db"));
+        assert!(
+            rendered.contains("Invalid user encoding"),
+            "expected 'Invalid user encoding', got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn parse_uri_rejects_an_invalid_percent_encoded_password() {
+        let rendered = error_of(parse_uri("postgres://u:%FF@127.0.0.1:5433/db"));
+        assert!(
+            rendered.contains("Invalid password encoding"),
+            "expected 'Invalid password encoding', got: {rendered}"
+        );
+    }
+
+    // --- the rejected shapes also surface through `from_uri` ---
+
+    #[tokio::test]
+    async fn from_uri_rejects_a_uri_without_a_userinfo_segment() {
+        let rendered = error_of(
+            PostgresObserver::from_uri("postgres://127.0.0.1:5433/agentverify_test").await,
+        );
+        assert!(
+            rendered.contains("Invalid URI format"),
+            "expected 'Invalid URI format', got: {rendered}"
         );
     }
 
@@ -848,16 +1078,6 @@ mod tests {
         assert!(
             rendered.contains("Invalid user encoding"),
             "expected 'Invalid user encoding', got: {rendered}"
-        );
-    }
-
-    #[tokio::test]
-    async fn from_uri_rejects_an_invalid_percent_encoded_password() {
-        let rendered =
-            error_of(PostgresObserver::from_uri("postgres://u:%FF@127.0.0.1:5433/db").await);
-        assert!(
-            rendered.contains("Invalid password encoding"),
-            "expected 'Invalid password encoding', got: {rendered}"
         );
     }
 

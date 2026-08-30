@@ -4,9 +4,9 @@
 //! wire behaviour. Tests are gated on `AGENTVERIFY_TEST_POSTGRES_URL`; when it is
 //! unset they print a one-line notice and return so CI stays green.
 //!
-//! Note that [`PostgresObserver::from_uri`] requires the `user:password` shape,
-//! so the passwordless trust-auth endpoints used here are written with an empty
-//! password, e.g. `postgres://postgres:@127.0.0.1:5433/agentverify_test`.
+//! The endpoints used here are passwordless trust-auth URIs such as
+//! `postgres://postgres@127.0.0.1:5433/agentverify_test`, which
+//! [`PostgresObserver::from_uri`] parses the same way libpq does.
 // Test crates may unwrap, panic and write to stderr: these are assertions
 // about the system under test, not library error handling.
 #![allow(
@@ -82,25 +82,14 @@ fn bound_id(raw: &str) -> String {
     json!(raw).to_string()
 }
 
-/// Rewrite a URI into the `user:password` shape `from_uri` requires.
+/// Build an observer directly from the live URI.
 ///
-/// A passwordless URI such as `postgres://postgres@host/db` is expressed with an
-/// empty password; a URI that already carries a password is left untouched.
-fn observer_uri(url: &str) -> String {
-    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
-    match rest.split_once('@') {
-        Some((userinfo, host_part)) if !userinfo.contains(':') => {
-            format!("postgres://{userinfo}:@{host_part}")
-        }
-        _ => url.to_string(),
-    }
-}
-
+/// The live URL is passed to `from_uri` untouched, so these tests exercise the
+/// passwordless `user@host` shape the parser is documented to accept.
 async fn observer_for(url: &str) -> PostgresObserver {
-    let uri = observer_uri(url);
-    PostgresObserver::from_uri(&uri)
+    PostgresObserver::from_uri(url)
         .await
-        .unwrap_or_else(|e| panic!("observer construction from {uri} failed: {e}"))
+        .unwrap_or_else(|e| panic!("observer construction from {url} failed: {e}"))
 }
 
 /// Render the error from a fallible construction call.

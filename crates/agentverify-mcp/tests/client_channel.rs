@@ -34,6 +34,9 @@ enum Behaviour {
     ForeignId,
     /// Wait for two requests, then answer the second one first.
     ReverseOrder,
+    /// Answer with hand-written JSON using the MCP specification's
+    /// lowerCamelCase keys, as an external peer emits it.
+    RawJson,
 }
 
 /// The capabilities the test client advertises to the peer.
@@ -129,7 +132,7 @@ fn result_for(method: &str, params: Option<&Value>) -> Result<Value, String> {
             "resources": [{
                 "uri": "file:///contracts/close-ticket.json",
                 "name": "close-ticket contract",
-                "mime_type": "application/json",
+                "mimeType": "application/json",
             }]
         }))
         .map_err(|e| e.to_string()),
@@ -150,6 +153,60 @@ fn result_for(method: &str, params: Option<&Value>) -> Result<Value, String> {
         .map_err(|e| e.to_string()),
         other => Err(format!("unsupported method {other}")),
     }
+}
+
+/// Result payloads written as literal JSON with the specification's keys.
+///
+/// Unlike `result_for`, nothing here goes through the crate's own types, so it
+/// is what a peer that has never seen `src/protocol.rs` would actually emit.
+fn raw_result_for(method: &str, params: Option<&Value>) -> Result<Value, String> {
+    match method {
+        "initialize" => Ok(json!({
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "capabilities": {"tools": {}, "prompts": {"list": true}},
+            "serverInfo": {"name": "raw-camel-case-peer", "version": "0.1.0"},
+            "instructions": "Hand-written JSON, as an external peer emits it.",
+        })),
+        "tools/list" => Ok(json!({
+            "tools": [{
+                "name": "close_ticket",
+                "description": "Close a support ticket in the system of record.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"ticket_id": {"type": "string"}},
+                    "required": ["ticket_id"],
+                },
+                "annotations": {
+                    "readOnlyHint": false,
+                    "destructiveHint": true,
+                    "idempotentHint": false,
+                },
+            }]
+        })),
+        "tools/call" => {
+            let call: CallToolParams =
+                serde_json::from_value(params.cloned().unwrap_or(Value::Null))
+                    .map_err(|e| e.to_string())?;
+            let ticket = call.arguments["ticket_id"].as_str().unwrap_or_default();
+            Ok(json!({
+                "content": [{"type": "text", "text": format!("ticket {ticket} closed")}],
+                "isError": false,
+            }))
+        }
+        other => Err(format!("unsupported method {other}")),
+    }
+}
+
+/// The result payload `behaviour` produces for `method`.
+fn peer_result_for(
+    behaviour: Behaviour,
+    method: &str,
+    params: Option<&Value>,
+) -> Result<Value, String> {
+    if let Behaviour::RawJson = behaviour {
+        return raw_result_for(method, params);
+    }
+    result_for(method, params)
 }
 
 /// Answer `request` according to `behaviour`.
@@ -174,7 +231,7 @@ async fn answer(peer: &mut ChannelTransport, request: &JsonRpcRequest, behaviour
                 json!({"supported": ["2025-06-18"]}),
             ),
         },
-        _ => match result_for(&request.method, request.params.as_ref()) {
+        _ => match peer_result_for(behaviour, &request.method, request.params.as_ref()) {
             Ok(result) => JsonRpcResponse::Success {
                 jsonrpc: "2.0".to_string(),
                 id: request.id.clone(),
@@ -372,6 +429,65 @@ async fn client_completes_a_full_in_process_session() {
         sent[2]["params"]["arguments"],
         json!({"ticket_id": "T-9"}),
         "tool arguments must reach the peer untouched"
+    );
+
+    handle.abort();
+}
+
+/// The client interoperates with a peer that speaks only the specification's
+/// camelCase wire format, and emits camelCase itself.
+#[tokio::test]
+async fn client_interoperates_with_a_camel_case_peer() {
+    let (client, handle, received) = connect_with(Behaviour::RawJson, 15);
+
+    let init = client.initialize().await.unwrap();
+    assert_eq!(init.protocol_version, MCP_PROTOCOL_VERSION);
+    assert_eq!(init.server_info.name, "raw-camel-case-peer");
+    assert_eq!(
+        init.instructions.as_deref(),
+        Some("Hand-written JSON, as an external peer emits it.")
+    );
+    assert!(init.capabilities.tools.is_some());
+    assert_eq!(init.capabilities.prompts.as_ref().unwrap().list, Some(true));
+
+    let tools = client.list_tools().await.unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].input_schema["required"][0], json!("ticket_id"));
+    assert_eq!(
+        tools[0].annotations.as_ref().unwrap().destructive_hint,
+        Some(true)
+    );
+
+    let call = client
+        .call_tool("close_ticket", json!({"ticket_id": "T-9"}))
+        .await
+        .unwrap();
+    assert_eq!(call.is_error, Some(false));
+
+    // What the client itself put on the wire is camelCase too.
+    let sent = received.lock().unwrap().clone();
+    let init_params = &sent[0]["params"];
+    assert_eq!(
+        init_params["protocolVersion"],
+        json!(MCP_PROTOCOL_VERSION),
+        "unexpected wire params: {init_params}"
+    );
+    assert_eq!(
+        init_params["clientInfo"]["name"],
+        json!("agentverify-mcp"),
+        "unexpected wire params: {init_params}"
+    );
+    assert!(
+        init_params.get("protocol_version").is_none() && init_params.get("client_info").is_none(),
+        "snake_case must not reach the wire: {init_params}"
+    );
+
+    let call_params = &sent[2]["params"];
+    assert_eq!(call_params["name"], json!("close_ticket"));
+    assert_eq!(call_params["arguments"], json!({"ticket_id": "T-9"}));
+    assert!(
+        call_params.get("input_schema").is_none(),
+        "snake_case must not reach the wire: {call_params}"
     );
 
     handle.abort();

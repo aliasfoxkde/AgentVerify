@@ -32,40 +32,82 @@ impl std::fmt::Display for AccessLevel {
 }
 
 /// Pattern for matching action names
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Serializes as a tagged enum, e.g. `{"type": "prefix", "value": "update_"}`.
+/// Deserialization rebuilds the compiled regex from its source pattern, so a
+/// round-tripped policy keeps matching.
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ActionPattern {
     /// Exact match
-    Exact(String),
+    Exact {
+        /// The exact action name
+        value: String,
+    },
     /// Prefix match
-    Prefix(String),
+    Prefix {
+        /// The action-name prefix
+        value: String,
+    },
     /// Suffix match
-    Suffix(String),
+    Suffix {
+        /// The action-name suffix
+        value: String,
+    },
     /// Regex match
     Regex {
         /// The regex pattern source
         pattern: String,
-        /// Compiled pattern, built on construction and not serialized
+        /// Compiled pattern, built on construction and rebuilt on
+        /// deserialization; not serialized
         #[serde(skip)]
-        #[serde(default)]
         regex: Option<::regex::Regex>,
     },
+}
+
+impl<'de> Deserialize<'de> for ActionPattern {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum Wire {
+            Exact { value: String },
+            Prefix { value: String },
+            Suffix { value: String },
+            Regex { pattern: String },
+        }
+        match Wire::deserialize(deserializer)? {
+            Wire::Exact { value } => Ok(Self::Exact { value }),
+            Wire::Prefix { value } => Ok(Self::Prefix { value }),
+            Wire::Suffix { value } => Ok(Self::Suffix { value }),
+            Wire::Regex { pattern } => {
+                let regex = ::regex::Regex::new(&pattern).map_err(serde::de::Error::custom)?;
+                Ok(Self::Regex {
+                    pattern,
+                    regex: Some(regex),
+                })
+            }
+        }
+    }
 }
 
 impl ActionPattern {
     /// Create an exact match pattern
     pub fn exact(name: impl Into<String>) -> Self {
-        Self::Exact(name.into())
+        Self::Exact { value: name.into() }
     }
 
     /// Create a prefix match pattern
     pub fn prefix(prefix: impl Into<String>) -> Self {
-        Self::Prefix(prefix.into())
+        Self::Prefix {
+            value: prefix.into(),
+        }
     }
 
     /// Create a suffix match pattern
     pub fn suffix(suffix: impl Into<String>) -> Self {
-        Self::Suffix(suffix.into())
+        Self::Suffix {
+            value: suffix.into(),
+        }
     }
 
     /// Create a regex match pattern
@@ -86,9 +128,9 @@ impl ActionPattern {
     #[must_use]
     pub fn matches(&self, action_name: &str) -> bool {
         match self {
-            Self::Exact(name) => action_name == name,
-            Self::Prefix(prefix) => action_name.starts_with(prefix),
-            Self::Suffix(suffix) => action_name.ends_with(suffix),
+            Self::Exact { value } => action_name == value,
+            Self::Prefix { value } => action_name.starts_with(value),
+            Self::Suffix { value } => action_name.ends_with(value),
             Self::Regex { regex, .. } => regex.as_ref().is_some_and(|r| r.is_match(action_name)),
         }
     }
@@ -376,7 +418,7 @@ impl Policy {
     /// Add an allowed action name
     #[must_use]
     pub fn allow_action_name(mut self, name: impl Into<String>) -> Self {
-        self.allowed_actions.push(ActionPattern::Exact(name.into()));
+        self.allowed_actions.push(ActionPattern::exact(name));
         self
     }
 
@@ -586,5 +628,268 @@ mod tests {
 
         let denied = PolicyDecision::Denied(PolicyViolation::EmptyActionName);
         assert_eq!(format!("{denied}"), "Denied: Action name cannot be empty");
+    }
+
+    #[test]
+    fn access_level_display_covers_every_level() {
+        assert_eq!(AccessLevel::User.to_string(), "user");
+        assert_eq!(AccessLevel::Operator.to_string(), "operator");
+        assert_eq!(AccessLevel::Admin.to_string(), "admin");
+        assert_eq!(AccessLevel::System.to_string(), "system");
+    }
+
+    #[test]
+    fn access_level_is_ordered_from_user_to_system() {
+        // `evaluate_with_access` relies on this ordering to decide whether the
+        // caller's level satisfies the policy requirement.
+        let levels = [
+            AccessLevel::User,
+            AccessLevel::Operator,
+            AccessLevel::Admin,
+            AccessLevel::System,
+        ];
+        for (lower, higher) in levels.iter().zip(levels.iter().skip(1)) {
+            assert!(lower < higher);
+            assert!(higher > lower);
+            assert_ne!(lower, higher);
+        }
+        assert_eq!(levels.iter().min(), Some(&AccessLevel::User));
+        assert_eq!(levels.iter().max(), Some(&AccessLevel::System));
+    }
+
+    #[test]
+    fn access_level_default_is_user() {
+        assert_eq!(AccessLevel::default(), AccessLevel::User);
+    }
+
+    #[test]
+    fn policy_decision_accessors_report_outcome() {
+        let allowed = PolicyDecision::Allowed;
+        assert!(allowed.is_allowed());
+        assert!(allowed.violation().is_none());
+
+        let violation = PolicyViolation::ActionBlocked("drop_table".to_string());
+        let denied = PolicyDecision::Denied(violation.clone());
+        assert!(!denied.is_allowed());
+        assert_eq!(denied.violation(), Some(&violation));
+    }
+
+    #[test]
+    fn policy_config_serde_supplies_defaults_for_missing_fields() {
+        let config: PolicyConfig = serde_json::from_str(
+            r#"{"default_rate_limit_window": {"secs": 60, "nanos": 0}, "max_buckets": 7}"#,
+        )
+        .expect("partial config should deserialize");
+        assert_eq!(config.max_buckets, 7);
+        assert!(config.strict_contract_validation);
+
+        let config: PolicyConfig = serde_json::from_str(
+            r#"{"default_rate_limit_window": {"secs": 60, "nanos": 0},
+                "strict_contract_validation": false}"#,
+        )
+        .expect("partial config should deserialize");
+        assert_eq!(config.max_buckets, 10_000);
+        assert!(!config.strict_contract_validation);
+
+        let config: PolicyConfig =
+            serde_json::from_str(r#"{"max_buckets": 1, "strict_contract_validation": true}"#)
+                .expect("partial config should deserialize");
+        assert_eq!(config.default_rate_limit_window, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn policy_config_default_matches_documented_values() {
+        let config = PolicyConfig::default();
+        assert_eq!(config.default_rate_limit_window, Duration::from_secs(60));
+        assert_eq!(config.max_buckets, 10_000);
+        assert!(config.strict_contract_validation);
+    }
+
+    #[test]
+    fn policy_serde_defaults_enable_policy() {
+        let policy: Policy = serde_json::from_str(r#"{"name": "minimal"}"#)
+            .expect("policy with only a name should deserialize");
+        assert_eq!(policy.name, "minimal");
+        // Serde defaults: enabled, permissive pattern list, no limits.
+        assert!(policy.enabled);
+        assert!(policy.is_enabled());
+        assert!(policy.description.is_empty());
+        assert!(policy.allowed_actions.is_empty());
+        assert!(policy.blocked_actions.is_empty());
+        assert!(policy.rate_limits.is_empty());
+        assert!(policy.rate_limits_per_key.is_empty());
+        assert!(policy.contract_requirements.is_empty());
+        assert!(policy.access_requirements.is_empty());
+        // With no allow list the policy defaults to allowing any action.
+        assert!(policy.is_action_allowed("anything"));
+    }
+
+    #[test]
+    fn policy_serde_roundtrips_builder_state() {
+        let policy = Policy::new("builder_policy")
+            .with_description("guards destructive actions")
+            .allow_action_pattern(ActionPattern::regex("^delete_.+$").expect("valid regex"))
+            .block_action_name("purge_all")
+            .with_rate_limit("create_user", 5, Duration::from_secs(30))
+            .with_rate_limit_per_key("create_user", 1, Duration::from_secs(10))
+            .require_contract_for_action("create_user")
+            .require_access_level("delete_", AccessLevel::Operator);
+
+        let json = serde_json::to_string(&policy).expect("policy should serialize");
+        let parsed: Policy = serde_json::from_str(&json).expect("policy should deserialize");
+
+        assert_eq!(parsed.name, "builder_policy");
+        assert_eq!(parsed.description, "guards destructive actions");
+        assert!(parsed.enabled);
+        assert_eq!(
+            parsed.get_rate_limit("create_user").map(|l| l.max_count),
+            Some(5)
+        );
+        assert_eq!(
+            parsed
+                .get_rate_limit_per_key("create_user")
+                .map(|l| l.window),
+            Some(Duration::from_secs(10))
+        );
+        assert!(parsed.is_contract_required("create_user"));
+        assert!(!parsed.is_contract_required("delete_user"));
+        assert_eq!(
+            parsed.get_required_access_level("delete_"),
+            Some(AccessLevel::Operator)
+        );
+        assert_eq!(parsed.get_required_access_level("unknown"), None);
+        // `purge_all` is blocked, so it is denied even with an empty allow list.
+        assert!(!parsed.is_action_allowed("purge_all"));
+    }
+
+    #[test]
+    fn rate_limit_tracker_default_creates_empty_tracker() {
+        let tracker = RateLimitTracker::default();
+        assert!(tracker.get_bucket("nope").is_none());
+    }
+
+    #[test]
+    fn rate_limit_tracker_cleanup_expired_removes_only_stale_buckets() {
+        let fresh_limit = RateLimit::new(10, Duration::from_secs(120));
+        let stale_limit = RateLimit::new(10, Duration::from_millis(1));
+        let mut tracker = RateLimitTracker::new();
+
+        assert!(tracker.check_rate_limit("fresh", &fresh_limit));
+        assert!(tracker.check_rate_limit("stale", &stale_limit));
+
+        // Age the "stale" bucket far past twice its window, which is the
+        // retention threshold used by `cleanup_expired`.
+        let aged_start = Instant::now()
+            .checked_sub(Duration::from_secs(30))
+            .expect("30s back from now is representable");
+        tracker.buckets.get_mut("stale").unwrap().window_start = aged_start;
+
+        tracker.cleanup_expired();
+
+        assert!(tracker.get_bucket("fresh").is_some());
+        assert!(tracker.get_bucket("stale").is_none());
+    }
+
+    #[test]
+    fn rate_limit_bucket_resets_after_window_expires() {
+        let limit = RateLimit::new(1, Duration::from_secs(60));
+        let expired_start = Instant::now()
+            .checked_sub(Duration::from_secs(120))
+            .expect("120s back from now is representable");
+        let mut bucket = RateLimitBucket {
+            count: 1,
+            window_start: expired_start,
+            limit,
+        };
+
+        // The expired window resets the count rather than denying the action.
+        assert!(bucket.check_and_increment());
+        assert_eq!(bucket.count, 1);
+    }
+
+    #[test]
+    fn idempotency_tracker_default_creates_empty_tracker() {
+        let mut tracker = IdempotencyRateLimitTracker::default();
+        let limit = RateLimit::new(1, Duration::from_secs(60));
+
+        // Keys are scoped per action name, so the same key on a different
+        // action draws from a separate bucket.
+        assert!(tracker.check_rate_limit("key-1", "action_a", &limit));
+        assert!(!tracker.check_rate_limit("key-1", "action_a", &limit));
+        assert!(tracker.check_rate_limit("key-1", "action_b", &limit));
+    }
+
+    #[test]
+    fn idempotency_tracker_cleanup_expired_prunes_stale_buckets() {
+        let limit = RateLimit::new(1, Duration::from_secs(60));
+        let mut tracker = IdempotencyRateLimitTracker::new();
+
+        assert!(tracker.check_rate_limit("key-1", "action_a", &limit));
+        assert!(!tracker.check_rate_limit("key-1", "action_a", &limit));
+
+        tracker.cleanup_expired();
+
+        // Live buckets survive cleanup, so the limit still holds.
+        assert!(!tracker.check_rate_limit("key-1", "action_a", &limit));
+    }
+
+    #[test]
+    fn action_pattern_regex_roundtrip_rebuilds_compiled_regex() {
+        let pattern = ActionPattern::regex("^delete_.+$").expect("valid regex");
+        let json = serde_json::to_string(&pattern).expect("regex patterns serialize");
+        assert_eq!(json, r#"{"type":"regex","pattern":"^delete_.+$"}"#);
+
+        let parsed: ActionPattern =
+            serde_json::from_str(&json).expect("regex patterns deserialize");
+        // Deserialization rebuilds the compiled matcher from the pattern
+        // source, so the round-tripped policy still matches.
+        assert!(parsed.matches("delete_user"));
+    }
+
+    #[test]
+    fn action_pattern_roundtrip_preserves_every_variant() {
+        let patterns = [
+            ActionPattern::exact("create_user"),
+            ActionPattern::prefix("delete_"),
+            ActionPattern::suffix("_admin"),
+            ActionPattern::regex("^refund_\\d+$").expect("valid regex"),
+        ];
+        for pattern in patterns {
+            let json = serde_json::to_string(&pattern).expect("patterns serialize");
+            let parsed: ActionPattern = serde_json::from_str(&json).expect("patterns deserialize");
+            // Round-trip equality via behaviour: the parsed pattern matches
+            // exactly the same action names as the original.
+            for name in ["create_user", "delete_1", "x_admin", "refund_42", "other"] {
+                assert_eq!(
+                    pattern.matches(name),
+                    parsed.matches(name),
+                    "round-trip changed matching for {name}: {json}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn action_pattern_deserialize_rejects_invalid_regex_source() {
+        let err =
+            serde_json::from_str::<ActionPattern>(r#"{"type":"regex","pattern":"a(unclosed"}"#)
+                .expect_err("invalid regex source must be rejected");
+        assert!(
+            err.to_string().contains("regex parse error"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn action_pattern_regex_rejects_invalid_source() {
+        assert!(ActionPattern::regex("a(unclosed").is_err());
+    }
+
+    #[test]
+    fn policy_is_enabled_reflects_field() {
+        let mut policy = Policy::new("toggled");
+        assert!(policy.is_enabled());
+        policy.enabled = false;
+        assert!(!policy.is_enabled());
     }
 }

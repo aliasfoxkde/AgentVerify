@@ -682,11 +682,11 @@ mod tests {
 
         let invalid = McpClientError::InvalidResponse {
             expected: "InitializeResult".to_string(),
-            got: "missing field `server_info`".to_string(),
+            got: "missing field `serverInfo`".to_string(),
         };
         assert_eq!(
             invalid.to_string(),
-            "Invalid response: expected InitializeResult, got missing field `server_info`"
+            "Invalid response: expected InitializeResult, got missing field `serverInfo`"
         );
 
         let capability = McpClientError::CapabilityNotSupported("sampling".to_string());

@@ -4,7 +4,9 @@
 This is a real protocol peer, not a canned recorder: it parses each
 newline-delimited JSON-RPC 2.0 request from stdin, dispatches on the method and
 writes a response to stdout. That is the same framing ``StdioTransport``
-implements, and the field names mirror ``src/protocol.rs``.
+implements, and every payload uses the lowerCamelCase field names of the MCP
+specification (``inputSchema``, ``protocolVersion``, ``serverInfo``,
+``mimeType``, ``isError``), as the specification's own peers do.
 
 Usage::
 
@@ -43,7 +45,7 @@ TOOLS = [
     {
         "name": "lookup_order",
         "description": "Look up an order in the system of record.",
-        "input_schema": {
+        "inputSchema": {
             "type": "object",
             "properties": {"order_id": {"type": "string"}},
             "required": ["order_id"],
@@ -61,7 +63,7 @@ RESOURCES = [
         "uri": "file:///contracts/order-verify.json",
         "name": "order-verify contract",
         "description": "Verification contract for order mutations.",
-        "mime_type": "application/json",
+        "mimeType": "application/json",
     }
 ]
 
@@ -89,6 +91,25 @@ def write(payload):
     sys.stdout.flush()
 
 
+def require_spec_camel_case(params):
+    """Reject `initialize` params that do not use the specification's keys.
+
+    A client that emits the Rust field names (`protocol_version`,
+    `client_info`) instead of the specification's lowerCamelCase keys is not
+    interoperable, so the peer answers with invalid params rather than
+    accepting a dialect nothing else speaks.
+    """
+    if "protocolVersion" not in params or "clientInfo" not in params:
+        raise ValueError(
+            "initialize params must carry protocolVersion and clientInfo"
+        )
+    for legacy in ("protocol_version", "client_info"):
+        if legacy in params:
+            raise ValueError(
+                "snake_case %s is not part of the MCP specification" % legacy
+            )
+
+
 def tool_result(params):
     """Build the `tools/call` result for `params`."""
     arguments = (params or {}).get("arguments") or {}
@@ -102,22 +123,23 @@ def tool_result(params):
                 "type": "resource",
                 "resource": {
                     "uri": RESOURCES[0]["uri"],
-                    "mime_type": "application/json",
+                    "mimeType": "application/json",
                     "text": '{"state": "verified"}',
                 },
             },
         ],
-        "is_error": False,
+        "isError": False,
     }
 
 
 def result_for(method, params):
     """Dispatch an MCP method to its result payload."""
     if method == "initialize":
+        require_spec_camel_case(params or {})
         return {
-            "protocol_version": PROTOCOL_VERSION,
+            "protocolVersion": PROTOCOL_VERSION,
             "capabilities": CAPABILITIES,
-            "server_info": SERVER_INFO,
+            "serverInfo": SERVER_INFO,
             "instructions": "Verify the order before retrying the write.",
         }
     if method == "tools/list":

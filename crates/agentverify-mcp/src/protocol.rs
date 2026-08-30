@@ -1,6 +1,16 @@
 //! MCP Protocol Types
 //!
 //! Implements JSON-RPC 2.0 message types as specified in the MCP specification.
+//!
+//! # Wire naming
+//!
+//! Every MCP payload field uses the lowerCamelCase names of the specification
+//! (`inputSchema`, `protocolVersion`, `serverInfo`, `clientInfo`, `mimeType`,
+//! `isError`, ...). Rust field names stay `snake_case`; `#[serde(rename_all =
+//! "camelCase")]` bridges the two, so a `snake_case` key such as `input_schema`
+//! is neither emitted nor accepted on the wire. The JSON-RPC envelope fields
+//! (`jsonrpc`, `id`, `method`, `params`, `result`, `error`, `code`, `message`,
+//! `data`) are single words and are unaffected.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -251,6 +261,7 @@ pub struct PromptsCapability {
 
 /// Initialize request parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InitializeParams {
     /// The newest MCP protocol version the client supports.
     pub protocol_version: String,
@@ -262,6 +273,7 @@ pub struct InitializeParams {
 
 /// Initialize request result
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InitializeResult {
     /// The MCP protocol version the server selected.
     pub protocol_version: String,
@@ -285,6 +297,7 @@ pub struct Implementation {
 
 /// Tool definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Tool {
     /// Unique name used to invoke the tool.
     pub name: String,
@@ -298,7 +311,13 @@ pub struct Tool {
 }
 
 /// Tool annotations
+///
+/// Every field keeps its explicit `rename`, which takes precedence over
+/// `rename_all` and pins the specification's names (`readOnlyHint`,
+/// `destructiveHint`, `idempotentHint`, `annotation`) independently of the
+/// container-level rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ToolAnnotations {
     /// Hint that the tool does not modify its environment.
     #[serde(rename = "readOnlyHint")]
@@ -320,6 +339,7 @@ pub struct ToolAnnotations {
 
 /// Resource definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Resource {
     /// URI identifying the resource.
     pub uri: String,
@@ -355,6 +375,7 @@ pub struct PromptArgument {
 
 /// Call tool request parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CallToolParams {
     /// Name of the tool to invoke.
     pub name: String,
@@ -363,14 +384,18 @@ pub struct CallToolParams {
     /// Optional MCP metadata attached to the call.
     ///
     /// The leading underscore is part of the MCP wire format field name and
-    /// cannot be removed without breaking interoperability.
+    /// cannot be removed without breaking interoperability. It is pinned with
+    /// an explicit `rename`, because `rename_all` would otherwise treat the
+    /// underscore as a word separator and emit `meta`.
     #[allow(clippy::pub_underscore_fields)]
+    #[serde(rename = "_meta")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub _meta: Option<Value>,
 }
 
 /// Call tool result
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CallToolResult {
     /// Content blocks produced by the tool.
     pub content: Vec<ContentBlock>,
@@ -379,8 +404,12 @@ pub struct CallToolResult {
 }
 
 /// Content block types
+///
+/// `rename_all_fields` applies the camelCase rule to the fields *inside* every
+/// variant (`mime_type` -> `mimeType`) without touching the variant tags, which
+/// are pinned by their own explicit `rename`s.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all_fields = "camelCase")]
 pub enum ContentBlock {
     /// A plain text block.
     #[serde(rename = "text")]
@@ -406,6 +435,7 @@ pub enum ContentBlock {
 
 /// Resource contents
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResourceContents {
     /// URI identifying the resource.
     pub uri: String,
@@ -804,7 +834,7 @@ mod tests {
             is_error: Some(true),
         };
         let json = serde_json::to_value(&result).unwrap();
-        assert_eq!(json["is_error"], true);
+        assert_eq!(json["isError"], true);
         assert_eq!(json["content"][0]["type"], "text");
         let back: CallToolResult = serde_json::from_value(json).unwrap();
         assert_eq!(back.is_error, Some(true));
@@ -817,7 +847,7 @@ mod tests {
         assert!(matches!(text, ContentBlock::Text { .. }));
 
         let image: ContentBlock = serde_json::from_value(
-            json!({"type": "image", "data": "aGk=", "mime_type": "image/png"}),
+            json!({"type": "image", "data": "aGk=", "mimeType": "image/png"}),
         )
         .unwrap();
         assert!(matches!(image, ContentBlock::Image { .. }));
@@ -885,5 +915,222 @@ mod tests {
     fn content_block_rejects_an_unknown_tag() {
         assert!(serde_json::from_value::<ContentBlock>(json!({"type": "audio"})).is_err());
         assert!(serde_json::from_value::<ContentBlock>(json!("text")).is_err());
+    }
+
+    // =========================================================================
+    // Wire-format interoperability with the MCP specification
+    // =========================================================================
+
+    /// The key set of a serialized protocol value, sorted for a stable
+    /// comparison that does not depend on `serde_json`'s map ordering.
+    fn wire_keys(value: &Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("protocol payloads must serialize to an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// A tool carrying every multi-word field of the type.
+    fn spec_tool() -> Tool {
+        Tool {
+            name: "lookup_order".to_string(),
+            description: "Look up an order in the system of record.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"order_id": {"type": "string"}}
+            }),
+            annotations: Some(ToolAnnotations {
+                read_only_hint: Some(true),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(true),
+                annotation: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn tool_uses_the_specification_camel_case_keys() {
+        let json = serde_json::to_value(spec_tool()).unwrap();
+        assert_eq!(
+            wire_keys(&json),
+            vec!["annotations", "description", "inputSchema", "name"],
+            "the specification's key is `inputSchema`, not `input_schema`"
+        );
+        assert_eq!(json["annotations"]["readOnlyHint"], true);
+        assert_eq!(json["annotations"]["destructiveHint"], false);
+        assert_eq!(json["annotations"]["idempotentHint"], true);
+
+        // And the specification's own example shape decodes.
+        let back: Tool = serde_json::from_value(json).unwrap();
+        assert_eq!(back.input_schema["type"], "object");
+        assert_eq!(back.annotations.unwrap().read_only_hint, Some(true));
+    }
+
+    #[test]
+    fn initialize_payloads_use_the_specification_camel_case_keys() {
+        let params = InitializeParams {
+            protocol_version: MCP_PROTOCOL_VERSION.to_string(),
+            capabilities: ClientCapabilities::default(),
+            client_info: Implementation {
+                name: "agentverify-mcp".to_string(),
+                version: "0.1.0".to_string(),
+            },
+        };
+        let json = serde_json::to_value(&params).unwrap();
+        assert_eq!(
+            wire_keys(&json),
+            vec!["capabilities", "clientInfo", "protocolVersion"],
+            "the specification's keys are `protocolVersion` and `clientInfo`"
+        );
+
+        let result = InitializeResult {
+            protocol_version: MCP_PROTOCOL_VERSION.to_string(),
+            capabilities: ServerCapabilities {
+                resources: None,
+                tools: Some(ToolsCapability {}),
+                prompts: None,
+            },
+            server_info: Implementation {
+                name: "srv".to_string(),
+                version: "1.0.0".to_string(),
+            },
+            instructions: Some("Verify before retrying.".to_string()),
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            wire_keys(&json),
+            vec![
+                "capabilities",
+                "instructions",
+                "protocolVersion",
+                "serverInfo"
+            ],
+            "the specification's keys are `protocolVersion` and `serverInfo`"
+        );
+
+        // Neither payload accepts the Rust field names back.
+        assert!(json.get("server_info").is_none());
+        assert!(json.get("protocol_version").is_none());
+        let back: InitializeResult = serde_json::from_value(json).unwrap();
+        assert_eq!(back.server_info.name, "srv");
+    }
+
+    #[test]
+    fn call_tool_result_and_resources_use_the_specification_camel_case_keys() {
+        let result = CallToolResult {
+            content: vec![ContentBlock::Text {
+                text: "done".to_string(),
+            }],
+            is_error: Some(false),
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            wire_keys(&json),
+            vec!["content", "isError"],
+            "the specification's key is `isError`, not `is_error`"
+        );
+
+        let image = ContentBlock::Image {
+            data: "aGk=".to_string(),
+            mime_type: "image/png".to_string(),
+        };
+        let json = serde_json::to_value(&image).unwrap();
+        assert_eq!(
+            wire_keys(&json),
+            vec!["data", "mimeType", "type"],
+            "the specification's key is `mimeType`, not `mime_type`"
+        );
+
+        let resource = Resource {
+            uri: "file:///a.json".to_string(),
+            name: "a".to_string(),
+            description: None,
+            mime_type: Some("application/json".to_string()),
+        };
+        let json = serde_json::to_value(&resource).unwrap();
+        assert_eq!(
+            wire_keys(&json),
+            vec!["description", "mimeType", "name", "uri"]
+        );
+
+        let contents = ResourceContents {
+            uri: "file:///a.json".to_string(),
+            mime_type: Some("application/json".to_string()),
+            text: Some("{}".to_string()),
+            blob: None,
+        };
+        let json = serde_json::to_value(&contents).unwrap();
+        assert_eq!(wire_keys(&json), vec!["blob", "mimeType", "text", "uri"]);
+    }
+
+    #[test]
+    fn snake_case_keys_are_not_accepted_on_the_wire() {
+        // Renamed required fields make an old-dialect payload a hard error
+        // rather than a silently empty decode.
+        let err = serde_json::from_value::<Tool>(json!({
+            "name": "lookup_order",
+            "description": "Look up an order.",
+            "input_schema": {"type": "object"}
+        }))
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("inputSchema"),
+            "expected a missing `inputSchema` error, got: {err}"
+        );
+
+        let err = serde_json::from_value::<InitializeResult>(json!({
+            "protocol_version": MCP_PROTOCOL_VERSION,
+            "capabilities": {"tools": {}},
+            "server_info": {"name": "srv", "version": "1.0.0"}
+        }))
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("protocolVersion"),
+            "expected a missing `protocolVersion` error, got: {err}"
+        );
+
+        // Optional renamed fields cannot error, so the snake_case key is
+        // treated as absent and the value is lost -- which is exactly why no
+        // peer may send it.
+        let result: CallToolResult = serde_json::from_value(json!({
+            "content": [{"type": "text", "text": "done"}],
+            "is_error": true
+        }))
+        .unwrap();
+        assert_eq!(result.is_error, None, "`is_error` must not be honoured");
+
+        let resource: Resource = serde_json::from_value(json!({
+            "uri": "file:///a.json",
+            "name": "a",
+            "mime_type": "application/json"
+        }))
+        .unwrap();
+        assert_eq!(resource.mime_type, None, "`mime_type` must not be honoured");
+    }
+
+    #[test]
+    fn call_tool_params_keep_the_underscored_meta_key() {
+        let params = CallToolParams {
+            name: "lookup_order".to_string(),
+            arguments: json!({"order_id": "A-1"}),
+            _meta: Some(json!({"progressToken": 1})),
+        };
+        let json = serde_json::to_value(&params).unwrap();
+        assert_eq!(json["_meta"]["progressToken"], 1);
+        assert!(
+            json.get("meta").is_none(),
+            "rename_all must not treat the leading underscore as a word separator"
+        );
+
+        // Read the decoded value back off the wire rather than through the
+        // underscored field, which `clippy::used_underscore_binding` rightly
+        // discourages naming.
+        let back: CallToolParams = serde_json::from_value(json).unwrap();
+        let rewired = serde_json::to_value(&back).unwrap();
+        assert_eq!(rewired["_meta"]["progressToken"], 1);
     }
 }

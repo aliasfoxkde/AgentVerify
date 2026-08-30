@@ -439,7 +439,34 @@ impl Executor {
                 .advance(State::Validating)
                 .map_err(|e| ExecutorError::PreconditionFailed(e.to_string()))?;
 
-            if let Err(e) = Self::validate_preconditions(&action, &contract) {
+            // Preconditions need the state as it is *before* dispatch, so it is
+            // observed here rather than reusing the post-dispatch observation.
+            // Contracts without preconditions must not pay for an extra
+            // observer round-trip.
+            let pre_state = if contract.preconditions.is_empty() {
+                None
+            } else {
+                match self
+                    .observe_pre_state(&action, &contract, observer.as_ref())
+                    .await
+                {
+                    Ok(observation) => Some(observation.state),
+                    Err(message) => {
+                        tracing::warn!(
+                            contract = %contract.id,
+                            "action rejected before dispatch: {message}"
+                        );
+                        state_machine
+                            .advance(State::Rejected)
+                            .map_err(|_| ExecutorError::PreconditionFailed(message.clone()))?;
+                        // Precondition failure is terminal for this action — complete with Failed
+                        final_result = Some(VerificationResult::Failed);
+                        break;
+                    }
+                }
+            };
+
+            if let Err(e) = Self::validate_preconditions(&action, &contract, pre_state.as_ref()) {
                 state_machine
                     .advance(State::Rejected)
                     .map_err(|_| ExecutorError::PreconditionFailed(e.clone()))?;
@@ -582,15 +609,52 @@ impl Executor {
         Ok((result, receipt))
     }
 
-    /// Validate preconditions against current state
-    fn validate_preconditions(_action: &Action, contract: &Contract) -> Result<(), String> {
+    /// Message reported when a contract declares preconditions but no
+    /// pre-execution state could be produced for them.
+    fn missing_pre_state_message(contract: &Contract) -> String {
+        format!(
+            "Contract '{}' declares {} precondition(s) but no pre-execution state was observed; \
+             configure an observer so preconditions can be checked before dispatch",
+            contract.id,
+            contract.preconditions.len()
+        )
+    }
+
+    /// Validate preconditions against the pre-execution state
+    ///
+    /// A precondition must hold *before* the action is dispatched, so it is
+    /// evaluated against the state observed immediately before dispatch (see
+    /// [`Self::observe_pre_state`]) rather than against the post-dispatch
+    /// state. The action's arguments are passed through unchanged, so
+    /// `$args.` references in a predicate resolve exactly as they do for
+    /// postconditions.
+    ///
+    /// A contract without preconditions returns `Ok(())` immediately, so
+    /// callers need not produce a pre-execution state at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns a descriptive message when a precondition is not satisfied, or
+    /// when the contract declares preconditions but `pre_state` is `None`.
+    /// The latter is fail-closed: a precondition that cannot be checked is
+    /// treated as unsatisfied, never skipped.
+    fn validate_preconditions(
+        action: &Action,
+        contract: &Contract,
+        pre_state: Option<&serde_json::Value>,
+    ) -> Result<(), String> {
+        // Fast path: nothing to check, so there is nothing to observe either.
+        if contract.preconditions.is_empty() {
+            return Ok(());
+        }
+
+        let Some(state) = pre_state else {
+            return Err(Self::missing_pre_state_message(contract));
+        };
+
         for precond in &contract.preconditions {
             let result = PredicateEngine::default()
-                .evaluate(
-                    &precond.predicate,
-                    &serde_json::json!({}), // No state yet
-                    &serde_json::json!({}), // No args yet
-                )
+                .evaluate(&precond.predicate, state, &action.arguments)
                 .map_err(|e| e.to_string())?;
 
             if !matches!(result, VerificationResult::Verified) {
@@ -598,6 +662,42 @@ impl Executor {
             }
         }
         Ok(())
+    }
+
+    /// Observe the pre-execution state used to check preconditions
+    ///
+    /// Called only for contracts that declare preconditions, immediately
+    /// before dispatch. Like the post-dispatch observation it is bounded by
+    /// the configured verification timeout, and like the precondition check
+    /// itself it is fail-closed: an unobservable precondition blocks dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a descriptive message when no observer is configured, when the
+    /// observer reports an error, or when the observation exceeds the
+    /// configured verification timeout.
+    async fn observe_pre_state(
+        &self,
+        action: &Action,
+        contract: &Contract,
+        observer: Option<&Arc<dyn Observer>>,
+    ) -> Result<Observation, String> {
+        let Some(observer) = observer else {
+            return Err(Self::missing_pre_state_message(contract));
+        };
+
+        let timeout_duration =
+            std::time::Duration::from_millis(self.config.verification_timeout_ms);
+        match tokio_timeout(timeout_duration, observer.observe(action, contract)).await {
+            Ok(Ok(observation)) => Ok(observation),
+            Ok(Err(e)) => Err(format!(
+                "Precondition check failed: pre-execution observation error: {e}"
+            )),
+            Err(_) => Err(format!(
+                "Precondition check failed: pre-execution observation timed out after {}ms",
+                self.config.verification_timeout_ms
+            )),
+        }
     }
 
     /// Verify postconditions against observed state
@@ -758,7 +858,33 @@ impl Executor {
                 .advance(State::Validating)
                 .map_err(|e| ExecutorError::PreconditionFailed(e.to_string()))?;
 
-            if let Err(e) = Self::validate_preconditions(&action, &contract) {
+            // Preconditions need the state as it is *before* dispatch, so it is
+            // observed here rather than reusing the post-dispatch observation.
+            // Contracts without preconditions must not pay for an extra
+            // observer round-trip.
+            let pre_state = if contract.preconditions.is_empty() {
+                None
+            } else {
+                match self
+                    .observe_pre_state(&action, &contract, observer.as_ref())
+                    .await
+                {
+                    Ok(observation) => Some(observation.state),
+                    Err(message) => {
+                        tracing::warn!(
+                            contract = %contract.id,
+                            "action rejected before dispatch: {message}"
+                        );
+                        state_machine
+                            .advance(State::Rejected)
+                            .map_err(|_| ExecutorError::PreconditionFailed(message.clone()))?;
+                        final_result = Some(VerificationResult::Failed);
+                        break;
+                    }
+                }
+            };
+
+            if let Err(e) = Self::validate_preconditions(&action, &contract, pre_state.as_ref()) {
                 state_machine
                     .advance(State::Rejected)
                     .map_err(|_| ExecutorError::PreconditionFailed(e.clone()))?;
@@ -1005,7 +1131,7 @@ mod tests {
     use agentverify_core::{
         BackoffConfig, BackoffType, IdempotencyKey, Postcondition, Predicate, RecoveryConfig,
     };
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::time::sleep;
@@ -1818,6 +1944,64 @@ mod tests {
         }
     }
 
+    /// Observer that counts every call and always reports the same state, so a
+    /// test can tell pre-dispatch observation from post-dispatch observation.
+    struct CountingObserver {
+        state: serde_json::Value,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl CountingObserver {
+        /// Build an observer plus a handle onto its call counter.
+        fn new(state: serde_json::Value) -> (Arc<Self>, Arc<AtomicUsize>) {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observer = Arc::new(Self {
+                state,
+                calls: Arc::clone(&calls),
+            });
+            (observer, calls)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Observer for CountingObserver {
+        async fn observe(
+            &self,
+            _action: &Action,
+            _contract: &Contract,
+        ) -> Result<Observation, ExecutorError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Observation::new(
+                SourceId("counting".into()),
+                self.state.clone(),
+            ))
+        }
+    }
+
+    /// Action executor that counts dispatches and completes immediately.
+    struct CountingDispatch {
+        dispatches: Arc<AtomicUsize>,
+    }
+
+    impl CountingDispatch {
+        /// Build an executor plus a handle onto its dispatch counter.
+        fn new() -> (Arc<Self>, Arc<AtomicUsize>) {
+            let dispatches = Arc::new(AtomicUsize::new(0));
+            let executor = Arc::new(Self {
+                dispatches: Arc::clone(&dispatches),
+            });
+            (executor, dispatches)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ActionExecutor for CountingDispatch {
+        async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+            self.dispatches.fetch_add(1, Ordering::SeqCst);
+            Ok(DispatchOutcome::Completed)
+        }
+    }
+
     /// Action executor that always reports the same dispatch outcome.
     struct OutcomeExecutor {
         outcome: DispatchOutcome,
@@ -2026,47 +2210,93 @@ mod tests {
     }
 
     #[test]
-    fn validate_preconditions_evaluates_against_the_current_state() {
+    fn validate_preconditions_evaluates_against_the_pre_execution_state() {
+        let action = Action::new("test", serde_json::json!({"expected_status": "active"}));
+        let pre_state = serde_json::json!({"account": {"status": "active"}});
+
+        // A precondition satisfied by the pre-execution state passes.
+        let present = Contract::new("test").with_precondition(
+            Predicate::exists("account.status"),
+            "account must be present",
+        );
+        assert_eq!(
+            Executor::validate_preconditions(&action, &present, Some(&pre_state)),
+            Ok(())
+        );
+
         // Absence of state satisfies a not-exists precondition.
-        let passing = Contract::new("test")
+        let absent = Contract::new("test")
             .with_precondition(Predicate::not_exists("audit_entry"), "no audit entry yet");
         assert_eq!(
-            Executor::validate_preconditions(&Action::new("test", serde_json::json!({})), &passing),
+            Executor::validate_preconditions(&action, &absent, Some(&serde_json::json!({}))),
             Ok(())
         );
 
         // An unsatisfied precondition names the failed check.
         let failing = Contract::new("test")
             .with_precondition(Predicate::exists("ledger_row"), "ledger row must exist");
-        let error =
-            Executor::validate_preconditions(&Action::new("test", serde_json::json!({})), &failing)
-                .expect_err("unsatisfied precondition must be rejected");
+        let error = Executor::validate_preconditions(&action, &failing, Some(&pre_state))
+            .expect_err("unsatisfied precondition must be rejected");
         assert_eq!(error, "Precondition failed: ledger row must exist");
 
         // Several preconditions are checked in order and the first failure wins.
         let ordered = Contract::new("test")
-            .with_precondition(Predicate::not_exists("first"), "first absent")
+            .with_precondition(Predicate::exists("account"), "account present")
             .with_precondition(Predicate::exists("second"), "second present");
         assert_eq!(
-            Executor::validate_preconditions(&Action::new("test", serde_json::json!({})), &ordered),
+            Executor::validate_preconditions(&action, &ordered, Some(&pre_state)),
             Err("Precondition failed: second present".to_string())
+        );
+
+        // A precondition may reference the action's arguments, so the real
+        // arguments must reach the predicate engine.
+        let on_args = Contract::new("test").with_precondition(
+            Predicate::equals("account.status", "$args.expected_status"),
+            "status must match the requested status",
+        );
+        assert_eq!(
+            Executor::validate_preconditions(&action, &on_args, Some(&pre_state)),
+            Ok(())
+        );
+        let other_args = Action::new("test", serde_json::json!({"expected_status": "closed"}));
+        assert_eq!(
+            Executor::validate_preconditions(&other_args, &on_args, Some(&pre_state)),
+            Err("Precondition failed: status must match the requested status".to_string())
+        );
+
+        // Preconditions without pre-execution state are fail-closed and the
+        // message says what is missing and how to fix it.
+        let error = Executor::validate_preconditions(&action, &present, None)
+            .expect_err("preconditions cannot be checked without pre-execution state");
+        assert!(
+            error.contains("1 precondition(s)")
+                && error.contains("no pre-execution state was observed")
+                && error.contains("configure an observer"),
+            "the error must be actionable: {error}"
+        );
+
+        // No preconditions and no state is still the fast path.
+        assert_eq!(
+            Executor::validate_preconditions(&action, &Contract::new("test"), None),
+            Ok(())
         );
     }
 
     #[tokio::test]
-    async fn execute_rejects_unsatisfied_preconditions_before_any_observation() {
-        let observer = StaticObserver {
-            state: serde_json::json!({"x": 1}),
-            source: "precondition-check",
-        };
+    async fn execute_rejects_unsatisfied_preconditions_before_dispatch() {
+        let (observer, observations) =
+            CountingObserver::new(serde_json::json!({"x": 1, "gate": "closed"}));
         let executor = observing_executor(1_000);
         let action = Action::new("test", serde_json::json!({}));
         let contract = Contract::new("test")
-            .with_precondition(Predicate::exists("gate"), "gate must be open")
+            .with_precondition(
+                Predicate::equals("gate", serde_json::json!("open")),
+                "gate must be open",
+            )
             .with_postcondition(Predicate::equals("x", serde_json::json!(1)), "x is 1");
 
         let (result, receipt) = executor
-            .execute(action, contract, Some(Arc::new(observer)))
+            .execute(action, contract, Some(observer))
             .await
             .unwrap();
 
@@ -2077,43 +2307,274 @@ mod tests {
             receipt.postcondition_results.is_empty(),
             "postconditions are never evaluated for a rejected action"
         );
+        assert_eq!(
+            observations.load(Ordering::SeqCst),
+            1,
+            "the pre-dispatch observation happens, the post-dispatch one does not"
+        );
     }
 
     #[tokio::test]
     async fn execute_with_executor_rejects_unsatisfied_preconditions() {
-        struct CountingExecutor {
-            dispatches: Arc<AtomicBool>,
-        }
-
-        #[async_trait::async_trait]
-        impl ActionExecutor for CountingExecutor {
-            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
-                self.dispatches.store(true, Ordering::SeqCst);
-                Ok(DispatchOutcome::Completed)
-            }
-        }
-
-        let dispatches = Arc::new(AtomicBool::new(false));
-        let action_executor = Arc::new(CountingExecutor {
-            dispatches: Arc::clone(&dispatches),
-        });
+        let (observer, _observations) =
+            CountingObserver::new(serde_json::json!({"gate": "closed"}));
+        let (action_executor, dispatches) = CountingDispatch::new();
 
         let executor = observing_executor(1_000);
         let action = Action::new("test", serde_json::json!({}));
         let contract = Contract::new("test")
-            .with_precondition(Predicate::exists("gate"), "gate must be open")
+            .with_precondition(
+                Predicate::equals("gate", serde_json::json!("open")),
+                "gate must be open",
+            )
             .with_postcondition(Predicate::exists("result"), "result exists");
 
         let (result, receipt) = executor
-            .execute_with_executor(action, contract, action_executor, None)
+            .execute_with_executor(action, contract, action_executor, Some(observer))
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Failed);
+        assert_eq!(
+            receipt.attempts, 1,
+            "a precondition rejection is terminal, not a retryable verification failure"
+        );
+        assert_eq!(
+            dispatches.load(Ordering::SeqCst),
+            0,
+            "a rejected action must never be dispatched"
+        );
+    }
+
+    #[tokio::test]
+    async fn precondition_free_contract_observes_only_after_dispatch() {
+        let (observer, observations) =
+            CountingObserver::new(serde_json::json!({"result": {"status": "completed"}}));
+        let (action_executor, dispatches) = CountingDispatch::new();
+
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test").with_postcondition(
+            Predicate::equals("result.status", serde_json::json!("completed")),
+            "status must be completed",
+        );
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                action_executor,
+                Some(observer),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Verified);
+        assert_eq!(receipt.attempts, 1);
+        assert_eq!(dispatches.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            observations.load(Ordering::SeqCst),
+            1,
+            "a contract without preconditions must not pay for a pre-dispatch observation"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_dispatches_when_pre_state_satisfies_preconditions() {
+        let (observer, observations) = CountingObserver::new(
+            serde_json::json!({"gate": "open", "result": {"status": "done"}}),
+        );
+        let (action_executor, dispatches) = CountingDispatch::new();
+
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test")
+            .with_precondition(
+                Predicate::equals("gate", serde_json::json!("open")),
+                "gate must be open",
+            )
+            .with_postcondition(
+                Predicate::equals("result.status", serde_json::json!("done")),
+                "result must be done",
+            );
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                action_executor,
+                Some(observer),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Verified);
+        assert_eq!(receipt.attempts, 1);
+        assert_eq!(
+            dispatches.load(Ordering::SeqCst),
+            1,
+            "a satisfied precondition must not block dispatch"
+        );
+        assert_eq!(
+            observations.load(Ordering::SeqCst),
+            2,
+            "the pre-dispatch and post-dispatch observations are separate calls"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_proceeds_when_pre_state_satisfies_preconditions() {
+        let observer = StaticObserver {
+            state: serde_json::json!({"gate": "open", "x": 1}),
+            source: "pre-dispatch",
+        };
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test")
+            .with_precondition(
+                Predicate::equals("gate", serde_json::json!("open")),
+                "gate must be open",
+            )
+            .with_postcondition(Predicate::equals("x", serde_json::json!(1)), "x is 1");
+
+        let (result, receipt) = executor
+            .execute(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                Some(Arc::new(observer)),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Verified);
+        assert_eq!(receipt.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn precondition_may_reference_the_action_arguments() {
+        let (observer, _observations) = CountingObserver::new(serde_json::json!({
+            "account": {"status": "active"}
+        }));
+        let (action_executor, dispatches) = CountingDispatch::new();
+
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test")
+            .with_precondition(
+                Predicate::equals("account.status", "$args.expected_status"),
+                "account must already be in the requested status",
+            )
+            .with_postcondition(
+                Predicate::equals("account.status", "$args.expected_status"),
+                "account is still in the requested status",
+            );
+
+        // The arguments carry the expected status, which the pre-execution
+        // state agrees with.
+        let action = Action::new("test", serde_json::json!({"expected_status": "active"}));
+
+        let (result, _receipt) = executor
+            .execute_with_executor(action, contract, action_executor, Some(observer))
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Verified);
+        assert_eq!(
+            dispatches.load(Ordering::SeqCst),
+            1,
+            "an argument-backed precondition must be evaluated against the real arguments"
+        );
+    }
+
+    #[tokio::test]
+    async fn preconditions_without_an_observer_fail_closed_before_dispatch() {
+        let (action_executor, dispatches) = CountingDispatch::new();
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test")
+            .with_precondition(Predicate::exists("gate"), "gate must be open")
+            .with_postcondition(Predicate::exists("result"), "result exists");
+
+        // The unobservable precondition is reported as unsatisfied rather than
+        // silently skipped.
+        let message = Executor::validate_preconditions(
+            &Action::new("test", serde_json::json!({})),
+            &contract,
+            None,
+        )
+        .expect_err("preconditions without state must be reported");
+        assert!(
+            message.contains("precondition"),
+            "the error must name the missing preconditions: {message}"
+        );
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                action_executor,
+                None,
+            )
             .await
             .unwrap();
 
         assert_eq!(result, VerificationResult::Failed);
         assert_eq!(receipt.attempts, 1);
-        assert!(
-            !dispatches.load(Ordering::SeqCst),
-            "a rejected action must never be dispatched"
+        assert_eq!(
+            dispatches.load(Ordering::SeqCst),
+            0,
+            "an unchecked precondition must block dispatch"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_observation_error_fails_closed_without_dispatching() {
+        let (action_executor, dispatches) = CountingDispatch::new();
+        let executor = observing_executor(1_000);
+        let contract = Contract::new("test")
+            .with_precondition(Predicate::exists("gate"), "gate must be open")
+            .with_postcondition(Predicate::exists("result"), "result exists");
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                action_executor,
+                Some(Arc::new(UnavailableObserver)),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            VerificationResult::Failed,
+            "an unobservable precondition is treated as unsatisfied"
+        );
+        assert_eq!(receipt.attempts, 1);
+        assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn pre_observation_timeout_fails_closed_without_dispatching() {
+        let (action_executor, dispatches) = CountingDispatch::new();
+        let executor = observing_executor(40);
+        let contract = Contract::new("test")
+            .with_precondition(Predicate::exists("gate"), "gate must be open")
+            .with_postcondition(Predicate::exists("result"), "result exists");
+
+        let (result, receipt) = executor
+            .execute_with_executor(
+                Action::new("test", serde_json::json!({})),
+                contract,
+                action_executor,
+                Some(Arc::new(SlowObserver {
+                    delay: Duration::from_millis(250),
+                })),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Failed);
+        assert_eq!(receipt.attempts, 1);
+        assert_eq!(
+            dispatches.load(Ordering::SeqCst),
+            0,
+            "a precondition that cannot be observed in time must block dispatch"
         );
     }
 

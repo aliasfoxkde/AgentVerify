@@ -838,7 +838,12 @@ mod tests {
         // Invalid regex produces an EngineError::RegexError at evaluation time
         let result =
             PredicateEngine::default().evaluate(&predicate, &state, &serde_json::json!({}));
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().starts_with("Regex error: "));
+        assert!(matches!(
+            err,
+            EngineError::RegexError(regex::Error::Syntax(_))
+        ));
     }
 
     #[test]
@@ -1225,6 +1230,328 @@ mod tests {
             .evaluate(&predicate, &state, &serde_json::json!({}))
             .unwrap();
         assert_eq!(result, VerificationResult::Failed);
+    }
+
+    // === Remaining comparison and length operators ===
+
+    #[test]
+    fn count_not_equals() {
+        let state = serde_json::json!({"items": [1, 2, 3]});
+        let predicate = Predicate::count("items", CountOperator::Ne, 4);
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Verified);
+    }
+
+    #[test]
+    fn count_not_equals_failure() {
+        let state = serde_json::json!({"items": [1, 2, 3]});
+        let predicate = Predicate::count("items", CountOperator::Ne, 3);
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    #[test]
+    fn count_less_than() {
+        let state = serde_json::json!({"items": [1, 2]});
+        let predicate = Predicate::count("items", CountOperator::Lt, 3);
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Verified);
+    }
+
+    #[test]
+    fn count_less_than_failure_at_boundary() {
+        let state = serde_json::json!({"items": [1, 2, 3]});
+        let predicate = Predicate::count("items", CountOperator::Lt, 3);
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    #[test]
+    fn count_less_or_equal() {
+        let state = serde_json::json!({"items": [1, 2, 3]});
+        let predicate = Predicate::count("items", CountOperator::Le, 3);
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Verified);
+    }
+
+    #[test]
+    fn count_greater_or_equal() {
+        let state = serde_json::json!({"items": [1, 2, 3]});
+        let predicate = Predicate::count("items", CountOperator::Ge, 3);
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Verified);
+    }
+
+    #[test]
+    fn count_greater_than_failure_at_boundary() {
+        let state = serde_json::json!({"items": [1, 2, 3]});
+        let predicate = Predicate::count("items", CountOperator::Gt, 3);
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    // === String ordering comparisons ===
+
+    #[test]
+    fn greater_than_string_success() {
+        let state = serde_json::json!({"version": "2.0"});
+        let predicate = Predicate::greater_than("version", serde_json::json!("1.0"));
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Verified);
+    }
+
+    #[test]
+    fn greater_than_string_equal_is_failed() {
+        let state = serde_json::json!({"version": "1.0"});
+        let predicate = Predicate::greater_than("version", serde_json::json!("1.0"));
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    #[test]
+    fn less_than_string_success() {
+        let state = serde_json::json!({"version": "1.0"});
+        let predicate = Predicate::less_than("version", serde_json::json!("2.0"));
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Verified);
+    }
+
+    #[test]
+    fn less_than_string_equal_is_failed() {
+        let state = serde_json::json!({"version": "1.0"});
+        let predicate = Predicate::less_than("version", serde_json::json!("1.0"));
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    #[test]
+    fn greater_than_missing_path_is_failed() {
+        let state = serde_json::json!({"other": "1.0"});
+        let predicate = Predicate::greater_than("version", serde_json::json!("1.0"));
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    #[test]
+    fn less_than_missing_path_is_failed() {
+        let state = serde_json::json!({"other": "1.0"});
+        let predicate = Predicate::less_than("version", serde_json::json!("1.0"));
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    // === Emptiness on objects and strings ===
+
+    #[test]
+    fn is_empty_object() {
+        let state = serde_json::json!({"config": {}});
+        let predicate = Predicate::is_empty("config");
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Verified);
+    }
+
+    #[test]
+    fn is_empty_object_with_keys_is_failed() {
+        let state = serde_json::json!({"config": {"host": "localhost"}});
+        let predicate = Predicate::is_empty("config");
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    #[test]
+    fn is_empty_string() {
+        let state = serde_json::json!({"name": ""});
+        let predicate = Predicate::is_empty("name");
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Verified);
+    }
+
+    #[test]
+    fn is_empty_non_empty_string_is_failed() {
+        let state = serde_json::json!({"name": "abc"});
+        let predicate = Predicate::is_empty("name");
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    #[test]
+    fn is_not_empty_object() {
+        let state = serde_json::json!({"config": {"host": "localhost"}});
+        let predicate = Predicate::is_not_empty("config");
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Verified);
+    }
+
+    #[test]
+    fn is_not_empty_string() {
+        let state = serde_json::json!({"name": "abc"});
+        let predicate = Predicate::is_not_empty("name");
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Verified);
+    }
+
+    #[test]
+    fn is_not_empty_empty_object_is_failed() {
+        let state = serde_json::json!({"config": {}});
+        let predicate = Predicate::is_not_empty("config");
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    #[test]
+    fn is_not_empty_missing_path_is_failed() {
+        let state = serde_json::json!({});
+        let predicate = Predicate::is_not_empty("missing");
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        // A missing path counts as empty, so IsNotEmpty must fail.
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    // === Contains against objects ===
+
+    #[test]
+    fn contains_in_object_without_match_is_failed() {
+        let state = serde_json::json!({"config": {"host": "localhost", "port": 5432}});
+        let predicate = Predicate::contains("config", serde_json::json!("example.org"));
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    #[test]
+    fn contains_in_object_matches_numeric_field_rendering() {
+        let state = serde_json::json!({"config": {"port": 5432}});
+        let predicate = Predicate::contains("config", serde_json::json!("5432"));
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Verified);
+    }
+
+    #[test]
+    fn contains_with_non_string_value_against_object_is_failed() {
+        // `Contains` serialises the object and searches for a string needle;
+        // a non-string needle cannot be searched for.
+        let state = serde_json::json!({"config": {"port": 5432}});
+        let predicate = Predicate::contains("config", serde_json::json!(5432));
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    // === Regex cache reuse ===
+
+    #[test]
+    fn matches_reuses_the_compiled_regex_across_evaluations() {
+        let engine = PredicateEngine::new();
+        let predicate = Predicate::matches("email", r"^[^@]+@[^@]+\.[^@]+$");
+
+        // The first evaluation compiles and caches the pattern, the second
+        // reuses it, so both must agree.
+        for state in [
+            serde_json::json!({"email": "test@example.com"}),
+            serde_json::json!({"email": "test@example.com"}),
+        ] {
+            let result = engine
+                .evaluate(&predicate, &state, &serde_json::json!({}))
+                .unwrap();
+            assert_eq!(result, VerificationResult::Verified);
+        }
+
+        // The cached pattern is matched for its exact source only; a different
+        // pattern compiles separately.
+        let other = Predicate::matches("email", r"^\d+$");
+        let result = engine
+            .evaluate(
+                &other,
+                &serde_json::json!({"email": "abc"}),
+                &serde_json::json!({}),
+            )
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+
+        let result = engine
+            .evaluate(
+                &other,
+                &serde_json::json!({"email": "123"}),
+                &serde_json::json!({}),
+            )
+            .unwrap();
+        assert_eq!(result, VerificationResult::Verified);
+    }
+
+    #[test]
+    fn matches_on_missing_path_is_failed() {
+        let state = serde_json::json!({});
+        let predicate = Predicate::matches("missing", r".+");
+        let result = PredicateEngine::default()
+            .evaluate(&predicate, &state, &serde_json::json!({}))
+            .unwrap();
+        assert_eq!(result, VerificationResult::Failed);
+    }
+
+    // === Error display ===
+
+    #[test]
+    fn engine_error_display_covers_variants() {
+        assert_eq!(
+            EngineError::InvalidPath("a.b[.".to_string()).to_string(),
+            "Invalid path: a.b[."
+        );
+        assert_eq!(
+            EngineError::TypeMismatch("expected string".to_string()).to_string(),
+            "Type mismatch: expected string"
+        );
+        assert_eq!(
+            EngineError::EvaluationFailed("overflow".to_string()).to_string(),
+            "Evaluation failed: overflow"
+        );
+        let regex_error: EngineError = regex::Error::Syntax("bad".to_string()).into();
+        assert_eq!(regex_error.to_string(), "Regex error: bad");
     }
 }
 
