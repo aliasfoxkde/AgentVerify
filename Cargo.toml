@@ -60,7 +60,12 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 tokio = { version = "1.0", features = ["time", "sync", "rt", "macros"] }
 
 # Web
-reqwest = { version = "0.12", features = ["json"] }
+# rustls-tls keeps the build free of a system OpenSSL dependency, which the
+# musl and cross-compiled release targets cannot provide.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+] }
 axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
