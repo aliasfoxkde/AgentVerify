@@ -1,10 +1,13 @@
 [package]
 name = "agentverify-contract"
+description = "JSON/YAML verification contract parsing and validation for AgentVerify"
+keywords = ["verification", "agents", "postconditions", "idempotency", "reliability"]
+categories = ["development-tools", "development-tools::testing", "asynchronous"]
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
@@ -12,3 +15,6 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

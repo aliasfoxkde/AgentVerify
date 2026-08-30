@@ -1,8 +1,8 @@
 //! Benchmark tests for AgentVerify predicate engine
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
-use agentverify_engine::PredicateEngine;
 use agentverify_core::Predicate;
+use agentverify_engine::PredicateEngine;
+use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
 
 pub fn predicate_equals_benchmark(c: &mut Criterion) {
     let engine = PredicateEngine::default();

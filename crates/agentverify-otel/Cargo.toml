@@ -1,18 +1,21 @@
 [package]
 name = "agentverify-otel"
+description = "OpenTelemetry (OTLP) export of AgentVerify verification traces"
+keywords = ["verification", "agents", "postconditions", "idempotency", "reliability"]
+categories = ["development-tools", "development-tools::testing", "asynchronous"]
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
 
 # OpenTelemetry
 opentelemetry = { workspace = true }
-opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
-opentelemetry-otlp = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 
 # Tracing integration
 tracing = { workspace = true }
@@ -25,8 +28,8 @@ tokio = { version = "1.0", features = ["rt-multi-thread", "macros"] }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 
-# Prost for OTLP gRPC (required by opentelemetry-otlp)
-prost = "0.12"
-
 [dev-dependencies]
 tokio-test = "0.4"
+
+[package.metadata.docs.rs]
+all-features = true

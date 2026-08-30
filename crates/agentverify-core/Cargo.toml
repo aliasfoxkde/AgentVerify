@@ -1,10 +1,13 @@
 [package]
 name = "agentverify-core"
+description = "Core types for outcome verification: Action, Contract, Predicate, Receipt, and the verification state machine"
+keywords = ["verification", "agents", "postconditions", "idempotency", "reliability"]
+categories = ["development-tools", "development-tools::testing", "asynchronous"]
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 serde.workspace = true
@@ -30,3 +33,6 @@ tempfile.workspace = true
 [features]
 default = []
 std = []
+
+[package.metadata.docs.rs]
+all-features = true
