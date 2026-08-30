@@ -1,10 +1,13 @@
 [package]
 name = "agentverify-storage"
+description = "Storage adapters for receipts, idempotency keys, and contracts"
+keywords = ["verification", "agents", "postconditions", "idempotency", "reliability"]
+categories = ["development-tools", "development-tools::testing", "asynchronous"]
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
@@ -17,3 +20,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[package.metadata.docs.rs]
+all-features = true

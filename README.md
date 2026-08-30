@@ -224,4 +224,4 @@ let exporter = OtlpExporter::new(config)?;
 
 ## License
 
-Apache 2.0
+Licensed under the [MIT License](LICENSE).

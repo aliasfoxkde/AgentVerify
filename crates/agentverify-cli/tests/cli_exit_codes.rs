@@ -55,30 +55,42 @@ fn init_command_success() {
 
 /// Test serve command can start and respond to health check.
 ///
-/// Note: serve is a long-running server, so we test that it starts
-/// and can respond to requests within a timeout.
+/// Note: serve is a long-running server, so we poll the port with retries
+/// instead of relying on a fixed sleep, which is flaky on slow runners.
 #[test]
 fn serve_command_starts_and_responds() {
-    use std::net::TcpStream;
-    use std::time::Duration;
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::{Duration, Instant};
+
+    let addr: SocketAddr = "127.0.0.1:12346".parse().expect("valid socket address");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_agentverify"))
         .args(["serve", "--port", "12346"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .expect("Failed to spawn serve command");
 
-    // Give server time to start
-    std::thread::sleep(Duration::from_millis(500));
-
-    // Try to connect to health endpoint
-    let result = TcpStream::connect("127.0.0.1:12346");
+    // Poll until the server accepts connections (up to 10s).
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut connected = false;
+    while Instant::now() < deadline {
+        // If the server process died, fail fast with its status.
+        if let Some(status) = child.try_wait().expect("poll serve process") {
+            panic!("serve exited early with status: {status}");
+        }
+        if TcpStream::connect(addr).is_ok() {
+            connected = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     // Clean up: kill the server
     let _ = child.kill();
     let _ = child.wait();
 
-    // Server should be listening
-    assert!(result.is_ok(), "serve should start and listen on port");
+    assert!(connected, "serve should start and listen on port");
 }
 
 /// Test help command returns 0.

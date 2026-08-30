@@ -1,10 +1,13 @@
 [package]
 name = "agentverify-mcp"
+description = "Model Context Protocol (MCP) client integration for AgentVerify"
+keywords = ["verification", "agents", "postconditions", "idempotency", "reliability"]
+categories = ["development-tools", "development-tools::testing", "asynchronous"]
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 # Core
@@ -19,3 +22,6 @@ tokio = { version = "1.0", features = ["process", "io-util", "rt-multi-thread", 
 
 [dev-dependencies]
 tokio-test = "0.4"
+
+[package.metadata.docs.rs]
+all-features = true

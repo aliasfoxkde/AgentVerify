@@ -1,10 +1,13 @@
 [package]
 name = "agentverify-testkit"
+description = "Testing utilities, fixtures, and conformance harness for AgentVerify adapters"
+keywords = ["verification", "agents", "postconditions", "idempotency", "reliability"]
+categories = ["development-tools", "development-tools::testing", "asynchronous"]
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
@@ -12,3 +15,6 @@ agentverify-runtime = { path = "../agentverify-runtime" }
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }
+
+[package.metadata.docs.rs]
+all-features = true
