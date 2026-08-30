@@ -30,7 +30,9 @@ action-taking AI agents, under the MIT license.
   in-memory and file-backed receipt stores, and receipts carrying
   per-postcondition evidence with SHA-256 digest binding.
 - **Observers** (`agentverify-observe`): PostgreSQL and Redis observers;
-  REST observer and HTTP gateway (`agentverify-http`).
+  REST observer and HTTP gateway (`agentverify-http`). HTTP egress uses
+  rustls rather than the system TLS library, so the CLI and libraries build
+  and run without OpenSSL.
 - **Receipt signing** (`agentverify-receipt`): Ed25519 signing support.
 - **Policy engine** (`agentverify-policy`): action allow/block lists,
   pattern matching, access levels, per-action and per-idempotency-key rate
