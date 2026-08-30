@@ -21,8 +21,10 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["AgentVerify Team"]
-license = "MIT OR Apache-2.0"
+authors = ["Michael Kinney <aliasfoxkde@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/aliasfoxkde/AgentVerify"
+homepage = "https://github.com/aliasfoxkde/AgentVerify"
 rust-version = "1.75"
 
 [workspace.dependencies]
@@ -51,9 +53,9 @@ deadpool-redis = "0.14"
 # Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-opentelemetry = "0.22"
-opentelemetry_sdk = { version = "0.22", features = ["rt-tokio"] }
-opentelemetry-otlp = "0.15"
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
+opentelemetry-otlp = "0.32"
 prometheus = "0.13"
 
 # Validation

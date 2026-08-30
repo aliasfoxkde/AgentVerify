@@ -1,10 +1,13 @@
 [package]
 name = "agentverify-cli"
+description = "Command-line interface for AgentVerify contract validation and verification"
+keywords = ["verification", "agents", "postconditions", "idempotency", "reliability"]
+categories = ["development-tools", "development-tools::testing", "asynchronous"]
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 # CLI binary only on non-WASM
 [[bin]]
@@ -29,3 +32,6 @@ tower = { workspace = true }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

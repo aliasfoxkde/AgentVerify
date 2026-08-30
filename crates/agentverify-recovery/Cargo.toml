@@ -1,10 +1,13 @@
 [package]
 name = "agentverify-recovery"
+description = "Recovery strategies (retry, compensate, escalate) for failed verifications"
+keywords = ["verification", "agents", "postconditions", "idempotency", "reliability"]
+categories = ["development-tools", "development-tools::testing", "asynchronous"]
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
@@ -17,3 +20,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 tokio-test.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
