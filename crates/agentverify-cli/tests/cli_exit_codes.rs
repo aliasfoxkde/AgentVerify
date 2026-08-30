@@ -59,8 +59,8 @@ fn init_command_success() {
 /// and can respond to requests within a timeout.
 #[test]
 fn serve_command_starts_and_responds() {
-    use std::time::Duration;
     use std::net::TcpStream;
+    use std::time::Duration;
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_agentverify"))
         .args(["serve", "--port", "12346"])

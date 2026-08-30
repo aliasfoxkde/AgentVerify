@@ -74,19 +74,13 @@ impl MockIdempotencyStore {
         key: impl Into<String>,
         result: (ClaimResult, Option<VerificationResult>),
     ) {
-        self.results
-            .lock()
-            .unwrap()
-            .insert(key.into(), result);
+        self.results.lock().unwrap().insert(key.into(), result);
     }
 
     /// Set the default result for any unconfigured key
     ///
     /// If no specific key result is configured, this default is returned.
-    pub fn set_default_result(
-        &mut self,
-        result: (ClaimResult, Option<VerificationResult>),
-    ) {
+    pub fn set_default_result(&mut self, result: (ClaimResult, Option<VerificationResult>)) {
         *self.default_result.lock().unwrap() = Some(result);
     }
 
@@ -154,8 +148,7 @@ impl IdempotencyStore for MockIdempotencyStore {
     fn claim_or_check<'a>(
         &'a self,
         key: &'a str,
-    ) -> Pin<Box<dyn Future<Output = (ClaimResult, Option<VerificationResult>)> + Send + 'a>>
-    {
+    ) -> Pin<Box<dyn Future<Output = (ClaimResult, Option<VerificationResult>)> + Send + 'a>> {
         let results = Arc::clone(&self.results);
         let default_result = Arc::clone(&self.default_result);
         let return_already_claimed = Arc::clone(&self.return_already_claimed);
@@ -237,8 +230,12 @@ mod tests {
     async fn mock_idempotency_store_records_complete_calls() {
         let store = MockIdempotencyStore::new();
 
-        store.complete("key1".to_string(), VerificationResult::Verified).await;
-        store.complete("key2".to_string(), VerificationResult::Failed).await;
+        store
+            .complete("key1".to_string(), VerificationResult::Verified)
+            .await;
+        store
+            .complete("key2".to_string(), VerificationResult::Failed)
+            .await;
 
         assert_eq!(store.complete_call_count(), 2);
         assert_eq!(
@@ -266,7 +263,10 @@ mod tests {
         let mut store = MockIdempotencyStore::new();
         store.set_result(
             "test-key",
-            (ClaimResult::AlreadyClaimed, Some(VerificationResult::Verified)),
+            (
+                ClaimResult::AlreadyClaimed,
+                Some(VerificationResult::Verified),
+            ),
         );
 
         let (result, verification) = store.claim_or_check("test-key").await;
@@ -291,7 +291,9 @@ mod tests {
         let store = MockIdempotencyStore::new();
 
         store.claim_or_check("key1").await;
-        store.complete("key1".to_string(), VerificationResult::Verified).await;
+        store
+            .complete("key1".to_string(), VerificationResult::Verified)
+            .await;
         store.release("key1").await;
 
         assert_eq!(store.claim_or_check_call_count(), 1);
@@ -308,7 +310,13 @@ mod tests {
     #[tokio::test]
     async fn mock_idempotency_store_reset_all_clears_everything() {
         let mut store = MockIdempotencyStore::new();
-        store.set_result("key1", (ClaimResult::AlreadyClaimed, Some(VerificationResult::Verified)));
+        store.set_result(
+            "key1",
+            (
+                ClaimResult::AlreadyClaimed,
+                Some(VerificationResult::Verified),
+            ),
+        );
         store.set_default_result((ClaimResult::Claimed, None));
 
         store.claim_or_check("key1").await;

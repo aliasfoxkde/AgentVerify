@@ -22,6 +22,6 @@ mod client;
 mod protocol;
 mod transport;
 
-pub use client::{McpClient, McpClientError, McpClientConfig};
+pub use client::{McpClient, McpClientConfig, McpClientError};
 pub use protocol::*;
-pub use transport::{StdioTransport, ChannelTransport};
+pub use transport::{ChannelTransport, StdioTransport};

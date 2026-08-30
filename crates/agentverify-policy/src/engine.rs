@@ -72,9 +72,7 @@ impl PolicyEngine {
     ) -> PolicyDecision {
         // Check if policy is enabled
         if !policy.is_enabled() {
-            return PolicyDecision::Denied(PolicyViolation::ActionNotAllowed(
-                action.name.clone(),
-            ));
+            return PolicyDecision::Denied(PolicyViolation::ActionNotAllowed(action.name.clone()));
         }
 
         // Check action name is not empty
@@ -89,9 +87,7 @@ impl PolicyEngine {
 
         // Check if action matches allowed patterns
         if !policy.is_action_allowed(&action.name) {
-            return PolicyDecision::Denied(PolicyViolation::ActionNotAllowed(
-                action.name.clone(),
-            ));
+            return PolicyDecision::Denied(PolicyViolation::ActionNotAllowed(action.name.clone()));
         }
 
         // Check access level requirements
@@ -163,8 +159,7 @@ impl PolicyEngine {
         // We use interior mutability for the tracker
         // This is a design compromise to allow evaluation without &mut self
         let tracker = &self.rate_limit_tracker;
-        let mut_tracker =
-            (tracker as *const RateLimitTracker) as *mut RateLimitTracker;
+        let mut_tracker = (tracker as *const RateLimitTracker) as *mut RateLimitTracker;
         unsafe { (*mut_tracker).check_rate_limit(action_name, limit) }
     }
 
@@ -177,8 +172,7 @@ impl PolicyEngine {
     ) -> bool {
         let tracker = &self.idempotency_tracker;
         let mut_tracker =
-            (tracker as *const IdempotencyRateLimitTracker)
-                as *mut IdempotencyRateLimitTracker;
+            (tracker as *const IdempotencyRateLimitTracker) as *mut IdempotencyRateLimitTracker;
         unsafe { (*mut_tracker).check_rate_limit(key, action_name, limit) }
     }
 
@@ -267,8 +261,7 @@ mod tests {
     #[test]
     fn test_engine_blocks_blocked_actions() {
         let engine = create_test_engine();
-        let policy = Policy::new("block_test")
-            .block_action_name("dangerous");
+        let policy = Policy::new("block_test").block_action_name("dangerous");
         let action = Action::new("dangerous", json!({}));
 
         assert!(matches!(
@@ -318,11 +311,10 @@ mod tests {
             .require_contract_for_action("transfer");
 
         let action = Action::new("transfer", json!({}));
-        let valid_contract = Contract::new("transfer")
-            .with_postcondition(
-                agentverify_core::Predicate::equals("status", "completed"),
-                "transfer completed",
-            );
+        let valid_contract = Contract::new("transfer").with_postcondition(
+            agentverify_core::Predicate::equals("status", "completed"),
+            "transfer completed",
+        );
 
         assert!(matches!(
             engine.evaluate(&policy, &action, Some(&valid_contract)),
@@ -379,8 +371,7 @@ mod tests {
     #[test]
     fn test_engine_disabled_policy_denies() {
         let engine = create_test_engine();
-        let mut policy = Policy::new("disabled_policy")
-            .allow_action_name("any_action");
+        let mut policy = Policy::new("disabled_policy").allow_action_name("any_action");
         policy.enabled = false;
 
         let action = Action::new("any_action", json!({}));
