@@ -1,6 +1,6 @@
 //! Receipt store re-exports from agentverify-core
 //!
-//! The ReceiptStore trait, InMemoryReceiptStore, and FileReceiptStore are defined
+//! The `ReceiptStore` trait, `InMemoryReceiptStore`, and `FileReceiptStore` are defined
 //! in agentverify-core.
 
 #[cfg(not(target_arch = "wasm32"))]

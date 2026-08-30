@@ -14,6 +14,7 @@ agentverify-core = { path = "../agentverify-core" }
 agentverify-contract = { path = "../agentverify-contract" }
 agentverify-engine = { path = "../agentverify-engine" }
 thiserror.workspace = true
+tracing.workspace = true
 anyhow.workspace = true
 async-trait = "0.1"
 serde.workspace = true
@@ -40,3 +41,6 @@ redis = ["dep:deadpool-redis", "dep:redis"]
 
 [package.metadata.docs.rs]
 all-features = true
+
+[lints]
+workspace = true

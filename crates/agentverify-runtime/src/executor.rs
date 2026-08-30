@@ -18,24 +18,37 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio::time::timeout as tokio_timeout;
 
+/// Errors raised while executing and verifying an action
 #[derive(Debug, Error)]
 pub enum ExecutorError {
+    /// No contract was registered for the action name
     #[error("Contract not found for action: {0}")]
     ContractNotFound(String),
+    /// A precondition evaluated to a non-verified result
     #[error("Precondition failed: {0}")]
     PreconditionFailed(String),
+    /// Dispatching or executing the action failed
     #[error("Execution failed: {0}")]
     ExecutionFailed(String),
+    /// A postcondition could not be evaluated
     #[error("Verification failed: {0}")]
     VerificationFailed(String),
+    /// An operation exceeded its allotted time
     #[error("Timeout: {0}")]
     Timeout(String),
+    /// The outcome could not be determined
     #[error("Unknown result: {0}")]
     Unknown(String),
+    /// The idempotency key was already claimed and completed elsewhere
     #[error("Idempotency conflict: action already executed")]
     IdempotencyConflict,
+    /// All retry attempts were consumed without a verified outcome
     #[error("Retry exhausted after {attempts} attempts")]
-    RetryExhausted { attempts: u32 },
+    RetryExhausted {
+        /// Number of attempts made before giving up
+        attempts: u32,
+    },
+    /// The action executor adapter reported an error
     #[error("Action executor error: {0}")]
     ActionExecutor(String),
 }
@@ -84,14 +97,14 @@ pub enum ClaimResult {
 /// Idempotency store trait for tracking executed actions
 ///
 /// Implement this trait to provide custom idempotency storage:
-/// - In-memory for tests (IdempotencyRegistry)
+/// - In-memory for tests (`IdempotencyRegistry`)
 /// - Redis for distributed systems (atomic SETNX + GET)
-/// - PostgreSQL for durable storage (ON CONFLICT DO UPDATE)
+/// - `PostgreSQL` for durable storage (ON CONFLICT DO UPDATE)
 ///
 /// # Atomic semantics
 /// The `claim_or_check` operation is atomic: it prevents two concurrent
 /// requests from both dispatching the same action. Only the first to call
-/// claim_or_check will receive `Claimed`; all others get `AlreadyClaimed`
+/// `claim_or_check` will receive `Claimed`; all others get `AlreadyClaimed`
 /// with the in-flight or completed result.
 ///
 /// # Key lifecycle
@@ -140,7 +153,7 @@ pub trait IdempotencyStore: Send + Sync {
 /// - No TTL: entries live until process exits
 /// - No graceful expiry: entries accumulate until process exit
 ///
-/// For production, use a distributed store (Redis, PostgreSQL) implementing IdempotencyStore.
+/// For production, use a distributed store (Redis, `PostgreSQL`) implementing `IdempotencyStore`.
 pub struct IdempotencyRegistry {
     entries: Mutex<HashMap<String, EntryState>>,
 }
@@ -155,6 +168,8 @@ enum EntryState {
 }
 
 impl IdempotencyRegistry {
+    /// Create an empty registry
+    #[must_use]
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
@@ -223,6 +238,7 @@ pub struct Executor {
 
 impl Executor {
     /// Create a new executor with default configuration
+    #[must_use]
     pub fn new() -> Self {
         Self::with_config(ExecutorConfig::default())
     }
@@ -237,6 +253,7 @@ impl Executor {
     }
 
     /// Create a new executor with custom configuration (uses in-memory store)
+    #[must_use]
     pub fn with_config(config: ExecutorConfig) -> Self {
         Self {
             config,
@@ -268,9 +285,18 @@ impl Executor {
     }
 
     /// Store a receipt in the attached receipt store (if any)
+    ///
+    /// A persistence failure is logged and does not abort verification: the
+    /// outcome was already determined, but the evidence gap is observable.
     async fn store_receipt(&self, receipt: &Receipt) {
         if let Some(store) = &self.receipt_store {
-            let _ = store.store(receipt).await;
+            if let Err(e) = store.store(receipt).await {
+                tracing::warn!(
+                    receipt_id = %receipt.id,
+                    error = %e,
+                    "failed to persist verification receipt"
+                );
+            }
         }
     }
 
@@ -278,21 +304,30 @@ impl Executor {
     ///
     /// Uses the recovery config's backoff settings if available,
     /// otherwise falls back to the executor config's default values.
+    // Backoff arithmetic intentionally mixes integer millisecond durations with
+    // floating-point multipliers; values are small and the result is clamped, so
+    // the lossy casts cannot change the resulting delay.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_wrap
+    )]
     fn calculate_backoff(
         attempt: u32,
-        recovery: &Option<RecoveryConfig>,
+        recovery: Option<&RecoveryConfig>,
         default_initial: u64,
         default_max: u64,
         default_multiplier: f64,
     ) -> u64 {
-        if let Some(ref config) = recovery {
+        if let Some(config) = recovery {
             if let Some(ref backoff) = config.backoff {
                 let initial_ms = backoff.initial.num_milliseconds() as u64;
                 let max_ms = backoff.max.num_milliseconds() as u64;
                 let multiplier = backoff.multiplier;
 
                 let delay = match backoff.backoff_type {
-                    BackoffType::Linear => initial_ms * (attempt as u64),
+                    BackoffType::Linear => initial_ms * u64::from(attempt),
                     BackoffType::Exponential => {
                         (initial_ms as f64 * multiplier.powi(attempt as i32 - 1)) as u64
                     }
@@ -307,14 +342,14 @@ impl Executor {
 
     /// Determine if we should retry based on recovery config
     ///
-    /// Returns (should_retry, max_attempts) based on the recovery config
+    /// Returns (`should_retry`, `max_attempts`) based on the recovery config
     /// and the current attempt number.
     fn should_retry(
         attempts: u32,
-        recovery: &Option<RecoveryConfig>,
+        recovery: Option<&RecoveryConfig>,
         default_max_retries: u32,
     ) -> bool {
-        if let Some(ref config) = recovery {
+        if let Some(config) = recovery {
             // NoAction strategy means no retry
             if config.strategy == RecoveryStrategy::NoAction {
                 return false;
@@ -337,6 +372,14 @@ impl Executor {
     /// 4. Observe the result state
     /// 5. Verify postconditions
     /// 6. Complete idempotency entry
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorError::PreconditionFailed`] when preconditions do not
+    /// hold, [`ExecutorError::ExecutionFailed`] when the state machine cannot
+    /// advance, and [`ExecutorError::VerificationFailed`] when postconditions
+    /// cannot be evaluated.
+    #[allow(clippy::too_many_lines)] // single linear pipeline; splitting it obscures the flow
     pub async fn execute(
         &self,
         action: Action,
@@ -352,12 +395,12 @@ impl Executor {
                 }
                 ClaimResult::AlreadyClaimed => {
                     if let Some(cached) = existing {
-                        let receipt = self.create_receipt(&action, &contract, cached, 0);
+                        let receipt = Self::create_receipt(&action, &contract, cached, 0);
                         return Ok((cached, receipt));
                     }
                     // In-flight — treat as duplicate
                     let receipt =
-                        self.create_receipt(&action, &contract, VerificationResult::Duplicate, 0);
+                        Self::create_receipt(&action, &contract, VerificationResult::Duplicate, 0);
                     return Ok((VerificationResult::Duplicate, receipt));
                 }
             }
@@ -377,10 +420,10 @@ impl Executor {
                 .advance(State::Validating)
                 .map_err(|e| ExecutorError::PreconditionFailed(e.to_string()))?;
 
-            if let Err(e) = self.validate_preconditions(&action, &contract) {
+            if let Err(e) = Self::validate_preconditions(&action, &contract) {
                 state_machine
                     .advance(State::Rejected)
-                    .map_err(|_| ExecutorError::PreconditionFailed(e.to_string()))?;
+                    .map_err(|_| ExecutorError::PreconditionFailed(e.clone()))?;
                 // Precondition failure is terminal for this action — complete with Failed
                 final_result = Some(VerificationResult::Failed);
                 break;
@@ -427,7 +470,7 @@ impl Executor {
                 .advance(State::Verifying)
                 .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
 
-            let result = self.verify_postconditions(&action, &contract, &observation)?;
+            let result = Self::verify_postconditions(&action, &contract, &observation)?;
 
             // Determine final state
             match result {
@@ -445,14 +488,14 @@ impl Executor {
                 VerificationResult::Failed => {
                     let backoff_ms = Self::calculate_backoff(
                         attempts,
-                        &contract.recovery,
+                        contract.recovery.as_ref(),
                         100,  // default_initial
                         5000, // default_max
                         2.0,  // default_multiplier
                     );
                     // Only retry on Failed if verify_before_retry is enabled AND should_retry says to
                     if self.config.verify_before_retry
-                        && Self::should_retry(attempts, &contract.recovery, self.config.max_retries)
+                        && Self::should_retry(attempts, contract.recovery.as_ref(), self.config.max_retries)
                     {
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
@@ -466,12 +509,12 @@ impl Executor {
                 VerificationResult::Unknown => {
                     let backoff_ms = Self::calculate_backoff(
                         attempts,
-                        &contract.recovery,
+                        contract.recovery.as_ref(),
                         100,  // default_initial
                         5000, // default_max
                         2.0,  // default_multiplier
                     );
-                    if Self::should_retry(attempts, &contract.recovery, self.config.max_retries) {
+                    if Self::should_retry(attempts, contract.recovery.as_ref(), self.config.max_retries) {
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
@@ -493,9 +536,9 @@ impl Executor {
         }
 
         let receipt = if let Some(obs) = final_observation {
-            self.create_receipt_with_observation(&action, &contract, result, attempts, obs)
+            Self::create_receipt_with_observation(&action, &contract, result, attempts, obs)
         } else {
-            self.create_receipt(&action, &contract, result, attempts)
+            Self::create_receipt(&action, &contract, result, attempts)
         };
 
         // Persist receipt if a store is attached
@@ -505,7 +548,7 @@ impl Executor {
     }
 
     /// Validate preconditions against current state
-    fn validate_preconditions(&self, _action: &Action, contract: &Contract) -> Result<(), String> {
+    fn validate_preconditions(_action: &Action, contract: &Contract) -> Result<(), String> {
         for precond in &contract.preconditions {
             let result = PredicateEngine::default()
                 .evaluate(
@@ -524,7 +567,6 @@ impl Executor {
 
     /// Verify postconditions against observed state
     fn verify_postconditions(
-        &self,
         action: &Action,
         contract: &Contract,
         observation: &Observation,
@@ -574,6 +616,14 @@ impl Executor {
     /// Timeouts are treated as UNKNOWN, not failure. The caller must observe
     /// state before retrying. On transport error, the claim is released so
     /// a subsequent request may retry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorError::PreconditionFailed`] when preconditions do not
+    /// hold, [`ExecutorError::ActionExecutor`] when dispatch fails, and
+    /// [`ExecutorError::VerificationFailed`] when postconditions cannot be
+    /// evaluated.
+    #[allow(clippy::too_many_lines)] // single linear pipeline; splitting it obscures the flow
     pub async fn execute_with_executor(
         &self,
         action: Action,
@@ -595,19 +645,19 @@ impl Executor {
                     // Another request is already handling this action
                     if let Some(cached) = existing {
                         // Already completed — return cached result
-                        let receipt = self.create_receipt(&action, &contract, cached, 0);
+                        let receipt = Self::create_receipt(&action, &contract, cached, 0);
                         return Ok((cached, receipt));
                     }
                     // In-flight — wait briefly and poll for completion
                     sleep(std::time::Duration::from_millis(50)).await;
                     let (_, existing) = self.idempotency.claim_or_check(&key.0).await;
                     if let Some(cached) = existing {
-                        let receipt = self.create_receipt(&action, &contract, cached, 0);
+                        let receipt = Self::create_receipt(&action, &contract, cached, 0);
                         return Ok((cached, receipt));
                     }
                     // Still in-flight after poll — treat as duplicate
                     let receipt =
-                        self.create_receipt(&action, &contract, VerificationResult::Duplicate, 0);
+                        Self::create_receipt(&action, &contract, VerificationResult::Duplicate, 0);
                     return Ok((VerificationResult::Duplicate, receipt));
                 }
             }
@@ -630,10 +680,10 @@ impl Executor {
                 .advance(State::Validating)
                 .map_err(|e| ExecutorError::PreconditionFailed(e.to_string()))?;
 
-            if let Err(e) = self.validate_preconditions(&action, &contract) {
+            if let Err(e) = Self::validate_preconditions(&action, &contract) {
                 state_machine
                     .advance(State::Rejected)
-                    .map_err(|_| ExecutorError::PreconditionFailed(e.to_string()))?;
+                    .map_err(|_| ExecutorError::PreconditionFailed(e.clone()))?;
                 final_result = Some(VerificationResult::Failed);
                 break;
             }
@@ -669,7 +719,7 @@ impl Executor {
                     if let Some(ref key) = action.idempotency_key {
                         self.idempotency.release(&key.0).await;
                     }
-                    let receipt = self.create_receipt(
+                    let receipt = Self::create_receipt(
                         &action,
                         &contract,
                         VerificationResult::Failed,
@@ -682,7 +732,7 @@ impl Executor {
                     final_result = Some(VerificationResult::Unknown);
                     break;
                 }
-            };
+            }
 
             // Observe state
             state_machine
@@ -716,7 +766,7 @@ impl Executor {
                 .advance(State::Verifying)
                 .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
 
-            let result = self.verify_postconditions(&action, &contract, &observation)?;
+            let result = Self::verify_postconditions(&action, &contract, &observation)?;
 
             // Determine final state
             match result {
@@ -734,13 +784,13 @@ impl Executor {
                 VerificationResult::Failed => {
                     let backoff_ms = Self::calculate_backoff(
                         attempts,
-                        &contract.recovery,
+                        contract.recovery.as_ref(),
                         100,  // default_initial
                         5000, // default_max
                         2.0,  // default_multiplier
                     );
                     if self.config.verify_before_retry
-                        && Self::should_retry(attempts, &contract.recovery, self.config.max_retries)
+                        && Self::should_retry(attempts, contract.recovery.as_ref(), self.config.max_retries)
                     {
                         sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
@@ -754,12 +804,12 @@ impl Executor {
                 VerificationResult::Unknown => {
                     let backoff_ms = Self::calculate_backoff(
                         attempts,
-                        &contract.recovery,
+                        contract.recovery.as_ref(),
                         100,  // default_initial
                         5000, // default_max
                         2.0,  // default_multiplier
                     );
-                    if Self::should_retry(attempts, &contract.recovery, self.config.max_retries) {
+                    if Self::should_retry(attempts, contract.recovery.as_ref(), self.config.max_retries) {
                         sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
@@ -781,9 +831,9 @@ impl Executor {
         }
 
         let receipt = if let Some(obs) = final_observation {
-            self.create_receipt_with_observation(&action, &contract, result, attempts, obs)
+            Self::create_receipt_with_observation(&action, &contract, result, attempts, obs)
         } else {
-            self.create_receipt(&action, &contract, result, attempts)
+            Self::create_receipt(&action, &contract, result, attempts)
         };
 
         // Persist receipt if a store is attached
@@ -794,7 +844,6 @@ impl Executor {
 
     /// Create a receipt for the action
     fn create_receipt(
-        &self,
         action: &Action,
         contract: &Contract,
         result: VerificationResult,
@@ -813,7 +862,6 @@ impl Executor {
 
     /// Create a receipt with observation
     fn create_receipt_with_observation(
-        &self,
         action: &Action,
         contract: &Contract,
         result: VerificationResult,
@@ -853,9 +901,6 @@ mod tests {
 
         // No observer, so observation will be empty
         let result = executor.execute(action, contract, None).await;
-        if let Err(e) = &result {
-            eprintln!("Executor error: {:?}", e);
-        }
         assert!(result.is_ok());
 
         let (verification_result, _receipt) = result.unwrap();
@@ -1268,12 +1313,12 @@ mod tests {
         // With atomic claim semantics:
         // - First request claims the key → executes dispatch → Verified
         // - Second concurrent request sees AlreadyClaimed → polls → Duplicate
-        let results = [(r1, receipt1.attempts), (r2, receipt2.attempts)];
-        let verified_count = results
+        let outcomes = [(r1, receipt1.attempts), (r2, receipt2.attempts)];
+        let verified_count = outcomes
             .iter()
             .filter(|(r, _)| *r == VerificationResult::Verified)
             .count();
-        let duplicate_count = results
+        let duplicate_count = outcomes
             .iter()
             .filter(|(r, _)| *r == VerificationResult::Duplicate)
             .count();
@@ -1468,8 +1513,7 @@ mod tests {
         // Should be Duplicate (already claimed) or Verified (cached)
         assert!(
             r2 == VerificationResult::Duplicate || r2 == VerificationResult::Verified,
-            "Expected Duplicate or Verified, got {:?}",
-            r2
+            "Expected Duplicate or Verified, got {r2:?}"
         );
         // Second execution should not have dispatched (attempts should be 0)
         assert_eq!(receipt2.attempts, 0);

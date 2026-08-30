@@ -22,26 +22,34 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
 
+/// Errors produced while submitting receipts to Control Center
 #[derive(Debug, Error)]
 pub enum ControlCenterClientError {
+    /// Underlying HTTP transport failed
     #[error("HTTP request failed: {0}")]
     HttpError(#[from] reqwest::Error),
 
+    /// Configured or constructed URL is not usable
     #[error("Invalid URL: {0}")]
     InvalidUrl(String),
 
+    /// Request or response body could not be serialized or parsed
     #[error("Response parse error: {0}")]
     ParseError(String),
 
+    /// Request exceeded the configured timeout
     #[error("Request timeout after {0}ms")]
     Timeout(u64),
 
+    /// Server accepted the request but refused the receipt
     #[error("Server rejected receipt: {0}")]
     Rejected(String),
 
+    /// Credentials missing or invalid
     #[error("Unauthorized - check credentials")]
     Unauthorized,
 
+    /// Credentials valid but lacking permission for this resource
     #[error("Forbidden - not authorized for this resource")]
     Forbidden,
 }
@@ -62,7 +70,7 @@ pub struct ControlCenterClientConfig {
 }
 
 impl ControlCenterClientConfig {
-    /// Create a new config with required base_url
+    /// Create a new config with required `base_url`
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
@@ -74,18 +82,21 @@ impl ControlCenterClientConfig {
     }
 
     /// Set the bearer token
+    #[must_use]
     pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
         self.bearer_token = Some(token.into());
         self
     }
 
     /// Set the timeout
+    #[must_use]
     pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = timeout_ms;
         self
     }
 
     /// Add a field to redact
+    #[must_use]
     pub fn with_redact_field(mut self, field: impl Into<String>) -> Self {
         self.redact_fields.push(field.into());
         self
@@ -118,6 +129,10 @@ pub struct ControlCenterClient {
 
 impl ControlCenterClient {
     /// Create a new client with the given configuration
+    ///
+    /// # Errors
+    /// Returns [`ControlCenterClientError::HttpError`] if the underlying HTTP
+    /// client cannot be built from the configured timeout.
     pub fn new(config: ControlCenterClientConfig) -> Result<Self, ControlCenterClientError> {
         let http_client = Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
@@ -138,6 +153,14 @@ impl ControlCenterClient {
     /// This method implements timeout-to-UNKNOWN semantics: timeouts return
     /// a successful response with `accepted: false` rather than propagating
     /// an error.
+    ///
+    /// # Errors
+    /// Returns [`ControlCenterClientError::HttpError`] on transport failure,
+    /// [`ControlCenterClientError::Timeout`] when the request exceeds the
+    /// configured timeout, [`ControlCenterClientError::Unauthorized`] and
+    /// [`ControlCenterClientError::Forbidden`] on auth rejection, and
+    /// [`ControlCenterClientError::ParseError`] when the receipt or the
+    /// response body cannot be serialized or parsed.
     pub async fn submit_receipt(
         &self,
         receipt: &Receipt,
@@ -190,17 +213,22 @@ impl ControlCenterClient {
 
         // Parse response
         let body = response.text().await.map_err(|e| {
-            ControlCenterClientError::ParseError(format!("failed to read response: {}", e))
+            ControlCenterClientError::ParseError(format!("failed to read response: {e}"))
         })?;
 
         serde_json::from_str(&body).map_err(|e| {
-            ControlCenterClientError::ParseError(format!("failed to parse response: {}", e))
+            ControlCenterClientError::ParseError(format!("failed to parse response: {e}"))
         })
     }
 
     /// Submit a receipt, returning UNKNOWN on timeout instead of error
     ///
     /// This is the preferred method as it implements correct UNKNOWN semantics.
+    ///
+    /// # Errors
+    /// Propagates the same errors as [`Self::submit_receipt`], except
+    /// [`ControlCenterClientError::Timeout`], which is converted into a
+    /// non-accepted response.
     pub async fn submit_receipt_with_unknown_on_timeout(
         &self,
         receipt: &Receipt,
@@ -225,13 +253,13 @@ impl ControlCenterClient {
 
         // Apply redactions
         for field in &self.config.redact_fields {
-            self.redact_field(&mut value, field);
+            Self::redact_field(&mut value, field);
         }
 
         value
     }
 
-    fn redact_field(&self, value: &mut serde_json::Value, path: &str) {
+    fn redact_field(value: &mut serde_json::Value, path: &str) {
         // Simple field redaction - just set to [REDACTED]
         if let serde_json::Value::Object(map) = value {
             for (key, val) in map.iter_mut() {
@@ -239,14 +267,14 @@ impl ControlCenterClient {
                     *val = serde_json::Value::String("[REDACTED]".to_string());
                 }
                 if let serde_json::Value::Object(_) = val {
-                    self.redact_field(val, path);
+                    Self::redact_field(val, path);
                 }
             }
         }
     }
 }
 
-/// Builder for creating a ControlCenterClient
+/// Builder for creating a `ControlCenterClient`
 #[derive(Debug, Default)]
 pub struct ControlCenterClientBuilder {
     config: ControlCenterClientConfig,

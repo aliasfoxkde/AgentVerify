@@ -3,7 +3,7 @@
 //! Deterministic predicate evaluation for verification conditions.
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{PoisonError, RwLock};
 
 use agentverify_core::{CountOperator, Predicate, VerificationResult};
 use regex::Regex;
@@ -34,7 +34,8 @@ impl Default for PredicateEngine {
 }
 
 impl PredicateEngine {
-    /// Create a new PredicateEngine with an empty regex cache
+    /// Create a new `PredicateEngine` with an empty regex cache
+    #[must_use]
     pub fn new() -> Self {
         Self {
             regex_cache: RwLock::new(HashMap::new()),
@@ -42,6 +43,11 @@ impl PredicateEngine {
     }
 
     /// Evaluate a predicate against observed state
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::RegexError`] when a `Matches` predicate carries a
+    /// regular expression that fails to compile.
     pub fn evaluate(
         &self,
         predicate: &Predicate,
@@ -49,23 +55,25 @@ impl PredicateEngine {
         args: &Value,
     ) -> Result<VerificationResult, EngineError> {
         match predicate {
-            Predicate::Exists { path } => Self::eval_exists(state, path),
-            Predicate::NotExists { path } => Self::eval_not_exists(state, path),
-            Predicate::Equals { path, value } => Self::eval_equals(state, path, value, args),
-            Predicate::NotEquals { path, value } => Self::eval_not_equals(state, path, value, args),
-            Predicate::Contains { path, value } => Self::eval_contains(state, path, value, args),
+            Predicate::Exists { path } => Ok(Self::eval_exists(state, path)),
+            Predicate::NotExists { path } => Ok(Self::eval_not_exists(state, path)),
+            Predicate::Equals { path, value } => Ok(Self::eval_equals(state, path, value, args)),
+            Predicate::NotEquals { path, value } => {
+                Ok(Self::eval_not_equals(state, path, value, args))
+            }
+            Predicate::Contains { path, value } => Ok(Self::eval_contains(state, path, value, args)),
             Predicate::Matches { path, pattern } => self.eval_matches(state, path, pattern),
             Predicate::GreaterThan { path, value } => {
-                Self::eval_greater_than(state, path, value, args)
+                Ok(Self::eval_greater_than(state, path, value, args))
             }
-            Predicate::LessThan { path, value } => Self::eval_less_than(state, path, value, args),
+            Predicate::LessThan { path, value } => Ok(Self::eval_less_than(state, path, value, args)),
             Predicate::Count {
                 path,
                 operator,
                 value,
-            } => Self::eval_count(state, path, *operator, *value),
-            Predicate::IsEmpty { path } => self.eval_is_empty(state, path),
-            Predicate::IsNotEmpty { path } => self.eval_is_not_empty(state, path),
+            } => Ok(Self::eval_count(state, path, *operator, *value)),
+            Predicate::IsEmpty { path } => Ok(Self::eval_is_empty(state, path)),
+            Predicate::IsNotEmpty { path } => Ok(Self::eval_is_not_empty(state, path)),
             Predicate::All { predicates } => self.eval_all(predicates, state, args),
             Predicate::Any { predicates } => self.eval_any(predicates, state, args),
             Predicate::Not { predicate } => self.eval_not(predicate, state, args),
@@ -76,19 +84,19 @@ impl PredicateEngine {
         }
     }
 
-    fn eval_exists(state: &Value, path: &str) -> Result<VerificationResult, EngineError> {
+    fn eval_exists(state: &Value, path: &str) -> VerificationResult {
         if get_path(state, path).is_some() {
-            Ok(VerificationResult::Verified)
+            VerificationResult::Verified
         } else {
-            Ok(VerificationResult::Failed)
+            VerificationResult::Failed
         }
     }
 
-    fn eval_not_exists(state: &Value, path: &str) -> Result<VerificationResult, EngineError> {
+    fn eval_not_exists(state: &Value, path: &str) -> VerificationResult {
         if get_path(state, path).is_none() {
-            Ok(VerificationResult::Verified)
+            VerificationResult::Verified
         } else {
-            Ok(VerificationResult::Failed)
+            VerificationResult::Failed
         }
     }
 
@@ -97,14 +105,13 @@ impl PredicateEngine {
         path: &str,
         expected: &Value,
         args: &Value,
-    ) -> Result<VerificationResult, EngineError> {
+    ) -> VerificationResult {
         let actual = get_path(state, path);
         let expected = resolve_value(expected, args);
 
         match actual {
-            Some(actual_val) if actual_val == &expected => Ok(VerificationResult::Verified),
-            Some(_) => Ok(VerificationResult::Failed),
-            None => Ok(VerificationResult::Failed),
+            Some(actual_val) if actual_val == &expected => VerificationResult::Verified,
+            _ => VerificationResult::Failed,
         }
     }
 
@@ -113,13 +120,13 @@ impl PredicateEngine {
         path: &str,
         value: &Value,
         args: &Value,
-    ) -> Result<VerificationResult, EngineError> {
+    ) -> VerificationResult {
         let actual = get_path(state, path);
         let value = resolve_value(value, args);
 
         match actual {
-            Some(actual_val) if actual_val != &value => Ok(VerificationResult::Verified),
-            _ => Ok(VerificationResult::Failed),
+            Some(actual_val) if actual_val != &value => VerificationResult::Verified,
+            _ => VerificationResult::Failed,
         }
     }
 
@@ -128,26 +135,26 @@ impl PredicateEngine {
         path: &str,
         value: &Value,
         args: &Value,
-    ) -> Result<VerificationResult, EngineError> {
+    ) -> VerificationResult {
         let actual = get_path(state, path);
         let value = resolve_value(value, args);
 
         match actual {
             Some(Value::String(s)) if s.contains(value.as_str().unwrap_or("")) => {
-                Ok(VerificationResult::Verified)
+                VerificationResult::Verified
             }
-            Some(Value::Array(arr)) if arr.contains(&value) => Ok(VerificationResult::Verified),
+            Some(Value::Array(arr)) if arr.contains(&value) => VerificationResult::Verified,
             Some(Value::Object(obj)) => {
                 if let Ok(obj_str) = serde_json::to_string(obj) {
                     if let Some(val_str) = value.as_str() {
                         if obj_str.contains(val_str) {
-                            return Ok(VerificationResult::Verified);
+                            return VerificationResult::Verified;
                         }
                     }
                 }
-                Ok(VerificationResult::Failed)
+                VerificationResult::Failed
             }
-            _ => Ok(VerificationResult::Failed),
+            _ => VerificationResult::Failed,
         }
     }
 
@@ -161,21 +168,28 @@ impl PredicateEngine {
 
         match actual {
             Some(Value::String(s)) => {
-                // Try to get from cache first
+                // Try to get from cache first. A poisoned lock still yields the
+                // (uniquely owned) cache, so recovering the guard is equivalent to
+                // the uncontended case.
                 let regex = {
-                    let cache = self.regex_cache.read().unwrap();
+                    let cache = self
+                        .regex_cache
+                        .read()
+                        .unwrap_or_else(PoisonError::into_inner);
                     cache.get(pattern).cloned()
                 };
 
-                let regex = match regex {
-                    Some(r) => r,
-                    None => {
-                        // Not in cache, compile and store
-                        let new_regex = Regex::new(pattern)?;
-                        let mut cache = self.regex_cache.write().unwrap();
-                        cache.insert(pattern.to_string(), new_regex.clone());
-                        new_regex
-                    }
+                let regex = if let Some(r) = regex {
+                    r
+                } else {
+                    // Not in cache, compile and store
+                    let new_regex = Regex::new(pattern)?;
+                    let mut cache = self
+                        .regex_cache
+                        .write()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    cache.insert(pattern.to_string(), new_regex.clone());
+                    new_regex
                 };
 
                 if regex.is_match(s) {
@@ -193,25 +207,25 @@ impl PredicateEngine {
         path: &str,
         value: &Value,
         args: &Value,
-    ) -> Result<VerificationResult, EngineError> {
+    ) -> VerificationResult {
         let actual = get_path(state, path);
         let value = resolve_value(value, args);
 
         match (actual, value) {
             (Some(Value::Number(actual_num)), Value::Number(expected_num)) => {
                 match (actual_num.as_f64(), expected_num.as_f64()) {
-                    (Some(a), Some(e)) if a > e => Ok(VerificationResult::Verified),
-                    _ => Ok(VerificationResult::Failed),
+                    (Some(a), Some(e)) if a > e => VerificationResult::Verified,
+                    _ => VerificationResult::Failed,
                 }
             }
             (Some(Value::String(actual_str)), Value::String(expected_str)) => {
                 if actual_str.as_str() > expected_str.as_str() {
-                    Ok(VerificationResult::Verified)
+                    VerificationResult::Verified
                 } else {
-                    Ok(VerificationResult::Failed)
+                    VerificationResult::Failed
                 }
             }
-            _ => Ok(VerificationResult::Failed),
+            _ => VerificationResult::Failed,
         }
     }
 
@@ -220,25 +234,25 @@ impl PredicateEngine {
         path: &str,
         value: &Value,
         args: &Value,
-    ) -> Result<VerificationResult, EngineError> {
+    ) -> VerificationResult {
         let actual = get_path(state, path);
         let value = resolve_value(value, args);
 
         match (actual, value) {
             (Some(Value::Number(actual_num)), Value::Number(expected_num)) => {
                 match (actual_num.as_f64(), expected_num.as_f64()) {
-                    (Some(a), Some(e)) if a < e => Ok(VerificationResult::Verified),
-                    _ => Ok(VerificationResult::Failed),
+                    (Some(a), Some(e)) if a < e => VerificationResult::Verified,
+                    _ => VerificationResult::Failed,
                 }
             }
             (Some(Value::String(actual_str)), Value::String(expected_str)) => {
                 if actual_str.as_str() < expected_str.as_str() {
-                    Ok(VerificationResult::Verified)
+                    VerificationResult::Verified
                 } else {
-                    Ok(VerificationResult::Failed)
+                    VerificationResult::Failed
                 }
             }
-            _ => Ok(VerificationResult::Failed),
+            _ => VerificationResult::Failed,
         }
     }
 
@@ -247,15 +261,17 @@ impl PredicateEngine {
         path: &str,
         operator: CountOperator,
         expected: i64,
-    ) -> Result<VerificationResult, EngineError> {
+    ) -> VerificationResult {
         let actual = get_path(state, path);
 
+        // Collection lengths are far below `i64::MAX`, so the cast cannot wrap.
+        #[allow(clippy::cast_possible_wrap)]
         let count = match actual {
             Some(Value::Array(arr)) => arr.len() as i64,
             Some(Value::Object(obj)) => obj.len() as i64,
             Some(Value::String(s)) => s.len() as i64,
             None => 0,
-            _ => return Ok(VerificationResult::Failed),
+            _ => return VerificationResult::Failed,
         };
 
         let result = match operator {
@@ -268,41 +284,34 @@ impl PredicateEngine {
         };
 
         if result {
-            Ok(VerificationResult::Verified)
+            VerificationResult::Verified
         } else {
-            Ok(VerificationResult::Failed)
+            VerificationResult::Failed
         }
     }
 
-    fn eval_is_empty(&self, state: &Value, path: &str) -> Result<VerificationResult, EngineError> {
+    fn eval_is_empty(state: &Value, path: &str) -> VerificationResult {
         let actual = get_path(state, path);
 
         let is_empty = match actual {
             Some(Value::Array(arr)) => arr.is_empty(),
             Some(Value::Object(obj)) => obj.is_empty(),
             Some(Value::String(s)) => s.is_empty(),
-            Some(Value::Null) => true,
-            None => true,
+            Some(Value::Null) | None => true,
             _ => false,
         };
 
         if is_empty {
-            Ok(VerificationResult::Verified)
+            VerificationResult::Verified
         } else {
-            Ok(VerificationResult::Failed)
+            VerificationResult::Failed
         }
     }
 
-    fn eval_is_not_empty(
-        &self,
-        state: &Value,
-        path: &str,
-    ) -> Result<VerificationResult, EngineError> {
-        let result = self.eval_is_empty(state, path)?;
-        match result {
-            VerificationResult::Verified => Ok(VerificationResult::Failed),
-            VerificationResult::Failed => Ok(VerificationResult::Verified),
-            _ => Ok(VerificationResult::Failed),
+    fn eval_is_not_empty(state: &Value, path: &str) -> VerificationResult {
+        match Self::eval_is_empty(state, path) {
+            VerificationResult::Failed => VerificationResult::Verified,
+            _ => VerificationResult::Failed,
         }
     }
 

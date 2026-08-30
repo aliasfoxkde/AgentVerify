@@ -40,22 +40,26 @@ pub enum VerificationResult {
 
 impl VerificationResult {
     /// Returns true if the result indicates success
+    #[must_use]
     pub fn is_success(&self) -> bool {
         matches!(self, Self::Verified | Self::Duplicate)
     }
 
     /// Returns true if the result indicates failure (terminal failure states)
+    #[must_use]
     pub fn is_failure(&self) -> bool {
         matches!(self, Self::Failed | Self::Partial)
     }
 
     /// Returns true if the result indicates uncertainty
+    #[must_use]
     pub fn is_unknown(&self) -> bool {
         matches!(self, Self::Unknown)
     }
 
     /// Returns true if retry is safe without verification.
     /// Per verify-before-retry, no result should be retried without verification.
+    #[must_use]
     pub fn can_retry_without_verify(&self) -> bool {
         // Verify-before-retry: always verify state before retrying
         false

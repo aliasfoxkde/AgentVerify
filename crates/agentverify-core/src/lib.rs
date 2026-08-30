@@ -1,4 +1,4 @@
-//! AgentVerify Core
+//! `AgentVerify` Core
 //!
 //! Pure Rust, zero network dependencies. Contains the core verification
 //! types and state machine.
@@ -7,6 +7,7 @@
 //!
 //! UNKNOWN is a first-class state. A timeout does NOT equal failure.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 mod action;
 mod contract;
 mod observation;
@@ -42,9 +43,9 @@ pub mod id {
 
     /// Unique action identifier.
     ///
-    /// ActionId is a type-safe wrapper around a UUID that identifies a specific
+    /// `ActionId` is a type-safe wrapper around a UUID that identifies a specific
     /// action execution. Each action created via [`crate::Action::new`] or
-    /// [`crate::Action::with_idempotency`] receives a unique ActionId.
+    /// [`crate::Action::with_idempotency`] receives a unique `ActionId`.
     ///
     /// # Example
     ///
@@ -58,7 +59,8 @@ pub mod id {
     pub struct ActionId(pub Uuid);
 
     impl ActionId {
-        /// Generate a new unique ActionId.
+        /// Generate a new unique `ActionId`.
+        #[must_use]
         pub fn new() -> Self {
             Self(Uuid::new_v4())
         }
@@ -78,8 +80,8 @@ pub mod id {
 
     /// Idempotency key for deduplication.
     ///
-    /// IdempotencyKey ensures that the same logical action is not executed multiple times.
-    /// When an action is created with an IdempotencyKey, the verification system can detect
+    /// `IdempotencyKey` ensures that the same logical action is not executed multiple times.
+    /// When an action is created with an `IdempotencyKey`, the verification system can detect
     /// duplicate attempts and return the cached result.
     ///
     /// # Example
@@ -103,9 +105,10 @@ pub mod id {
             Self(key.into())
         }
 
-        /// Create an idempotency key from an ActionId.
+        /// Create an idempotency key from an `ActionId`.
         ///
         /// The resulting key will be formatted as `av_{uuid}`.
+        #[must_use]
         pub fn from_action_id(id: ActionId) -> Self {
             Self(format!("av_{}", id.0))
         }
@@ -113,7 +116,7 @@ pub mod id {
 
     /// Unique contract identifier.
     ///
-    /// ContractId is a type-safe wrapper around a UUID that identifies a specific
+    /// `ContractId` is a type-safe wrapper around a UUID that identifies a specific
     /// contract definition. Contracts define the preconditions, postconditions,
     /// and recovery strategies for verifying an action.
     ///
@@ -129,7 +132,8 @@ pub mod id {
     pub struct ContractId(pub Uuid);
 
     impl ContractId {
-        /// Generate a new unique ContractId.
+        /// Generate a new unique `ContractId`.
+        #[must_use]
         pub fn new() -> Self {
             Self(Uuid::new_v4())
         }
@@ -149,7 +153,7 @@ pub mod id {
 
     /// Unique receipt identifier.
     ///
-    /// ReceiptId identifies a specific verification receipt. Receipts are created
+    /// `ReceiptId` identifies a specific verification receipt. Receipts are created
     /// after verification completes and contain the evidence and results of the
     /// verification process.
     ///
@@ -165,7 +169,8 @@ pub mod id {
     pub struct ReceiptId(pub Uuid);
 
     impl ReceiptId {
-        /// Generate a new unique ReceiptId.
+        /// Generate a new unique `ReceiptId`.
+        #[must_use]
         pub fn new() -> Self {
             Self(Uuid::new_v4())
         }

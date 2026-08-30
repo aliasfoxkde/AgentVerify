@@ -1,10 +1,10 @@
-//! AgentVerify OpenTelemetry Export
+//! `AgentVerify` OpenTelemetry Export
 //!
 //! Exports verification traces and spans via OTLP (OpenTelemetry Protocol).
 //!
 //! # Overview
 //!
-//! This crate provides OTLP export functionality for AgentVerify's verification
+//! This crate provides OTLP export functionality for `AgentVerify`'s verification
 //! lifecycle. It integrates with the OpenTelemetry SDK to export spans representing:
 //!
 //! - Action lifecycle (proposed, validating, authorized, executing, etc.)
@@ -36,6 +36,7 @@
 //!         └── receipt creation span
 //! ```
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 use agentverify_core::{
     Action, Contract, Observation, PostconditionResult, Receipt, State, VerificationResult,
 };
@@ -63,7 +64,7 @@ pub enum OtlpExporterError {
 /// Configuration for the OTLP exporter
 #[derive(Debug, Clone)]
 pub struct OtlpExporterConfig {
-    /// OTLP endpoint (default: http://localhost:4317 for gRPC)
+    /// OTLP endpoint (default: <http://localhost:4317> for gRPC)
     endpoint: String,
     /// Export timeout in milliseconds
     timeout_ms: u64,
@@ -90,6 +91,7 @@ impl OtlpExporterConfig {
 
     /// Set the export timeout in milliseconds
     #[allow(dead_code)]
+    #[must_use]
     pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = timeout_ms;
         self
@@ -102,7 +104,7 @@ impl OtlpExporterConfig {
     }
 }
 
-/// OTLP Exporter for AgentVerify traces
+/// OTLP Exporter for `AgentVerify` traces
 ///
 /// Exports verification lifecycle as OpenTelemetry spans using OTLP.
 /// Uses gRPC transport by default.
@@ -184,7 +186,7 @@ impl OtlpExporter {
             to_state,
             State::Failed | State::VerificationFailed | State::Rejected
         ) {
-            span.set_status(Status::error(format!("Entered state: {}", to_state)));
+            span.set_status(Status::error(format!("Entered state: {to_state}")));
         } else {
             span.set_status(Status::Ok);
         }
@@ -237,7 +239,7 @@ impl OtlpExporter {
         if result.is_success() {
             span.set_status(Status::Ok);
         } else if result.is_failure() {
-            span.set_status(Status::error(format!("Verification failed: {}", result)));
+            span.set_status(Status::error(format!("Verification failed: {result}")));
         } else {
             span.set_status(Status::Unset);
         }
@@ -296,7 +298,7 @@ impl OtlpExporter {
             receipt.contract_id.to_string(),
         ));
         span.set_attribute(KeyValue::new("receipt.result", receipt.result.to_string()));
-        span.set_attribute(KeyValue::new("receipt.attempts", receipt.attempts as i64));
+        span.set_attribute(KeyValue::new("receipt.attempts", i64::from(receipt.attempts)));
         span.set_attribute(KeyValue::new(
             "receipt.timestamp",
             receipt.timestamp.to_rfc3339(),

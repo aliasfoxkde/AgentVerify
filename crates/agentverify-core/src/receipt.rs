@@ -102,6 +102,7 @@ pub struct Receipt {
 
 impl Receipt {
     /// Create a new receipt
+    #[must_use]
     pub fn new(
         action_id: ActionId,
         contract_id: ContractId,
@@ -163,6 +164,7 @@ impl Receipt {
     }
 
     /// Compute canonical digest (SHA-256) of the receipt data
+    #[must_use]
     pub fn compute_digest(&self) -> String {
         let canonical = self.canonical_data();
         let mut hasher = Sha256::new();
@@ -189,12 +191,14 @@ impl Receipt {
     }
 
     /// Add an observation
+    #[must_use]
     pub fn with_observation(mut self, observation: Observation) -> Self {
         self.observations.push(observation);
         self
     }
 
     /// Add postcondition result
+    #[must_use]
     pub fn with_postcondition_result(mut self, result: PostconditionResult) -> Self {
         self.postcondition_results.push(result);
         self
@@ -207,27 +211,32 @@ impl Receipt {
     }
 
     /// Sign the receipt
+    #[must_use]
     pub fn sign(mut self, signature: Vec<u8>) -> Self {
         self.signature = Some(signature);
         self
     }
 
     /// Check if receipt is signed
+    #[must_use]
     pub fn is_signed(&self) -> bool {
         self.signature.is_some()
     }
 
     /// Verify the digest matches the receipt content
+    #[must_use]
     pub fn verify_digest(&self) -> bool {
         self.digest == self.compute_digest()
     }
 
     /// Get the schema version
+    #[must_use]
     pub fn version(&self) -> &str {
         &self.version
     }
 
     /// Get the key identifier if set
+    #[must_use]
     pub fn key_id(&self) -> Option<&str> {
         self.key_id.as_deref()
     }
@@ -241,12 +250,34 @@ impl Receipt {
 /// - Database for durable storage
 ///
 /// # Key semantics
-/// - Key scope: receipts are stored by ReceiptId
+/// - Key scope: receipts are stored by `ReceiptId`
 /// - Collision: overwrite with newer receipt (same ID)
 /// - Expiry: implementors may choose to expire entries after TTL
+/// Errors that can occur while persisting a receipt.
+#[derive(Debug, thiserror::Error)]
+pub enum ReceiptStoreError {
+    /// The receipt could not be persisted to the backing store.
+    #[error("failed to persist receipt: {0}")]
+    Persist(String),
+
+    /// The receipt could not be serialized.
+    #[error("failed to serialize receipt: {0}")]
+    Serialize(String),
+}
+
 pub trait ReceiptStore: Send + Sync {
     /// Store a receipt
-    fn store<'a>(&'a self, receipt: &'a Receipt) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReceiptStoreError`] if the receipt cannot be serialized or
+    /// written to the backing store. Implementations must not panic on I/O
+    /// failure: evidence persistence is best-effort but its failure is
+    /// always observable to the caller.
+    fn store<'a>(
+        &'a self,
+        receipt: &'a Receipt,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ReceiptStoreError>> + Send + 'a>>;
 
     /// Retrieve a receipt by ID
     fn get<'a>(
@@ -270,13 +301,14 @@ pub trait ReceiptStore: Send + Sync {
 /// - Process-local only: does not persist across restarts
 /// - No TTL: entries live until process exits
 ///
-/// For production, use a distributed store implementing ReceiptStore.
+/// For production, use a distributed store implementing `ReceiptStore`.
 pub struct InMemoryReceiptStore {
     receipts: tokio::sync::RwLock<std::collections::HashMap<ReceiptId, Receipt>>,
     by_action: tokio::sync::RwLock<std::collections::HashMap<ActionId, Vec<ReceiptId>>>,
 }
 
 impl InMemoryReceiptStore {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             receipts: tokio::sync::RwLock::new(std::collections::HashMap::new()),
@@ -286,7 +318,10 @@ impl InMemoryReceiptStore {
 }
 
 impl ReceiptStore for InMemoryReceiptStore {
-    fn store<'a>(&'a self, receipt: &'a Receipt) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn store<'a>(
+        &'a self,
+        receipt: &'a Receipt,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ReceiptStoreError>> + Send + 'a>> {
         Box::pin(async move {
             let mut receipts = self.receipts.write().await;
             let mut by_action = self.by_action.write().await;
@@ -295,6 +330,7 @@ impl ReceiptStore for InMemoryReceiptStore {
                 .entry(receipt.action_id)
                 .or_default()
                 .push(receipt.id);
+            Ok(())
         })
     }
 
@@ -339,11 +375,11 @@ impl Default for InMemoryReceiptStore {
 ///
 /// # Storage Format
 /// - Each receipt stored as a single JSON file named `{receipt_id}.json`
-/// - Index file `index.json` maps action_id → list of receipt_ids
+/// - Index file `index.json` maps `action_id` → list of `receipt_ids`
 /// - Directory structure: `{base_path}/{receipt_id}.json`
 ///
 /// # Key semantics
-/// - Key scope: receipts stored by ReceiptId
+/// - Key scope: receipts stored by `ReceiptId`
 /// - Collision: overwrite with newer receipt (same ID)
 /// - Atomic writes: use temp file + rename for crash safety
 ///
@@ -351,7 +387,7 @@ impl Default for InMemoryReceiptStore {
 /// - Local filesystem only, not suitable for multi-process access without file locking
 /// - No TTL: entries persist until manually cleaned up
 ///
-/// For production distributed use, implement ReceiptStore with a proper
+/// For production distributed use, implement `ReceiptStore` with a proper
 /// distributed store (Postgres, Redis, etc.).
 pub struct FileReceiptStore {
     base_path: std::path::PathBuf,
@@ -406,40 +442,42 @@ impl FileReceiptStore {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ReceiptStore for FileReceiptStore {
-    fn store<'a>(&'a self, receipt: &'a Receipt) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn store<'a>(
+        &'a self,
+        receipt: &'a Receipt,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ReceiptStoreError>> + Send + 'a>> {
         let base_path = self.base_path.clone();
         Box::pin(async move {
             let receipt_id = receipt.id.to_string();
             let action_id = receipt.action_id.to_string();
 
             // Serialize receipt
-            let content =
-                serde_json::to_string_pretty(receipt).expect("serialization should not fail");
+            let content = serde_json::to_string_pretty(receipt)
+                .map_err(|e| ReceiptStoreError::Serialize(e.to_string()))?;
 
             // Write to temp file then rename for atomicity
-            let receipt_path = base_path.join(format!("{}.json", receipt_id));
-            let temp_path = base_path.join(format!("{}.tmp", receipt_id));
+            let receipt_path = base_path.join(format!("{receipt_id}.json"));
+            let temp_path = base_path.join(format!("{receipt_id}.tmp"));
             tokio::fs::write(&temp_path, &content)
                 .await
-                .expect("write should not fail");
+                .map_err(|e| ReceiptStoreError::Persist(e.to_string()))?;
             tokio::fs::rename(&temp_path, &receipt_path)
                 .await
-                .expect("rename should not fail");
+                .map_err(|e| ReceiptStoreError::Persist(e.to_string()))?;
 
             // Update index
-            let mut index = Self::new(base_path.clone())
-                .expect("store should initialize")
+            let index_store = Self::new(base_path.clone())
+                .map_err(|e| ReceiptStoreError::Persist(e.to_string()))?;
+            let mut index = index_store
                 .read_index_async()
                 .await
                 .unwrap_or_default();
             index.entry(action_id).or_default().push(receipt_id);
-            if let Err(e) = Self::new(base_path)
-                .expect("store should initialize")
+            index_store
                 .write_index_async(&index)
                 .await
-            {
-                eprintln!("warning: failed to update index: {}", e);
-            }
+                .map_err(|e| ReceiptStoreError::Persist(e.to_string()))?;
+            Ok(())
         })
     }
 
@@ -449,7 +487,7 @@ impl ReceiptStore for FileReceiptStore {
     ) -> Pin<Box<dyn Future<Output = Option<Receipt>> + Send + 'a>> {
         let base_path = self.base_path.clone();
         Box::pin(async move {
-            let path = base_path.join(format!("{}.json", id));
+            let path = base_path.join(format!("{id}.json"));
             if !path.exists() {
                 return None;
             }
@@ -464,11 +502,11 @@ impl ReceiptStore for FileReceiptStore {
     ) -> Pin<Box<dyn Future<Output = Vec<Receipt>> + Send + 'a>> {
         let base_path = self.base_path.clone();
         Box::pin(async move {
-            let index = match Self::new(base_path.clone())
-                .expect("store should initialize")
-                .read_index_async()
-                .await
-            {
+            let store = match Self::new(base_path.clone()) {
+                Ok(s) => s,
+                Err(_) => return Vec::new(),
+            };
+            let index = match store.read_index_async().await {
                 Ok(i) => i,
                 Err(_) => return Vec::new(),
             };
@@ -478,7 +516,7 @@ impl ReceiptStore for FileReceiptStore {
             };
             let mut receipts = Vec::new();
             for receipt_id in receipt_ids {
-                let path = base_path.join(format!("{}.json", receipt_id));
+                let path = base_path.join(format!("{receipt_id}.json"));
                 if let Ok(content) = tokio::fs::read_to_string(&path).await {
                     if let Ok(receipt) = serde_json::from_str::<Receipt>(&content) {
                         receipts.push(receipt);
@@ -491,7 +529,7 @@ impl ReceiptStore for FileReceiptStore {
 
     fn exists<'a>(&'a self, id: &'a ReceiptId) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
         let base_path = self.base_path.clone();
-        Box::pin(async move { base_path.join(format!("{}.json", id)).exists() })
+        Box::pin(async move { base_path.join(format!("{id}.json")).exists() })
     }
 }
 

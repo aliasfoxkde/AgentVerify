@@ -6,114 +6,215 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 5
+  RUSTUP_MAX_RETRIES: 5
 
 jobs:
-  test:
-    name: Test Suite
-    runs-on: ubuntu-latest
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo registry
-        uses: Swatinem/rust-cache@v2
+          components: rustfmt
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Run tests
-        run: cargo test --workspace
-
-      - name: Validate contract examples
-        run: bash scripts/validate-contract-examples.sh
-
-  doc:
-    name: Documentation
-    runs-on: ubuntu-latest
+  clippy:
+    name: Clippy (${{ matrix.features }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - features: default
+            flags: --locked --workspace --all-targets
+          - features: all-features
+            flags: --locked --workspace --all-targets --all-features
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy-${{ matrix.features }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run clippy
+        run: cargo clippy ${{ matrix.flags }} -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Check documentation
-        run: cargo doc --workspace --no-deps
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run tests
+        run: cargo test --locked --workspace
+        env:
+          RUSTFLAGS: -D warnings
+
+      - name: Validate contract examples
+        run: bash scripts/validate-contract-examples.sh
+
+      - name: Compile benchmarks
+        run: cargo bench --locked -p agentverify-engine --no-run
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: doc
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build documentation
+        run: cargo doc --locked --workspace --all-features --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 
-  wasm:
-    name: WASM Build
-    runs-on: ubuntu-latest
+  msrv:
+    name: MSRV
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Check declared MSRV (rust-version in Cargo.toml)
+        run: cargo hack check --rust-version --locked --workspace
+
+  deny:
+    name: Deny (${{ matrix.checks }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        checks:
+          - advisories
+          - bans licenses sources
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --locked ${{ matrix.checks }}
+
+  wasm:
+    name: WASM (wasm32-wasip1)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip1
 
-      - name: Cache cargo registry
+      - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Build WASM libraries
-        run: |
-          cargo build --target wasm32-wasip1 \
-            -p agentverify-core \
-            -p agentverify-engine \
-            -p agentverify-contract \
-            -p agentverify-runtime \
-            -p agentverify-http
-
-  security:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Run cargo-audit
-        run: |
-          cargo install cargo-audit
-          cargo audit
+      - name: Check WASM-compatible crates
+        run: >-
+          cargo check --locked --target wasm32-wasip1
+          -p agentverify-core
+          -p agentverify-contract
+          -p agentverify-engine
+          -p agentverify-receipt
+          -p agentverify-policy
 
   coverage:
-    name: Code Coverage
-    runs-on: ubuntu-latest
+    name: Coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo registry
-        uses: Swatinem/rust-cache@v2
+        with:
+          components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Generate coverage report
-        run: cargo llvm-cov --all --lcov --output-path lcov.info
+        run: cargo llvm-cov --locked --workspace --all-features --codecov --output-path codecov.json
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
-          files: lcov.info
-          fail_ci_if_error: true
-          comment: true
+          files: codecov.json
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false

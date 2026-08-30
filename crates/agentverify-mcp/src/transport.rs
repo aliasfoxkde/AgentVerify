@@ -42,7 +42,7 @@ impl StdioTransport {
     ///
     /// # Arguments
     /// * `command` - The command to execute (e.g., "npx", "python")
-    /// * `args` - Command arguments (e.g., ["-m", "mcp_server"])
+    /// * `args` - Command arguments (e.g., ["-m", "`mcp_server`"])
     pub async fn connect(command: &str, args: &[&str]) -> Result<Self, TransportError> {
         use std::process::Stdio;
 
@@ -56,8 +56,16 @@ impl StdioTransport {
                 TransportError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, e))
             })?;
 
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
+        // Both streams were configured as piped above, so they are present
+        // unless the child was already reaped; fail loudly but without panicking.
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| TransportError::Channel("child stdin was not piped".to_string()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| TransportError::Channel("child stdout was not piped".to_string()))?;
 
         let writer = Arc::new(tokio::sync::Mutex::new(stdin));
         let reader = Arc::new(tokio::sync::Mutex::new(BufReader::new(stdout)));
@@ -105,6 +113,7 @@ impl StdioTransport {
     }
 
     /// Check if connected
+    #[must_use]
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::SeqCst)
     }
@@ -124,6 +133,7 @@ pub struct ChannelTransport {
 
 impl ChannelTransport {
     /// Create a connected pair of channel transports
+    #[must_use]
     pub fn channel() -> (Self, Self) {
         let (tx1, rx1) = mpsc::channel(100);
         let (tx2, rx2) = mpsc::channel(100);

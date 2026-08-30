@@ -1,8 +1,8 @@
-//! AgentVerify Storage
+//! `AgentVerify` Storage
 //!
 //! Storage adapters for persisting receipts, actions, and verification state.
 //!
-//! This crate provides storage backends for AgentVerify's persistent data:
+//! This crate provides storage backends for `AgentVerify`'s persistent data:
 //!
 //! - Receipt storage - stores signed verification receipts
 //! - Action state - tracks action lifecycle and verification results
@@ -11,7 +11,7 @@
 //! # Storage Backends
 //!
 //! - [`FileStorage`] - Local filesystem-based storage
-//! - PostgreSQL storage (via agentverify-postgres)
+//! - `PostgreSQL` storage (via agentverify-postgres)
 //! - Redis storage (via agentverify-redis)
 //!
 //! # Safety
@@ -43,6 +43,7 @@
 //! }
 //! ```
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 use agentverify_core::{ActionId, Receipt, ReceiptId};
 use std::path::PathBuf;
 use thiserror::Error;
@@ -78,7 +79,7 @@ pub type Result<T> = std::result::Result<T, StorageError>;
 /// Implement this trait to provide custom receipt storage backends.
 ///
 /// # Key semantics
-/// - Receipts are stored by ReceiptId
+/// - Receipts are stored by `ReceiptId`
 /// - Store operations may overwrite existing receipts with the same ID
 /// - Load operations return None if receipt does not exist
 pub trait Storage: Send + Sync {
@@ -152,13 +153,13 @@ impl FileStorage {
 
     /// Get the path for a receipt file
     fn receipt_path(&self, id: &ReceiptId) -> PathBuf {
-        self.base_path.join(format!("{}.json", id))
+        self.base_path.join(format!("{id}.json"))
     }
 
     /// Populate the cache from existing files
     async fn refresh_cache(&self) -> Result<()> {
         let mut cache = self.cache.write().await;
-        let mut dir = tokio::fs::read_dir(&self.base_path).await?;
+        let mut dir = fs::read_dir(&self.base_path).await?;
         while let Some(entry) = dir.next_entry().await? {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "json") {
@@ -266,7 +267,7 @@ impl Storage for FileStorage {
     async fn list_ids(&self) -> Result<Vec<ReceiptId>> {
         self.refresh_cache().await?;
         let cache = self.cache.read().await;
-        Ok(cache.iter().cloned().collect())
+        Ok(cache.iter().copied().collect())
     }
 
     /// List receipts for a specific action
@@ -315,6 +316,7 @@ pub struct MemStorage {
 
 impl MemStorage {
     /// Create a new in-memory storage
+    #[must_use]
     pub fn new() -> Self {
         Self {
             receipts: RwLock::new(std::collections::HashMap::new()),
@@ -342,7 +344,7 @@ impl Storage for MemStorage {
 
     async fn list_ids(&self) -> Result<Vec<ReceiptId>> {
         let receipts = self.receipts.read().await;
-        Ok(receipts.keys().cloned().collect())
+        Ok(receipts.keys().copied().collect())
     }
 
     async fn list_by_action(&self, action_id: &ActionId) -> Result<Vec<Receipt>> {

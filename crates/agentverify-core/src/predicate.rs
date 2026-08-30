@@ -80,16 +80,19 @@ impl Predicate {
     }
 
     /// Create an all compound predicate
+    #[must_use]
     pub fn all(predicates: Vec<Predicate>) -> Self {
         Self::All { predicates }
     }
 
     /// Create an any compound predicate
+    #[must_use]
     pub fn any(predicates: Vec<Predicate>) -> Self {
         Self::Any { predicates }
     }
 
     /// Create a not compound predicate
+    #[must_use]
     pub fn negate(predicate: Predicate) -> Self {
         Self::Not {
             predicate: Box::new(predicate),

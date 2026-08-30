@@ -1,4 +1,4 @@
-//! AgentVerify Recovery
+//! `AgentVerify` Recovery
 //!
 //! Recovery strategies for handling verification failures and timeouts.
 //!
@@ -15,6 +15,7 @@
 //! UNKNOWN is a first-class state. A timeout does NOT equal failure.
 //! Recovery should always prefer verification over assumption.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 use agentverify_core::VerificationResult;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -22,7 +23,7 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use thiserror::Error;
 
 /// Type alias for boxed future
@@ -40,7 +41,10 @@ pub type FutureFactory = Arc<dyn Fn() -> BoxFuture + Send + Sync>;
 pub enum RecoveryError {
     /// Maximum retry attempts exceeded
     #[error("Maximum retry attempts ({attempts}) exceeded")]
-    MaxAttemptsExceeded { attempts: u32 },
+    MaxAttemptsExceeded {
+        /// Number of attempts that were made
+        attempts: u32,
+    },
 
     /// Circuit breaker is open
     #[error("Circuit breaker is open, retry not allowed")]
@@ -48,7 +52,10 @@ pub enum RecoveryError {
 
     /// Timeout exceeded
     #[error("Operation timed out after {duration}")]
-    Timeout { duration: Duration },
+    Timeout {
+        /// How long the operation ran before giving up
+        duration: Duration,
+    },
 
     /// All fallbacks exhausted
     #[error("All fallback strategies exhausted")]
@@ -56,11 +63,17 @@ pub enum RecoveryError {
 
     /// Recovery not applicable for the result
     #[error("Recovery not applicable for result: {result}")]
-    NotApplicable { result: VerificationResult },
+    NotApplicable {
+        /// The verification result recovery cannot handle
+        result: VerificationResult,
+    },
 
     /// Underlying error during recovery
     #[error("Recovery failed: {context}")]
-    UnderlyingError { context: String },
+    UnderlyingError {
+        /// Description of the underlying failure
+        context: String,
+    },
 }
 
 // ============================================================================
@@ -95,6 +108,7 @@ pub struct Backoff {
 
 impl Backoff {
     /// Create a new backoff configuration
+    #[must_use]
     pub fn new(backoff_type: BackoffType, initial: Duration, max: Duration) -> Self {
         Self {
             backoff_type,
@@ -112,13 +126,22 @@ impl Backoff {
     }
 
     /// Calculate the delay for a given attempt number (0-indexed)
+    ///
+    /// Delay arithmetic uses floating point multipliers over small millisecond
+    /// values and is clamped to `max`, so the lossy casts are intentional.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_possible_wrap
+    )]
+    #[must_use]
     pub fn calculate_delay(&self, attempt: u32) -> Duration {
         let delay = match self.backoff_type {
             BackoffType::Fixed => self.initial,
             BackoffType::Linear => {
                 self.initial
                     + Duration::milliseconds(
-                        (self.initial.num_milliseconds() as f64 * self.multiplier * attempt as f64)
+                        (self.initial.num_milliseconds() as f64 * self.multiplier * f64::from(attempt))
                             as i64,
                     )
             }
@@ -191,6 +214,7 @@ impl RecoveryStrategyEnum {
     }
 
     /// Returns true if this strategy should be attempted for the given result
+    #[must_use]
     pub fn is_applicable(&self, result: VerificationResult) -> bool {
         match self {
             Self::Retry(s) => s.is_applicable(result),
@@ -228,6 +252,7 @@ pub struct RetryStrategy {
 
 impl RetryStrategy {
     /// Create a new retry strategy
+    #[must_use]
     pub fn new(max_attempts: u32, backoff: Backoff) -> Self {
         Self {
             max_attempts,
@@ -236,6 +261,7 @@ impl RetryStrategy {
     }
 
     /// Create with default backoff
+    #[must_use]
     pub fn with_default_backoff(max_attempts: u32) -> Self {
         Self {
             max_attempts,
@@ -244,11 +270,13 @@ impl RetryStrategy {
     }
 
     /// Get max attempts
+    #[must_use]
     pub fn max_attempts(&self) -> u32 {
         self.max_attempts
     }
 
     /// Get backoff configuration
+    #[must_use]
     pub fn backoff(&self) -> &Backoff {
         &self.backoff
     }
@@ -270,9 +298,10 @@ impl RecoveryStrategy for RetryStrategy {
                 // Calculate and apply backoff delay (skip on first attempt)
                 if attempt > 0 {
                     let delay = backoff.calculate_delay(attempt - 1);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(
-                        delay.num_milliseconds() as u64,
-                    ))
+                    // Durations here are always positive, so the cast is lossless.
+                    #[allow(clippy::cast_sign_loss)]
+                    let millis = delay.num_milliseconds() as u64;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(millis))
                     .await;
                 }
 
@@ -390,6 +419,7 @@ pub struct FallbackStrategy {
 
 impl FallbackStrategy {
     /// Create a new fallback strategy
+    #[must_use]
     pub fn new() -> Self {
         Self {
             fallbacks: Vec::new(),
@@ -397,12 +427,14 @@ impl FallbackStrategy {
     }
 
     /// Add a fallback
+    #[must_use]
     pub fn add_fallback(mut self, fallback: Fallback) -> Self {
         self.fallbacks.push(fallback);
         self
     }
 
     /// Add a fallback with a name
+    #[must_use]
     pub fn with_fallback(mut self, name: impl Into<String>) -> Self {
         self.fallbacks.push(Fallback::new(name));
         self
@@ -432,6 +464,10 @@ impl RecoveryStrategy for FallbackStrategy {
 }
 
 /// Execute fallback chain
+///
+/// # Errors
+///
+/// Returns [`RecoveryError::AllFallbacksExhausted`] when no fallback succeeds.
 pub async fn execute_fallback_chain<Fut>(
     fallbacks: Vec<(String, impl Fn() -> Fut)>,
 ) -> Result<VerificationResult, RecoveryError>
@@ -507,10 +543,10 @@ pub struct CircuitBreaker {
 impl Debug for CircuitBreaker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CircuitBreaker")
-            .field("state", &self.state.read().unwrap())
+            .field("state", &self.state.read().unwrap_or_else(PoisonError::into_inner))
             .field("failure_count", &self.failure_count.load(Ordering::SeqCst))
             .field("success_count", &self.success_count.load(Ordering::SeqCst))
-            .field("last_failure", &self.last_failure.read().unwrap())
+            .field("last_failure", &self.last_failure.read().unwrap_or_else(PoisonError::into_inner))
             .field("config", &self.config)
             .finish()
     }
@@ -518,6 +554,7 @@ impl Debug for CircuitBreaker {
 
 impl CircuitBreaker {
     /// Create a new circuit breaker
+    #[must_use]
     pub fn new(config: CircuitBreakerConfig) -> Self {
         Self {
             state: std::sync::RwLock::new(CircuitState::Closed),
@@ -529,18 +566,19 @@ impl CircuitBreaker {
     }
 
     /// Create with default config
+    #[must_use]
     pub fn with_default_config() -> Self {
         Self::new(CircuitBreakerConfig::default())
     }
 
     /// Get current state
     pub fn state(&self) -> CircuitState {
-        *self.state.read().unwrap()
+        *self.state.read().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Record a failure
     pub fn record_failure(&self) {
-        let mut last = self.last_failure.write().unwrap();
+        let mut last = self.last_failure.write().unwrap_or_else(PoisonError::into_inner);
         *last = Some(Utc::now());
 
         let state = self.state();
@@ -548,12 +586,12 @@ impl CircuitBreaker {
             CircuitState::Closed => {
                 let failures = self.failure_count.fetch_add(1, Ordering::SeqCst) + 1;
                 if failures >= self.config.failure_threshold {
-                    *self.state.write().unwrap() = CircuitState::Open;
+                    *self.state.write().unwrap_or_else(PoisonError::into_inner) = CircuitState::Open;
                     tracing::warn!(failures, "Circuit breaker opened");
                 }
             }
             CircuitState::HalfOpen => {
-                *self.state.write().unwrap() = CircuitState::Open;
+                *self.state.write().unwrap_or_else(PoisonError::into_inner) = CircuitState::Open;
                 self.success_count.store(0, Ordering::SeqCst);
                 tracing::warn!("Circuit breaker re-opened from half-open");
             }
@@ -571,7 +609,7 @@ impl CircuitBreaker {
             CircuitState::HalfOpen => {
                 let successes = self.success_count.fetch_add(1, Ordering::SeqCst) + 1;
                 if successes >= self.config.success_threshold {
-                    *self.state.write().unwrap() = CircuitState::Closed;
+                    *self.state.write().unwrap_or_else(PoisonError::into_inner) = CircuitState::Closed;
                     self.failure_count.store(0, Ordering::SeqCst);
                     self.success_count.store(0, Ordering::SeqCst);
                     tracing::info!("Circuit breaker closed");
@@ -585,10 +623,10 @@ impl CircuitBreaker {
     pub fn is_allowed(&self) -> bool {
         let state = self.state();
         if state == CircuitState::Open {
-            let last = self.last_failure.read().unwrap();
+            let last = self.last_failure.read().unwrap_or_else(PoisonError::into_inner);
             if let Some(last_failure) = *last {
                 if Utc::now() - last_failure >= self.config.recovery_timeout {
-                    *self.state.write().unwrap() = CircuitState::HalfOpen;
+                    *self.state.write().unwrap_or_else(PoisonError::into_inner) = CircuitState::HalfOpen;
                     tracing::info!("Circuit breaker entering half-open state");
                     return true;
                 }
@@ -599,6 +637,13 @@ impl CircuitBreaker {
     }
 
     /// Execute an operation through the circuit breaker
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecoveryError::CircuitBreakerOpen`] when the breaker is open
+    /// and the operation is not attempted, otherwise the error reported by the
+    /// operation itself (mapped to [`RecoveryError::UnderlyingError`] by the
+    /// caller-supplied future).
     pub async fn execute<F, Fut>(&self, op: F) -> Result<VerificationResult, RecoveryError>
     where
         F: Future<Output = Result<VerificationResult, RecoveryError>>,
@@ -637,6 +682,7 @@ impl CircuitBreakerStrategy {
     }
 
     /// Create with default config
+    #[must_use]
     pub fn with_default_config() -> Self {
         Self {
             circuit_breaker: Arc::new(CircuitBreaker::with_default_config()),
@@ -644,6 +690,7 @@ impl CircuitBreakerStrategy {
     }
 
     /// Get reference to circuit breaker for inspection
+    #[must_use]
     pub fn circuit_breaker(&self) -> &Arc<CircuitBreaker> {
         &self.circuit_breaker
     }
@@ -686,11 +733,13 @@ pub struct TimeoutStrategy {
 
 impl TimeoutStrategy {
     /// Create a new timeout strategy
+    #[must_use]
     pub fn new(timeout: Duration) -> Self {
         Self { timeout }
     }
 
     /// Get timeout duration
+    #[must_use]
     pub fn timeout(&self) -> Duration {
         self.timeout
     }
@@ -703,11 +752,11 @@ impl RecoveryStrategy for TimeoutStrategy {
     ) -> Pin<Box<dyn Future<Output = RecoveryOutcome> + Send + '_>> {
         let timeout = self.timeout;
         Box::pin(async move {
-            let result = tokio::time::timeout(
-                tokio::time::Duration::from_millis(timeout.num_milliseconds() as u64),
-                factory(),
-            )
-            .await;
+            // Durations here are always positive, so the cast is lossless.
+            #[allow(clippy::cast_sign_loss)]
+            let millis = timeout.num_milliseconds() as u64;
+            let result =
+                tokio::time::timeout(tokio::time::Duration::from_millis(millis), factory()).await;
 
             match result {
                 Ok(Ok(verification_result)) => RecoveryOutcome::Success(verification_result),
@@ -742,6 +791,7 @@ pub struct RecoveryExecutor {
 
 impl RecoveryExecutor {
     /// Create a new recovery executor with a primary strategy
+    #[must_use]
     pub fn new(primary: RecoveryStrategyEnum) -> Self {
         Self {
             primary,
@@ -751,18 +801,26 @@ impl RecoveryExecutor {
     }
 
     /// Add a fallback strategy
+    #[must_use]
     pub fn with_fallback(mut self, fallback: RecoveryStrategyEnum) -> Self {
         self.fallbacks.push(fallback);
         self
     }
 
     /// Add a circuit breaker
+    #[must_use]
     pub fn with_circuit_breaker(mut self, cb: Arc<CircuitBreaker>) -> Self {
         self.circuit_breaker = Some(cb);
         self
     }
 
     /// Execute recovery with the primary strategy, then fallbacks
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure produced by the primary strategy, or
+    /// [`RecoveryError::CircuitBreakerOpen`] when the circuit breaker blocks
+    /// the attempt. Failures are reported through [`RecoveryOutcome::Failure`].
     pub async fn execute<F, Fut>(&self, op: F) -> RecoveryOutcome
     where
         F: Fn() -> Fut + Send + Sync + 'static,
@@ -795,6 +853,12 @@ impl RecoveryExecutor {
     }
 
     /// Execute recovery, returning the final result or error
+    ///
+    /// # Errors
+    ///
+    /// Forwards the failure from [`RecoveryManager::execute`], mapping a
+    /// `NotApplicable` outcome to [`RecoveryError::NotApplicable`] with
+    /// [`VerificationResult::Unknown`].
     pub async fn execute_and_return<F, Fut>(
         &self,
         op: F,
@@ -826,6 +890,7 @@ pub struct CompositeStrategy {
 
 impl CompositeStrategy {
     /// Create a new composite strategy
+    #[must_use]
     pub fn new() -> Self {
         Self {
             strategies: Vec::new(),
@@ -833,6 +898,7 @@ impl CompositeStrategy {
     }
 
     /// Add a strategy to the chain
+    #[must_use]
     pub fn add_strategy(mut self, strategy: RecoveryStrategyEnum) -> Self {
         self.strategies.push(strategy);
         self

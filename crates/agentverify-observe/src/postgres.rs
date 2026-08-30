@@ -1,10 +1,10 @@
-//! PostgreSQL observer implementation
+//! `PostgreSQL` observer implementation
 //!
-//! Observes system state via PostgreSQL queries.
+//! Observes system state via `PostgreSQL` queries.
 //!
 //! # Overview
 //!
-//! The [`PostgresObserver`] connects to a PostgreSQL database using a deadpool
+//! The [`PostgresObserver`] connects to a `PostgreSQL` database using a deadpool
 //! connection pool and executes queries to observe system state. Observations
 //! are returned as JSON and used during the verification phase.
 //!
@@ -41,7 +41,7 @@ use serde_json::{json, Value};
 use thiserror::Error;
 use tokio_postgres::NoTls;
 
-/// PostgreSQL observer-specific errors
+/// `PostgreSQL` observer-specific errors
 #[derive(Debug, Error)]
 pub enum PostgresObserverError {
     #[error("Configuration error: {0}")]
@@ -66,7 +66,7 @@ pub enum PostgresObserverError {
     NoPostconditions,
 }
 
-/// PostgreSQL observer configuration
+/// `PostgreSQL` observer configuration
 ///
 /// # Example
 ///
@@ -92,7 +92,7 @@ pub struct PostgresObserverConfig {
     pub database: String,
     /// SSL mode ("disable", "require", "verify-ca", "verify-full")
     pub ssl_mode: String,
-    /// Application name for pg_settings
+    /// Application name for `pg_settings`
     pub application_name: String,
     /// Connection timeout in seconds
     pub connect_timeout_secs: u64,
@@ -121,6 +121,7 @@ impl Default for PostgresObserverConfig {
 
 impl PostgresObserverConfig {
     /// Create a new config with all defaults
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -132,6 +133,7 @@ impl PostgresObserverConfig {
     }
 
     /// Set the port
+    #[must_use]
     pub fn with_port(mut self, port: u16) -> Self {
         self.port = port;
         self
@@ -170,18 +172,21 @@ impl PostgresObserverConfig {
     }
 
     /// Set the connection timeout in seconds
+    #[must_use]
     pub fn with_connect_timeout_secs(mut self, secs: u64) -> Self {
         self.connect_timeout_secs = secs;
         self
     }
 
     /// Set the maximum pool size
+    #[must_use]
     pub fn with_pool_max_size(mut self, size: usize) -> Self {
         self.pool_max_size = size;
         self
     }
 
     /// Set the query timeout in milliseconds
+    #[must_use]
     pub fn with_query_timeout_ms(mut self, ms: u64) -> Self {
         self.query_timeout_ms = ms;
         self
@@ -217,9 +222,9 @@ impl PostgresObserverConfig {
     }
 }
 
-/// PostgreSQL observer using deadpool for connection pooling
+/// `PostgreSQL` observer using deadpool for connection pooling
 ///
-/// Executes parameterized queries against PostgreSQL to observe system state.
+/// Executes parameterized queries against `PostgreSQL` to observe system state.
 pub struct PostgresObserver {
     pool: Pool,
     #[allow(dead_code)]
@@ -339,7 +344,7 @@ impl PostgresObserver {
     ) -> Result<Value, PostgresObserverError> {
         let client =
             self.pool.get().await.map_err(|e| {
-                PostgresObserverError::QueryError(format!("Pool get failed: {}", e))
+                PostgresObserverError::QueryError(format!("Pool get failed: {e}"))
             })?;
 
         // Convert JSON values to strings for postgres query
@@ -442,14 +447,13 @@ impl PostgresObserver {
             || table_name.to_lowercase().starts_with("create")
         {
             return Err(PostgresObserverError::QueryBuildError(format!(
-                "Invalid table name: {}",
-                table_name
+                "Invalid table name: {table_name}"
             )));
         }
 
         // Build query: SELECT * FROM <table> WHERE id = $1
         // The action ID is used as the primary key
-        let query = format!("SELECT * FROM {} WHERE id = $1 LIMIT 1", table_name);
+        let query = format!("SELECT * FROM {table_name} WHERE id = $1 LIMIT 1");
 
         let params = vec![serde_json::json!(action.id.to_string())];
 
@@ -460,7 +464,7 @@ impl PostgresObserver {
     pub async fn health_check(&self) -> Result<(), PostgresObserverError> {
         let client =
             self.pool.get().await.map_err(|e| {
-                PostgresObserverError::QueryError(format!("Pool get failed: {}", e))
+                PostgresObserverError::QueryError(format!("Pool get failed: {e}"))
             })?;
 
         client
@@ -474,7 +478,7 @@ impl PostgresObserver {
 
 #[async_trait::async_trait]
 impl agentverify_runtime::Observer for PostgresObserver {
-    /// Observe system state by executing a query against PostgreSQL
+    /// Observe system state by executing a query against `PostgreSQL`
     ///
     /// # Process
     ///
@@ -489,7 +493,7 @@ impl agentverify_runtime::Observer for PostgresObserver {
         // Build the observation query
         let (query, params) = self
             .build_observation_query(action, contract)
-            .map_err(|e| ExecutorError::Unknown(format!("Query build failed: {}", e)))?;
+            .map_err(|e| ExecutorError::Unknown(format!("Query build failed: {e}")))?;
 
         // Convert params to Values expected by execute_query
         let param_values: Vec<Value> = params;
@@ -498,7 +502,7 @@ impl agentverify_runtime::Observer for PostgresObserver {
         let results = self
             .execute_query(&query, &param_values)
             .await
-            .map_err(|e| ExecutorError::Unknown(format!("Query execution failed: {}", e)))?;
+            .map_err(|e| ExecutorError::Unknown(format!("Query execution failed: {e}")))?;
 
         // Build the observation state
         // If no rows returned, return empty state to indicate resource not found
@@ -525,8 +529,8 @@ impl agentverify_runtime::Observer for PostgresObserver {
 mod tests {
     use super::*;
 
-    /// Helper to create a PostgresObserver for testing query building
-    /// The pool is not actually used in build_observation_query tests
+    /// Helper to create a `PostgresObserver` for testing query building
+    /// The pool is not actually used in `build_observation_query` tests
     fn make_test_observer() -> PostgresObserver {
         let config = PostgresObserverConfig::default();
         // Create a pool that won't actually be used in build_observation_query tests
@@ -638,7 +642,7 @@ mod tests {
         for malicious in &malicious_contracts {
             let contract = Contract::new(*malicious);
             let result = observer.build_observation_query(&action, &contract);
-            assert!(result.is_err(), "Expected rejection for: {}", malicious);
+            assert!(result.is_err(), "Expected rejection for: {malicious}");
         }
     }
 

@@ -12,7 +12,7 @@ pub use super::id::IdempotencyKey;
 pub struct Action {
     /// Unique identifier
     pub id: ActionId,
-    /// Action name (e.g., "create_customer")
+    /// Action name (e.g., "`create_customer`")
     pub name: String,
     /// JSON arguments passed to the action
     pub arguments: Value,

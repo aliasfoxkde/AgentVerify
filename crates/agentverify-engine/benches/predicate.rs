@@ -1,4 +1,4 @@
-//! Benchmark tests for AgentVerify predicate engine
+//! Benchmark tests for `AgentVerify` predicate engine
 
 use agentverify_core::Predicate;
 use agentverify_engine::PredicateEngine;

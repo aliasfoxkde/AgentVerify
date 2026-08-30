@@ -8,21 +8,27 @@ use thiserror::Error;
 /// Errors that can occur during action dispatch
 #[derive(Debug, Error)]
 pub enum DispatchError {
+    /// The target system does not support this action
     #[error("Action not supported: {0}")]
     ActionNotSupported(String),
 
+    /// A transport-level error occurred while reaching the target system
     #[error("Transport error: {0}")]
     TransportError(String),
 
+    /// The action timed out before it could be dispatched
     #[error("Timeout before dispatch")]
     TimeoutBeforeDispatch,
 
+    /// The action was dispatched but the result could not be confirmed in time
     #[error("Timeout after dispatch")]
     TimeoutAfterDispatch,
 
+    /// The target system explicitly rejected the action
     #[error("Action rejected: {0}")]
     Rejected(String),
 
+    /// The outcome cannot be determined without reconciliation
     #[error("Ambiguous result: {0}")]
     Ambiguous(String),
 }
@@ -54,6 +60,7 @@ pub enum DispatchOutcome {
 
 impl DispatchOutcome {
     /// Returns true if the outcome represents a terminal state
+    #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -64,6 +71,7 @@ impl DispatchOutcome {
     }
 
     /// Returns true if the outcome represents a timeout
+    #[must_use]
     pub fn is_timeout(&self) -> bool {
         matches!(
             self,
@@ -74,6 +82,7 @@ impl DispatchOutcome {
     /// Returns true if the action should be retried
     ///
     /// Timeouts require observation to determine actual state before retry.
+    #[must_use]
     pub fn should_retry(&self) -> bool {
         matches!(
             self,
@@ -104,6 +113,7 @@ pub struct SimulatedActionExecutor {
 
 impl SimulatedActionExecutor {
     /// Create a new simulated action executor
+    #[must_use]
     pub fn new() -> Self {
         Self { _private: () }
     }

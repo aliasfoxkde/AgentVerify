@@ -1,5 +1,9 @@
-//! AgentVerify CLI
+//! `AgentVerify` CLI
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+// A CLI's contract is its stdout/stderr output; routing those writes
+// through `tracing` would change user-visible behavior.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 use agentverify_contract::{contract::ContractError, load_file};
 use agentverify_core::Action;
 use agentverify_http::{RestObserver, RestObserverConfig};
@@ -50,7 +54,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Initialize AgentVerify in a project
+    /// Initialize `AgentVerify` in a project
     Init {
         /// Project directory
         #[arg(short, long)]
@@ -71,7 +75,7 @@ enum Commands {
         #[arg(short, long, default_value = "{}")]
         args: String,
 
-        /// Observer URL (defaults to http://localhost:8080, or AGENTVERIFY_OBSERVER_URL env var)
+        /// Observer URL (defaults to <http://localhost:8080>, or `AGENTVERIFY_OBSERVER_URL` env var)
         #[arg(short, long, default_value = "http://localhost:8080")]
         observer_url: String,
 
@@ -116,7 +120,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(exit_code) => exit_code,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             ExitCode::from(1)
         }
     }
@@ -127,7 +131,7 @@ fn run() -> Result<ExitCode> {
 
     match cli.command {
         Commands::Init { path } => {
-            println!("Initializing AgentVerify at {:?}...", path);
+            println!("Initializing AgentVerify at {path:?}...");
             Ok(ExitCode::SUCCESS)
         }
         Commands::Contract { command } => match command {
@@ -178,7 +182,7 @@ async fn serve(port: u16) -> Result<ExitCode> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .with_context(|| format!("Failed to bind to port {}", port))?;
+        .with_context(|| format!("Failed to bind to port {port}"))?;
 
     info!("AgentVerify server listening on {}", addr);
 
@@ -186,8 +190,15 @@ async fn serve(port: u16) -> Result<ExitCode> {
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
     tokio::spawn(async move {
         // Setup SIGTERM signal stream
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("Failed to create SIGTERM signal handler");
+        let mut sigterm = match
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                tracing::warn!("Failed to create SIGTERM signal handler: {error}");
+                return;
+            }
+        };
 
         // Wait for shutdown signal (SIGINT or SIGTERM)
         tokio::select! {
@@ -205,15 +216,18 @@ async fn serve(port: u16) -> Result<ExitCode> {
     });
 
     // Start the server
-    let server_handle =
-        tokio::spawn(async move { axum::serve(listener, app).await.expect("Server error") });
+    let server_handle = tokio::spawn(async move { axum::serve(listener, app).await });
 
     // Wait for either the server to stop or shutdown signal
     tokio::select! {
-        _ = server_handle => {
-            info!("Server task completed");
+        outcome = server_handle => {
+            match outcome {
+                Ok(Ok(())) => info!("Server task completed"),
+                Ok(Err(error)) => return Err(anyhow::anyhow!("Server error: {error}")),
+                Err(error) => return Err(anyhow::anyhow!("Server task failed: {error}")),
+            }
         }
-        _ = tokio::time::sleep(std::time::Duration::from_secs(u64::MAX)) => {
+        () = tokio::time::sleep(std::time::Duration::from_secs(u64::MAX)) => {
             // This branch should never be taken, but prevents the select from completing
         }
     }
@@ -245,11 +259,11 @@ fn validate_contract_cmd(file: &str, json: bool) -> Result<ExitCode> {
                 action_name: None,
             };
             if json {
-                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 println!("✗ Contract is invalid:");
                 for message in &output.errors {
-                    println!("  - {}", message);
+                    println!("  - {message}");
                 }
             }
             let exit_code = if matches!(error, ContractError::IoError { .. }) {
@@ -276,7 +290,7 @@ fn validate_contract_cmd(file: &str, json: bool) -> Result<ExitCode> {
 
     if json {
         // Machine-readable JSON output
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         // Human-readable output
         if output.valid {
@@ -286,7 +300,7 @@ fn validate_contract_cmd(file: &str, json: bool) -> Result<ExitCode> {
         } else {
             println!("✗ Contract is invalid:");
             for error in &errors {
-                println!("  - {}", error);
+                println!("  - {error}");
             }
         }
     }
@@ -322,8 +336,7 @@ fn verify_contract_cmd(
     // Validate observer URL
     let observer_base_url = Url::parse(&observer_url).with_context(|| {
         format!(
-            "Invalid observer URL '{}': must be a valid HTTP/HTTPS URL",
-            observer_url
+            "Invalid observer URL '{observer_url}': must be a valid HTTP/HTTPS URL"
         )
     })?;
     if !matches!(observer_base_url.scheme(), "http" | "https") {
@@ -336,11 +349,11 @@ fn verify_contract_cmd(
     // Load contract
     let path = std::path::Path::new(contract_path);
     let contract = load_file(path)
-        .with_context(|| format!("Failed to load contract from {}", contract_path))?;
+        .with_context(|| format!("Failed to load contract from {contract_path}"))?;
 
     // Parse action arguments
     let args: serde_json::Value = serde_json::from_str(args_json)
-        .with_context(|| format!("Invalid JSON in args: {}", args_json))?;
+        .with_context(|| format!("Invalid JSON in args: {args_json}"))?;
 
     // Create action with idempotency key based on contract and args
     let idempotency_key = format!("{}-{}", contract.id, args_json);
@@ -353,7 +366,7 @@ fn verify_contract_cmd(
     // Setup REST observer
     let observer_config = RestObserverConfig::new(observer_url);
     let observer = RestObserver::new(observer_config)
-        .map_err(|e| anyhow::anyhow!("Failed to create observer: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to create observer: {e}"))?;
     let observer: Option<Arc<dyn agentverify_runtime::Observer>> = Some(Arc::new(observer));
 
     // Setup executor with simulated action executor
@@ -380,16 +393,16 @@ fn verify_contract_cmd(
                     contract_id: contract.id.to_string(),
                     action_id: action.id.to_string(),
                 };
-                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
-                println!("Verification result: {}", verification_result);
+                println!("Verification result: {verification_result}");
                 println!("Receipt ID: {}", receipt.id);
                 println!("Attempts: {}", receipt.attempts);
             }
 
             match verification_result {
-                agentverify_core::VerificationResult::Verified => Ok(ExitCode::SUCCESS),
-                agentverify_core::VerificationResult::Duplicate => Ok(ExitCode::SUCCESS),
+                agentverify_core::VerificationResult::Verified
+                | agentverify_core::VerificationResult::Duplicate => Ok(ExitCode::SUCCESS),
                 agentverify_core::VerificationResult::Failed
                 | agentverify_core::VerificationResult::Partial => Ok(ExitCode::from(2)),
                 agentverify_core::VerificationResult::Unknown => Ok(ExitCode::from(3)),
@@ -400,9 +413,9 @@ fn verify_contract_cmd(
                 let output = serde_json::json!({
                     "error": e.to_string(),
                 });
-                eprintln!("{}", serde_json::to_string_pretty(&output).unwrap());
+                eprintln!("{}", serde_json::to_string_pretty(&output)?);
             } else {
-                eprintln!("Verification error: {}", e);
+                eprintln!("Verification error: {e}");
             }
             Ok(ExitCode::from(1))
         }

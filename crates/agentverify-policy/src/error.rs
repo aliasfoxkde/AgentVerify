@@ -6,15 +6,19 @@ use thiserror::Error;
 /// Policy evaluation errors
 #[derive(Debug, Clone, Error)]
 pub enum PolicyError {
+    /// Policy evaluation failed
     #[error("Policy evaluation failed: {0}")]
     EvaluationFailed(String),
 
+    /// Rate limit configuration is invalid
     #[error("Invalid rate limit configuration: {0}")]
     InvalidRateLimit(String),
 
+    /// Action pattern is invalid
     #[error("Invalid action pattern: {0}")]
     InvalidPattern(String),
 
+    /// Contract validation failed
     #[error("Contract validation failed: {0}")]
     ContractValidation(String),
 }
@@ -61,13 +65,13 @@ pub enum PolicyViolation {
 impl std::fmt::Display for PolicyViolation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ActionNotAllowed(name) => write!(f, "Action '{}' is not allowed", name),
-            Self::ActionBlocked(name) => write!(f, "Action '{}' is blocked", name),
+            Self::ActionNotAllowed(name) => write!(f, "Action '{name}' is not allowed"),
+            Self::ActionBlocked(name) => write!(f, "Action '{name}' is blocked"),
             Self::EmptyActionName => write!(f, "Action name cannot be empty"),
             Self::ContractRequired(action) => {
-                write!(f, "Contract required for action '{}'", action)
+                write!(f, "Contract required for action '{action}'")
             }
-            Self::ContractInvalid(reason) => write!(f, "Contract invalid: {}", reason),
+            Self::ContractInvalid(reason) => write!(f, "Contract invalid: {reason}"),
             Self::RateLimitExceeded {
                 action_name,
                 current_count,
@@ -75,13 +79,11 @@ impl std::fmt::Display for PolicyViolation {
                 window_secs,
             } => write!(
                 f,
-                "Rate limit exceeded for '{}': {}/{} in {}s window",
-                action_name, current_count, limit, window_secs
+                "Rate limit exceeded for '{action_name}': {current_count}/{limit} in {window_secs}s window"
             ),
             Self::InsufficientAccessLevel { required, actual } => write!(
                 f,
-                "Insufficient access level: required {:?}, got {:?}",
-                required, actual
+                "Insufficient access level: required {required:?}, got {actual:?}"
             ),
         }
     }
