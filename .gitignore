@@ -1,5 +1,10 @@
 # Build artifacts
 target/
+# Custom CARGO_TARGET_DIRs used by local toolchain checks (MSRV, wasm)
+.target-*/
+
+# Session and tool logs
+*.log
 
 # IDE
 .idea/
