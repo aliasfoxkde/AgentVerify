@@ -188,8 +188,7 @@ jobs:
       - name: Run cargo-deny
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check
-          arguments: --locked ${{ matrix.checks }}
+          command: check ${{ matrix.checks }}
 
   wasm:
     name: WASM (wasm32-wasip1)
