@@ -743,7 +743,347 @@ mod tests {
         assert!(uri.contains("agentverify-verify"));
     }
 
-    // Note: Integration tests with a real PostgreSQL database would require
-    // a running PostgreSQL instance. These are tested separately in the
-    // integration test suite.
+    // --- construction and URI parsing ---
+
+    /// Render the error from a fallible call without requiring `Debug` on the
+    /// success type (`PostgresObserver` has no `Debug` impl).
+    fn error_of(result: Result<PostgresObserver, PostgresObserverError>) -> String {
+        match result {
+            Err(e) => e.to_string(),
+            Ok(_) => String::from("<unexpected Ok>"),
+        }
+    }
+
+    #[tokio::test]
+    async fn from_config_builds_a_pool() {
+        let observer = PostgresObserver::from_config(
+            PostgresObserverConfig::new()
+                .with_host("127.0.0.1")
+                .with_port(5433)
+                .with_user("postgres")
+                .with_database("agentverify_test"),
+        )
+        .await;
+        // Pool creation is lazy, so an unreachable host still succeeds here.
+        assert!(observer.is_ok(), "got: {}", error_of(observer));
+    }
+
+    #[tokio::test]
+    async fn from_config_rejects_an_empty_database_name() {
+        let rendered = error_of(
+            PostgresObserver::from_config(PostgresObserverConfig::new().with_database("")).await,
+        );
+        assert!(
+            rendered.contains("Pool creation failed"),
+            "expected 'Pool creation failed', got: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn from_uri_accepts_a_uri_with_an_empty_password() {
+        // `from_uri` requires the `user:password` shape, so a passwordless
+        // trust-auth endpoint is expressed with an empty password.
+        let result =
+            PostgresObserver::from_uri("postgres://postgres:@127.0.0.1:5433/agentverify_test")
+                .await;
+        assert!(result.is_ok(), "got: {}", error_of(result));
+    }
+
+    #[tokio::test]
+    async fn from_uri_accepts_query_parameters_and_percent_encoded_user() {
+        let result =
+            PostgresObserver::from_uri("postgres://post%67res:@127.0.0.1:5433/agentverify_test?sslmode=disable&application_name=agentverify-it")
+                .await;
+        assert!(result.is_ok(), "got: {}", error_of(result));
+    }
+
+    #[tokio::test]
+    async fn from_uri_rejects_a_uri_without_a_userinfo_separator() {
+        let rendered = error_of(
+            PostgresObserver::from_uri("postgres://127.0.0.1:5433/agentverify_test").await,
+        );
+        assert!(
+            rendered.contains("Invalid URI format"),
+            "expected 'Invalid URI format', got: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn from_uri_rejects_a_passwordless_userinfo_segment() {
+        // Known limitation: the `user`-only form (no ':' at all) is rejected,
+        // even though libpq itself accepts it for trust-authenticated servers.
+        let rendered = error_of(
+            PostgresObserver::from_uri("postgres://postgres@127.0.0.1:5433/agentverify_test").await,
+        );
+        assert!(
+            rendered.contains("Invalid user:password format"),
+            "expected 'Invalid user:password format', got: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn from_uri_rejects_too_many_password_separators() {
+        let rendered =
+            error_of(PostgresObserver::from_uri("postgres://u:p:w@127.0.0.1:5433/db").await);
+        assert!(
+            rendered.contains("Invalid user:password format"),
+            "got: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn from_uri_rejects_a_missing_database_segment() {
+        let rendered = error_of(PostgresObserver::from_uri("postgres://u:p@127.0.0.1:5433").await);
+        assert!(
+            rendered.contains("Invalid host:port/database format"),
+            "expected 'Invalid host:port/database format', got: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn from_uri_rejects_an_invalid_percent_encoded_user() {
+        // %FF decodes to a byte that is not valid UTF-8.
+        let rendered =
+            error_of(PostgresObserver::from_uri("postgres://%FF:pw@127.0.0.1:5433/db").await);
+        assert!(
+            rendered.contains("Invalid user encoding"),
+            "expected 'Invalid user encoding', got: {rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn from_uri_rejects_an_invalid_percent_encoded_password() {
+        let rendered =
+            error_of(PostgresObserver::from_uri("postgres://u:%FF@127.0.0.1:5433/db").await);
+        assert!(
+            rendered.contains("Invalid password encoding"),
+            "expected 'Invalid password encoding', got: {rendered}"
+        );
+    }
+
+    // --- error Display strings for every variant ---
+
+    #[test]
+    fn error_display_covers_every_variant() {
+        let cases: Vec<(PostgresObserverError, Vec<&str>)> = vec![
+            (
+                PostgresObserverError::Config("missing host".to_string()),
+                vec!["Configuration error", "missing host"],
+            ),
+            (
+                PostgresObserverError::PoolCreation("no dbname".to_string()),
+                vec!["Pool creation failed", "no dbname"],
+            ),
+            (
+                PostgresObserverError::QueryError("relation not found".to_string()),
+                vec!["Query execution failed", "relation not found"],
+            ),
+            (
+                PostgresObserverError::QueryBuildError("bad table".to_string()),
+                vec!["Query building failed", "bad table"],
+            ),
+            (
+                PostgresObserverError::ParseError("bad row".to_string()),
+                vec!["Result parsing failed", "bad row"],
+            ),
+            (PostgresObserverError::Timeout, vec!["Connection timeout"]),
+            (
+                PostgresObserverError::NoPostconditions,
+                vec!["No postconditions defined"],
+            ),
+        ];
+
+        for (err, expected) in cases {
+            let rendered = err.to_string();
+            for fragment in expected {
+                assert!(
+                    rendered.contains(fragment),
+                    "expected '{fragment}' in '{rendered}'"
+                );
+            }
+        }
+    }
+
+    // --- build_uri completeness ---
+
+    #[test]
+    fn build_uri_encodes_user_database_and_application_name() {
+        let uri = PostgresObserverConfig::new()
+            .with_host("10.0.0.8")
+            .with_port(6543)
+            .with_user("svc user")
+            .with_password("p@ss:w")
+            .with_database("prod db")
+            .with_ssl_mode("verify-full")
+            .with_application_name("agentverify it")
+            .build_uri();
+
+        assert_eq!(
+            uri,
+            "postgres://svc%20user:p%40ss%3Aw@10.0.0.8:6543/prod%20db?sslmode=verify-full&application_name=agentverify%20it"
+        );
+    }
+
+    // --- value conversion against a live PostgreSQL server ---
+
+    /// Live `PostgreSQL` URL; unset on machines without the service container.
+    fn live_url() -> Option<String> {
+        match std::env::var("AGENTVERIFY_TEST_POSTGRES_URL") {
+            Ok(url) if !url.trim().is_empty() => Some(url),
+            _ => None,
+        }
+    }
+
+    fn skip_notice() {
+        eprintln!("skipping service test: AGENTVERIFY_TEST_POSTGRES_URL is not set");
+    }
+
+    async fn connect(url: &str) -> tokio_postgres::Client {
+        let (client, conn) = tokio_postgres::connect(url, NoTls).await.unwrap();
+        tokio::spawn(async move {
+            if let Err(e) = conn.await {
+                eprintln!("postgres connection task ended: {e}");
+            }
+        });
+        client
+    }
+
+    const TYPE_MATRIX_TABLE: &str = "av_observe_pg_type_matrix";
+
+    /// One row of every column type the converter is expected to handle.
+    async fn seeded_type_matrix(client: &tokio_postgres::Client) {
+        let ddl = format!("DROP TABLE IF EXISTS {TYPE_MATRIX_TABLE}");
+        client.execute(ddl.as_str(), &[]).await.unwrap();
+        let ddl = format!(
+            "CREATE TABLE {TYPE_MATRIX_TABLE} (\
+             id TEXT PRIMARY KEY, \
+             json_payload TEXT, \
+             plain_text TEXT, \
+             big_int BIGINT, \
+             small_int INTEGER, \
+             ratio DOUBLE PRECISION, \
+             flag BOOLEAN, \
+             nullable TEXT)"
+        );
+        client.execute(ddl.as_str(), &[]).await.unwrap();
+        let insert = format!(
+            "INSERT INTO {TYPE_MATRIX_TABLE} \
+             (id, json_payload, plain_text, big_int, small_int, ratio, flag, nullable) \
+             VALUES ('m1', '{{\"a\": 1}}', 'plain text', 9007199254740993, 42, 1.5, true, NULL)"
+        );
+        client.execute(insert.as_str(), &[]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pg_value_to_json_maps_every_handled_column_type() {
+        let Some(url) = live_url() else {
+            skip_notice();
+            return;
+        };
+        let client = connect(&url).await;
+        seeded_type_matrix(&client).await;
+
+        let rows = client
+            .query(
+                &format!("SELECT * FROM {TYPE_MATRIX_TABLE} WHERE id = 'm1'"),
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "seeded row must be present");
+
+        let row = &rows[0];
+
+        // Column name -> expected JSON, one entry per storage type the
+        // converter is expected to handle.
+        let expected: [(&str, Value, &str); 8] = [
+            ("id", Value::String("m1".to_string()), "TEXT literal"),
+            (
+                "json_payload",
+                serde_json::json!({"a": 1}),
+                "TEXT holding JSON",
+            ),
+            (
+                "plain_text",
+                Value::String("plain text".to_string()),
+                "TEXT literal",
+            ),
+            (
+                "big_int",
+                Value::Number(9_007_199_254_740_993i64.into()),
+                "BIGINT",
+            ),
+            ("small_int", Value::Number(42.into()), "INTEGER"),
+            (
+                "ratio",
+                Value::Number(serde_json::Number::from_f64(1.5).unwrap()),
+                "DOUBLE PRECISION",
+            ),
+            ("flag", Value::Bool(true), "BOOLEAN"),
+            ("nullable", Value::Null, "NULL TEXT"),
+        ];
+
+        for (idx, column) in row.columns().iter().enumerate() {
+            let name = column.name();
+            let value = PostgresObserver::pg_value_to_json(row, idx);
+            let Some((_, want, kind)) = expected.iter().find(|(n, _, _)| *n == name) else {
+                panic!("unexpected column {name}");
+            };
+            assert_eq!(&value, want, "column {name} ({kind})");
+        }
+        assert_eq!(
+            row.columns().len(),
+            expected.len(),
+            "every declared column must be asserted"
+        );
+    }
+
+    #[tokio::test]
+    async fn pg_value_to_json_maps_non_finite_floats_to_null() {
+        let Some(url) = live_url() else {
+            skip_notice();
+            return;
+        };
+        let client = connect(&url).await;
+        let rows = client
+            .query(
+                "SELECT 'NaN'::float8 AS nan_col, 'Infinity'::float8 AS inf_col",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+
+        let row = &rows[0];
+        assert_eq!(PostgresObserver::pg_value_to_json(row, 0), Value::Null);
+        assert_eq!(PostgresObserver::pg_value_to_json(row, 1), Value::Null);
+    }
+
+    #[tokio::test]
+    async fn pg_value_to_json_maps_every_null_column_to_null() {
+        let Some(url) = live_url() else {
+            skip_notice();
+            return;
+        };
+        let client = connect(&url).await;
+        let rows = client
+            .query(
+                "SELECT NULL::text AS t, NULL::int8 AS i8, NULL::int4 AS i4, \
+                 NULL::float8 AS f8, NULL::bool AS b",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+
+        let row = &rows[0];
+        for idx in 0..row.columns().len() {
+            assert_eq!(
+                PostgresObserver::pg_value_to_json(row, idx),
+                Value::Null,
+                "column {}",
+                row.columns()[idx].name()
+            );
+        }
+    }
 }

@@ -6,16 +6,21 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot, watch, RwLock};
-use tokio::time::{timeout, Duration};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::time::{timeout_at, Duration, Instant};
 
 use crate::protocol::{
-    CallToolParams, CallToolResult, ClientCapabilities, ContentBlock, Implementation,
+    error_codes, CallToolParams, CallToolResult, ClientCapabilities, ContentBlock, Implementation,
     InitializeParams, InitializeResult, JsonRpcError, JsonRpcMessage, JsonRpcNotification,
     JsonRpcRequest, JsonRpcResponse, Prompt, Resource, ServerCapabilities, Tool,
     MCP_PROTOCOL_VERSION,
 };
 use crate::transport::{ChannelTransport, StdioTransport, TransportError};
+
+/// Capacity of the queue holding server notifications that no caller has
+/// drained yet. Notifications beyond this bound are dropped rather than
+/// allowed to stall response correlation.
+const NOTIFICATION_QUEUE_CAPACITY: usize = 64;
 
 /// MCP Client error types
 #[derive(Debug, thiserror::Error)]
@@ -93,9 +98,9 @@ impl Default for McpClientConfig {
     }
 }
 
-/// Pending request handle for correlating responses
+/// Pending request handle used to correlate responses
 struct PendingRequest {
-    _response_tx: oneshot::Sender<JsonRpcResponse>,
+    response_tx: oneshot::Sender<JsonRpcResponse>,
 }
 
 /// Unified transport type for MCP client
@@ -111,9 +116,11 @@ pub struct McpClient {
     server_capabilities: Arc<RwLock<Option<ServerCapabilities>>>,
     next_request_id: Arc<RwLock<u64>>,
     pending_requests: Arc<RwLock<HashMap<u64, PendingRequest>>>,
-    #[allow(dead_code)]
+    /// Sending half of the queue that buffers server notifications.
     notification_tx: mpsc::Sender<JsonRpcNotification>,
-    _shutdown_tx: Arc<watch::Sender<bool>>,
+    /// Receiving half of the queue; drained with
+    /// [`McpClient::next_notification`].
+    notifications: Mutex<mpsc::Receiver<JsonRpcNotification>>,
 }
 
 impl McpClient {
@@ -132,7 +139,30 @@ impl McpClient {
         Ok(Self::with_transport(config, McpTransport::Stdio(transport)))
     }
 
-    /// Create client with a custom channel transport (for testing)
+    /// Create a client together with the peer transport that answers it.
+    ///
+    /// The client sends requests into the returned [`ChannelTransport`] and
+    /// reads replies from it, so a caller can implement an in-process MCP
+    /// server with the `protocol` module types and exercise the client end to
+    /// end without spawning a process.
+    ///
+    /// # Errors
+    ///
+    /// This constructor currently always succeeds; the `Result` exists so the
+    /// signature matches the other constructors.
+    pub fn with_channel_peer(
+        config: McpClientConfig,
+    ) -> Result<(Self, ChannelTransport), McpClientError> {
+        let (client_side, server_side) = ChannelTransport::channel();
+        let client = Self::with_transport(config, McpTransport::Channel(client_side));
+        Ok((client, server_side))
+    }
+
+    /// Create client with a channel transport whose peer half is discarded
+    ///
+    /// Because the peer is dropped, requests issued through the returned client
+    /// fail with [`McpClientError::Channel`]. Use [`McpClient::with_channel_peer`]
+    /// when the transport must be answered in-process.
     ///
     /// # Errors
     ///
@@ -143,15 +173,12 @@ impl McpClient {
     /// though the body is currently synchronous.
     #[allow(clippy::unused_async)]
     pub async fn with_channel_transport(config: McpClientConfig) -> Result<Self, McpClientError> {
-        let transport = ChannelTransport::channel();
-        let transport = McpTransport::Channel(transport.0);
-        Ok(Self::with_transport(config, transport))
+        Ok(Self::with_channel_peer(config)?.0)
     }
 
     /// Create client with a transport enum
     fn with_transport(config: McpClientConfig, transport: McpTransport) -> Self {
-        let (notification_tx, _) = mpsc::channel(100);
-        let (shutdown_tx, _) = watch::channel(false);
+        let (notification_tx, notification_rx) = mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
 
         Self {
             transport,
@@ -160,7 +187,7 @@ impl McpClient {
             next_request_id: Arc::new(RwLock::new(1)),
             pending_requests: Arc::new(RwLock::new(HashMap::new())),
             notification_tx,
-            _shutdown_tx: Arc::new(shutdown_tx),
+            notifications: Mutex::new(notification_rx),
         }
     }
 
@@ -216,7 +243,6 @@ impl McpClient {
     }
 
     /// Receive a JSON-RPC message
-    #[allow(dead_code)]
     async fn recv_message(&self) -> Result<JsonRpcMessage, McpClientError> {
         match &self.transport {
             McpTransport::Stdio(t) => t.recv().await.map_err(Into::into),
@@ -224,7 +250,12 @@ impl McpClient {
         }
     }
 
-    /// Send a JSON-RPC request and wait for response
+    /// Send a JSON-RPC request and wait for the matching response
+    ///
+    /// While waiting, messages that are not this request's response are
+    /// dispatched: responses belonging to other in-flight requests are handed
+    /// to their owner, notifications are queued, and server-initiated requests
+    /// are rejected with `METHOD_NOT_FOUND`.
     async fn request(
         &self,
         method: &str,
@@ -238,48 +269,142 @@ impl McpClient {
         };
 
         let request = JsonRpcRequest::new(request_id, method, params);
+        let expected_id = request.id.clone();
         let (response_tx, response_rx) = oneshot::channel();
 
-        // Register pending request
+        // Register pending request so concurrent callers can be handed their
+        // responses when this loop reads them first.
         {
             let mut pending = self.pending_requests.write().await;
-            pending.insert(
-                request_id,
-                PendingRequest {
-                    _response_tx: response_tx,
-                },
-            );
+            pending.insert(request_id, PendingRequest { response_tx });
         }
 
-        // Send request
-        self.send_message(JsonRpcMessage::Request(request)).await?;
+        let deadline = Instant::now() + Duration::from_secs(self.config.timeout_secs);
 
-        // Wait for response with timeout
-        let timeout_result: Result<
-            Result<JsonRpcResponse, oneshot::error::RecvError>,
-            tokio::time::error::Elapsed,
-        > = timeout(Duration::from_secs(self.config.timeout_secs), response_rx).await;
-
-        // Remove pending request
-        {
-            let mut pending = self.pending_requests.write().await;
-            pending.remove(&request_id);
+        let outcome = async {
+            self.send_message(JsonRpcMessage::Request(request)).await?;
+            self.await_response(&expected_id, deadline, response_rx)
+                .await
         }
+        .await;
 
-        let response: JsonRpcResponse = match timeout_result {
-            Ok(Ok(resp)) => resp,
-            Ok(Err(_)) => {
-                return Err(McpClientError::Channel(
-                    "Response receiver dropped".to_string(),
-                ))
-            }
-            Err(_) => return Err(McpClientError::Timeout),
-        };
+        // Whatever the outcome, this request no longer owns its slot.
+        Self::take_pending(&self.pending_requests, request_id).await;
 
-        match response {
+        match outcome? {
             JsonRpcResponse::Success { result, .. } => Ok(result),
             JsonRpcResponse::Error { error, .. } => Err(McpClientError::JsonRpc(error)),
         }
+    }
+
+    /// Read messages until the response identified by `expected_id` arrives
+    async fn await_response(
+        &self,
+        expected_id: &serde_json::Value,
+        deadline: Instant,
+        mut response_rx: oneshot::Receiver<JsonRpcResponse>,
+    ) -> Result<JsonRpcResponse, McpClientError> {
+        match timeout_at(deadline, async {
+            loop {
+                // Wait for either the correlated response or the next
+                // transport message; a concurrent caller may have routed
+                // the response here already.
+                let step = tokio::select! {
+                    response = &mut response_rx => match response {
+                        Ok(response) => Step::Correlated(response),
+                        // Defensive: the only sender is this client's own
+                        // pending slot, which outlives the wait, so this cannot
+                        // fire while a request is in flight.
+                        Err(_) => {
+                            return Err(McpClientError::Channel(
+                                "response channel closed".to_string(),
+                            ))
+                        }
+                    },
+                    message = self.recv_message() => match message {
+                        Ok(message) => Step::Message(message),
+                        Err(err) => return Err(err),
+                    },
+                };
+
+                match step {
+                    Step::Correlated(response) => return Ok(response),
+                    Step::Message(message) => {
+                        if let Some(response) = self.dispatch(message, expected_id).await? {
+                            return Ok(response);
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        {
+            Ok(response) => response,
+            Err(_elapsed) => Err(McpClientError::Timeout),
+        }
+    }
+
+    /// Route a message that is not known to be the awaited response
+    ///
+    /// Returns the awaited response when the transport delivers it directly.
+    async fn dispatch(
+        &self,
+        message: JsonRpcMessage,
+        expected_id: &serde_json::Value,
+    ) -> Result<Option<JsonRpcResponse>, McpClientError> {
+        match message {
+            JsonRpcMessage::Response(response) => {
+                if response_id(&response) == expected_id {
+                    return Ok(Some(response));
+                }
+
+                // Someone else's response: hand it to the owner if that request
+                // is still pending, otherwise the response is stale.
+                let Some(owner_id) = response_id(&response).as_u64() else {
+                    return Ok(None);
+                };
+                if let Some(pending) = Self::take_pending(&self.pending_requests, owner_id).await {
+                    let _ = pending.response_tx.send(response);
+                }
+                Ok(None)
+            }
+            JsonRpcMessage::Notification(notification) => {
+                // Bounded queue: a caller that never drains notifications must
+                // not be able to stall response correlation.
+                let _ = self.notification_tx.try_send(notification);
+                Ok(None)
+            }
+            JsonRpcMessage::Request(incoming) => {
+                self.reject_request(incoming.id).await;
+                Ok(None)
+            }
+        }
+    }
+
+    /// Reply to a server-initiated request with "method not found"
+    ///
+    /// This client issues requests but does not implement the server-to-client
+    /// methods (`sampling/createMessage`, `roots/list`, ...), so the
+    /// specification-compliant answer is a JSON-RPC error.
+    async fn reject_request(&self, id: serde_json::Value) {
+        let response = JsonRpcResponse::Error {
+            jsonrpc: "2.0".to_string(),
+            id,
+            error: JsonRpcError::new(
+                error_codes::METHOD_NOT_FOUND,
+                "client does not support server-initiated requests",
+            ),
+        };
+        let _ = self.send_message(JsonRpcMessage::Response(response)).await;
+    }
+
+    /// Remove a pending request, returning its response channel if it was
+    /// still registered
+    async fn take_pending(
+        pending: &RwLock<HashMap<u64, PendingRequest>>,
+        id: u64,
+    ) -> Option<PendingRequest> {
+        pending.write().await.remove(&id)
     }
 
     // =============================================================================
@@ -414,6 +539,32 @@ impl McpClient {
         }
     }
 
+    /// Close the transport
+    ///
+    /// After this returns, [`McpClient::is_connected`] reports `false` and any
+    /// further request fails with
+    /// [`McpClientError::Transport`](`TransportError::NotConnected`).
+    ///
+    /// A stdio server process is not signalled directly; it exits when the
+    /// transport is dropped and its stdin pipe closes.
+    pub fn shutdown(&self) {
+        match &self.transport {
+            McpTransport::Stdio(t) => t.set_connected(false),
+            McpTransport::Channel(t) => t.set_connected(false),
+        }
+    }
+
+    /// Take the next notification the server sent, if one is queued
+    ///
+    /// Notifications that arrive while the client is correlating a response are
+    /// buffered here; the queue is bounded and drops notifications once the
+    /// capacity (`NOTIFICATION_QUEUE_CAPACITY`) is reached. This returns
+    /// immediately rather than waiting, because notifications are only queued
+    /// while a request is in flight.
+    pub async fn next_notification(&self) -> Option<JsonRpcNotification> {
+        self.notifications.lock().await.try_recv().ok()
+    }
+
     /// Get server capabilities (after initialization)
     pub async fn get_server_capabilities(&self) -> Option<ServerCapabilities> {
         let caps = self.server_capabilities.read().await;
@@ -424,6 +575,21 @@ impl McpClient {
 // =============================================================================
 // Response Types
 // =============================================================================
+
+/// The echoed request id carried by a JSON-RPC response
+fn response_id(response: &JsonRpcResponse) -> &serde_json::Value {
+    match response {
+        JsonRpcResponse::Success { id, .. } | JsonRpcResponse::Error { id, .. } => id,
+    }
+}
+
+/// What the next event produced while waiting for a response
+enum Step {
+    /// The awaited response arrived on its correlated channel.
+    Correlated(JsonRpcResponse),
+    /// The next transport message still needs dispatching.
+    Message(JsonRpcMessage),
+}
 
 /// Tools list response
 #[derive(Debug, serde::Deserialize)]
@@ -475,11 +641,101 @@ pub struct PromptMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_client_config_default() {
         let config = McpClientConfig::default();
         assert_eq!(config.timeout_secs, 30);
         assert_eq!(config.client_info.name, "agentverify-mcp");
+        assert_eq!(config.client_info.version, env!("CARGO_PKG_VERSION"));
+        assert!(config.command.is_empty());
+        assert!(config.args.is_empty());
+        assert!(config.capabilities.sampling.is_none());
+    }
+
+    #[test]
+    fn error_messages_are_stable() {
+        let transport = McpClientError::Transport(TransportError::NotConnected);
+        assert_eq!(transport.to_string(), "Transport error: Not connected");
+
+        let timeout = McpClientError::Timeout;
+        assert_eq!(timeout.to_string(), "Request timeout");
+
+        let not_initialized = McpClientError::NotInitialized;
+        assert_eq!(not_initialized.to_string(), "Not initialized");
+
+        let json_rpc = McpClientError::JsonRpc(JsonRpcError::new(-32601, "no such method"));
+        assert_eq!(
+            json_rpc.to_string(),
+            "JSON-RPC error: JSON-RPC error -32601: no such method"
+        );
+
+        let server = McpClientError::ServerError {
+            code: -32022,
+            message: "unsupported version".to_string(),
+        };
+        assert_eq!(
+            server.to_string(),
+            "Server returned error: -32022 unsupported version"
+        );
+
+        let invalid = McpClientError::InvalidResponse {
+            expected: "InitializeResult".to_string(),
+            got: "missing field `server_info`".to_string(),
+        };
+        assert_eq!(
+            invalid.to_string(),
+            "Invalid response: expected InitializeResult, got missing field `server_info`"
+        );
+
+        let capability = McpClientError::CapabilityNotSupported("sampling".to_string());
+        assert_eq!(capability.to_string(), "Capability not supported: sampling");
+
+        let channel = McpClientError::Channel("Receiver dropped".to_string());
+        assert_eq!(channel.to_string(), "Channel error: Receiver dropped");
+    }
+
+    #[test]
+    fn transport_errors_convert_into_client_errors() {
+        let err: McpClientError = TransportError::NotConnected.into();
+        assert!(matches!(
+            err,
+            McpClientError::Transport(TransportError::NotConnected)
+        ));
+
+        let parse = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let err: McpClientError = TransportError::from(parse).into();
+        assert!(matches!(
+            err,
+            McpClientError::Transport(TransportError::Json(_))
+        ));
+
+        let io = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe closed");
+        let err: McpClientError = TransportError::from(io).into();
+        assert!(
+            matches!(err, McpClientError::Transport(TransportError::Io(ref e))
+                if e.kind() == std::io::ErrorKind::BrokenPipe)
+        );
+    }
+
+    #[test]
+    fn response_ids_are_read_from_both_response_shapes() {
+        let success = JsonRpcResponse::Success {
+            jsonrpc: "2.0".to_string(),
+            id: json!(3),
+            result: json!({}),
+        };
+        let error = JsonRpcResponse::Error {
+            jsonrpc: "2.0".to_string(),
+            id: json!("abc"),
+            error: JsonRpcError::new(-32603, "boom"),
+        };
+
+        assert_eq!(response_id(&success), &json!(3));
+        assert_eq!(response_id(&error), &json!("abc"));
+        // Numeric ids match the client's own request ids.
+        assert_eq!(response_id(&success).as_u64(), Some(3));
+        assert_eq!(response_id(&error).as_u64(), None);
     }
 }

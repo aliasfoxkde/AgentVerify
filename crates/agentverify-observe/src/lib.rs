@@ -17,7 +17,16 @@
 //! - [`RedisObserver`] - Redis-based observation via deadpool-redis
 //! - `RestObserver` - HTTP/REST-based observation (via agentverify-http)
 
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::print_stderr,
+        clippy::dbg_macro,
+        clippy::panic
+    )
+)]
 mod postgres;
 mod redis_observer;
 

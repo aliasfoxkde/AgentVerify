@@ -278,3 +278,23 @@ async fn mock_server_redaction_in_response() {
     assert_eq!(observation.state["password"], "[REDACTED]");
     assert_eq!(observation.state["api_key"], "[REDACTED]");
 }
+
+#[tokio::test]
+async fn mock_server_action_name_that_breaks_the_url_is_unknown() {
+    // No server is needed: the observer refuses to build the URL at all.
+    let observer = make_observer("http://127.0.0.1:9", None);
+
+    let action = Action::new("auto-generated-id", serde_json::json!({}));
+    let contract = Contract::new("../../../etc/passwd");
+
+    let result = observer.observe(&action, &contract).await;
+    assert!(
+        result.is_err(),
+        "a broken URL must not produce an observation, got {result:?}"
+    );
+    let err_str = format!("{result:?}");
+    assert!(
+        err_str.contains("Failed to build URL"),
+        "expected the URL failure to be reported as UNKNOWN, got: {err_str}"
+    );
+}

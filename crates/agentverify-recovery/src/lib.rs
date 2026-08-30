@@ -959,6 +959,10 @@ impl RecoveryStrategy for CompositeStrategy {
 mod tests {
     use super::*;
 
+    /// Concrete operation type for [`CircuitBreaker::execute`], whose `Fut`
+    /// parameter is unconstrained and therefore has to be named by callers.
+    type ReadyOp = std::future::Ready<Result<VerificationResult, RecoveryError>>;
+
     fn async_ok(
         result: VerificationResult,
     ) -> impl Future<Output = Result<VerificationResult, RecoveryError>> {
@@ -969,6 +973,16 @@ mod tests {
         err: RecoveryError,
     ) -> impl Future<Output = Result<VerificationResult, RecoveryError>> {
         std::future::ready(Err(err))
+    }
+
+    /// Operation that becomes ready after `delay_ms`, used both by tests where
+    /// the timeout wins (the future is dropped) and by tests where it completes.
+    async fn completes_after(
+        delay_ms: u64,
+        result: VerificationResult,
+    ) -> Result<VerificationResult, RecoveryError> {
+        tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+        Ok(result)
     }
 
     #[tokio::test]
@@ -1087,12 +1101,8 @@ mod tests {
     #[tokio::test]
     async fn timeout_strategy_times_out() {
         let strategy = TimeoutStrategy::new(Duration::milliseconds(10));
-        let factory: FutureFactory = Arc::new(|| {
-            Box::pin(async {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                Ok(VerificationResult::Unknown)
-            })
-        });
+        let factory: FutureFactory =
+            Arc::new(|| Box::pin(completes_after(100, VerificationResult::Unknown)));
 
         let outcome = strategy.execute(factory).await;
 
@@ -1105,12 +1115,8 @@ mod tests {
     #[tokio::test]
     async fn timeout_strategy_succeeds_within_timeout() {
         let strategy = TimeoutStrategy::new(Duration::milliseconds(100));
-        let factory: FutureFactory = Arc::new(|| {
-            Box::pin(async {
-                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                Ok(VerificationResult::Verified)
-            })
-        });
+        let factory: FutureFactory =
+            Arc::new(|| Box::pin(completes_after(10, VerificationResult::Verified)));
 
         let outcome = strategy.execute(factory).await;
 
@@ -1226,6 +1232,760 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), VerificationResult::Verified);
+    }
+
+    // ------------------------------------------------------------------
+    // Backoff
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn backoff_default_is_exponential_with_documented_bounds() {
+        let backoff = Backoff::default();
+        assert_eq!(backoff.backoff_type, BackoffType::Exponential);
+        assert_eq!(backoff.initial, Duration::milliseconds(100));
+        assert_eq!(backoff.max, Duration::seconds(30));
+        assert!((backoff.multiplier - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn backoff_multiplier_is_configurable() {
+        let backoff = Backoff::new(
+            BackoffType::Linear,
+            Duration::milliseconds(100),
+            Duration::seconds(10),
+        )
+        .with_multiplier(0.5);
+
+        assert!((backoff.multiplier - 0.5).abs() < f64::EPSILON);
+        assert_eq!(backoff.calculate_delay(2), Duration::milliseconds(200));
+    }
+
+    #[test]
+    fn backoff_delay_is_clamped_to_max() {
+        let backoff = Backoff::new(
+            BackoffType::Exponential,
+            Duration::milliseconds(100),
+            Duration::milliseconds(300),
+        );
+
+        assert_eq!(backoff.calculate_delay(0), Duration::milliseconds(100));
+        assert_eq!(backoff.calculate_delay(1), Duration::milliseconds(200));
+        assert_eq!(backoff.calculate_delay(2), Duration::milliseconds(300));
+        assert_eq!(backoff.calculate_delay(9), Duration::milliseconds(300));
+    }
+
+    #[test]
+    fn backoff_types_roundtrip_through_serde() {
+        let pairs = [
+            (BackoffType::Fixed, "fixed"),
+            (BackoffType::Linear, "linear"),
+            (BackoffType::Exponential, "exponential"),
+        ];
+        for (kind, name) in pairs {
+            let json = serde_json::to_string(&kind).unwrap();
+            assert_eq!(json, format!(r#""{name}""#));
+            let back: BackoffType = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, kind);
+        }
+        assert_eq!(BackoffType::default(), BackoffType::Exponential);
+    }
+
+    #[test]
+    fn backoff_accessors_expose_the_configuration() {
+        let strategy = RetryStrategy::new(
+            5,
+            Backoff::new(
+                BackoffType::Fixed,
+                Duration::milliseconds(5),
+                Duration::seconds(1),
+            ),
+        );
+        assert_eq!(strategy.max_attempts(), 5);
+        assert_eq!(strategy.backoff().backoff_type, BackoffType::Fixed);
+        assert_eq!(strategy.backoff().initial, Duration::milliseconds(5));
+    }
+
+    // ------------------------------------------------------------------
+    // Strategy enum dispatch
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn strategy_enum_dispatches_execute_to_every_variant() {
+        let circuit_breaker = Arc::new(CircuitBreaker::with_default_config());
+        let strategies = vec![
+            RecoveryStrategyEnum::Retry(RetryStrategy::with_default_backoff(1)),
+            RecoveryStrategyEnum::CircuitBreaker(CircuitBreakerStrategy::new(circuit_breaker)),
+            RecoveryStrategyEnum::Timeout(TimeoutStrategy::new(Duration::seconds(1))),
+            RecoveryStrategyEnum::Composite(CompositeStrategy::new().add_strategy(
+                RecoveryStrategyEnum::Retry(RetryStrategy::with_default_backoff(1)),
+            )),
+        ];
+
+        for strategy in &strategies {
+            let factory: FutureFactory =
+                Arc::new(|| Box::pin(async_ok(VerificationResult::Verified)));
+            let outcome = strategy.execute(factory).await;
+            assert!(
+                matches!(
+                    outcome,
+                    RecoveryOutcome::Success(VerificationResult::Verified)
+                ),
+                "every strategy must dispatch execute: got {outcome:?}"
+            );
+        }
+    }
+
+    /// The fallback variant has no way to run its (private) fallback list
+    /// through a factory, so dispatching to it reports an exhausted chain.
+    #[tokio::test]
+    async fn strategy_enum_fallback_variant_reports_exhaustion() {
+        let strategy = RecoveryStrategyEnum::Fallback(FallbackStrategy::new());
+        let factory: FutureFactory = Arc::new(|| Box::pin(async_ok(VerificationResult::Verified)));
+        let outcome = strategy.execute(factory).await;
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Failure(RecoveryError::AllFallbacksExhausted)
+        ));
+    }
+
+    #[test]
+    fn strategy_enum_dispatches_is_applicable_to_every_variant() {
+        let circuit_breaker = Arc::new(CircuitBreaker::with_default_config());
+        let strategies = vec![
+            RecoveryStrategyEnum::Retry(RetryStrategy::with_default_backoff(1)),
+            RecoveryStrategyEnum::Fallback(FallbackStrategy::new().with_fallback("cache")),
+            RecoveryStrategyEnum::CircuitBreaker(CircuitBreakerStrategy::new(circuit_breaker)),
+            RecoveryStrategyEnum::Timeout(TimeoutStrategy::new(Duration::seconds(1))),
+            RecoveryStrategyEnum::Composite(CompositeStrategy::new().add_strategy(
+                RecoveryStrategyEnum::Timeout(TimeoutStrategy::new(Duration::seconds(1))),
+            )),
+        ];
+
+        for strategy in &strategies {
+            // Only the circuit breaker accepts every result unconditionally.
+            let expected = matches!(strategy, RecoveryStrategyEnum::CircuitBreaker(_));
+            assert_eq!(
+                strategy.is_applicable(VerificationResult::Verified),
+                expected
+            );
+            assert!(strategy.is_applicable(VerificationResult::Unknown));
+            assert!(strategy.is_applicable(VerificationResult::Partial));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Retry
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn retry_reports_the_operation_error_once_attempts_run_out() {
+        let backoff = Backoff::new(
+            BackoffType::Fixed,
+            Duration::milliseconds(1),
+            Duration::seconds(1),
+        );
+        let strategy = RetryStrategy::new(2, backoff);
+        let factory: FutureFactory = Arc::new(|| {
+            Box::pin(async_err(RecoveryError::UnderlyingError {
+                context: "provider unavailable".into(),
+            }))
+        });
+
+        let outcome = strategy.execute(factory).await;
+        // Repeated operation errors are collapsed: the strategy reports that it
+        // ran out of attempts rather than the last underlying error.
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Failure(RecoveryError::MaxAttemptsExceeded { attempts: 2 })
+        ));
+    }
+
+    /// The last underlying error only surfaces when a terminal failure was also
+    /// seen, which sets `has_failure` and lets the recorded error through.
+    #[tokio::test]
+    async fn retry_surfaces_the_last_error_after_a_terminal_failure() {
+        let backoff = Backoff::new(
+            BackoffType::Fixed,
+            Duration::milliseconds(1),
+            Duration::seconds(1),
+        );
+        let strategy = RetryStrategy::new(2, backoff);
+        let calls = Arc::new(AtomicU32::new(0));
+        let counter = calls.clone();
+
+        let factory: FutureFactory = Arc::new(move || {
+            let seen = counter.fetch_add(1, Ordering::SeqCst);
+            if seen == 0 {
+                Box::pin(async_ok(VerificationResult::Failed))
+            } else {
+                Box::pin(async_err(RecoveryError::UnderlyingError {
+                    context: "provider unavailable".into(),
+                }))
+            }
+        });
+
+        let outcome = strategy.execute(factory).await;
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Failure(RecoveryError::UnderlyingError { ref context })
+                if context == "provider unavailable"
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn retry_stops_immediately_when_the_circuit_breaker_is_open() {
+        let backoff = Backoff::new(
+            BackoffType::Fixed,
+            Duration::milliseconds(1),
+            Duration::seconds(1),
+        );
+        let strategy = RetryStrategy::new(5, backoff);
+        let calls = Arc::new(AtomicU32::new(0));
+        let counter = calls.clone();
+
+        let factory: FutureFactory = Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async_err(RecoveryError::CircuitBreakerOpen))
+        });
+
+        let outcome = strategy.execute(factory).await;
+        // The loop stops after the first open-breaker error, but the breaker
+        // signal itself is not preserved: the caller sees the attempt limit.
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Failure(RecoveryError::MaxAttemptsExceeded { attempts: 5 })
+        ));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "an open breaker must abort the retry loop"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_surfaces_a_terminal_failure_as_not_applicable() {
+        let backoff = Backoff::new(
+            BackoffType::Fixed,
+            Duration::milliseconds(1),
+            Duration::seconds(1),
+        );
+        let strategy = RetryStrategy::new(2, backoff);
+        let factory: FutureFactory = Arc::new(|| Box::pin(async_ok(VerificationResult::Failed)));
+
+        let outcome = strategy.execute(factory).await;
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Failure(RecoveryError::NotApplicable {
+                result: VerificationResult::Failed,
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn retry_treats_duplicate_as_a_successful_stop() {
+        let strategy = RetryStrategy::with_default_backoff(2);
+        let factory: FutureFactory = Arc::new(|| Box::pin(async_ok(VerificationResult::Duplicate)));
+        let outcome = strategy.execute(factory).await;
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Success(VerificationResult::Duplicate)
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // Fallback
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn fallback_tracks_its_budget() {
+        let fallback = Fallback::new("cache-read").with_max_uses(2);
+        assert_eq!(fallback.name(), "cache-read");
+        assert!(!fallback.is_exhausted());
+
+        let once = fallback.clone();
+        assert_eq!(once.name(), "cache-read", "clone keeps the name");
+        assert!(!once.is_exhausted());
+
+        // An unlimited fallback never reports exhaustion.
+        let unlimited = Fallback::new("always");
+        assert!(!unlimited.is_exhausted());
+    }
+
+    #[tokio::test]
+    async fn fallback_strategy_reports_exhaustion() {
+        let strategy = FallbackStrategy::new()
+            .add_fallback(Fallback::new("cache"))
+            .with_fallback("archive");
+
+        assert_eq!(strategy.fallbacks.len(), 2);
+
+        let factory: FutureFactory = Arc::new(|| Box::pin(async_ok(VerificationResult::Verified)));
+        let outcome = strategy.execute(factory).await;
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Failure(RecoveryError::AllFallbacksExhausted)
+        ));
+    }
+
+    #[tokio::test]
+    async fn fallback_strategy_is_applicable_for_retryable_results() {
+        let strategy = FallbackStrategy::default();
+        assert!(strategy.is_applicable(VerificationResult::Failed));
+        assert!(strategy.is_applicable(VerificationResult::Partial));
+        assert!(strategy.is_applicable(VerificationResult::Unknown));
+        assert!(!strategy.is_applicable(VerificationResult::Verified));
+        assert!(!strategy.is_applicable(VerificationResult::Duplicate));
+    }
+
+    #[tokio::test]
+    async fn fallback_chain_skips_a_fallback_that_does_not_succeed() {
+        // The first fallback completes but does not satisfy the postcondition,
+        // so the chain must keep looking rather than accept the result.
+        let result = execute_fallback_chain(vec![
+            (
+                "stale".to_string(),
+                Box::new(|| async_ok(VerificationResult::Partial)) as Box<dyn Fn() -> _>,
+            ),
+            (
+                "fresh".to_string(),
+                Box::new(|| async_ok(VerificationResult::Verified)) as Box<dyn Fn() -> _>,
+            ),
+        ])
+        .await;
+
+        assert_eq!(result.unwrap(), VerificationResult::Verified);
+    }
+
+    // ------------------------------------------------------------------
+    // Circuit breaker
+    // ------------------------------------------------------------------
+
+    fn breaker(config: CircuitBreakerConfig) -> CircuitBreaker {
+        CircuitBreaker::new(config)
+    }
+
+    #[test]
+    fn circuit_breaker_config_defaults_are_documented() {
+        let config = CircuitBreakerConfig::default();
+        assert_eq!(config.failure_threshold, 5);
+        assert_eq!(config.success_threshold, 2);
+        assert_eq!(config.recovery_timeout, Duration::seconds(30));
+    }
+
+    #[test]
+    fn circuit_breaker_is_debuggable() {
+        let cb = breaker(CircuitBreakerConfig::default());
+        let debugged = std::format!("{cb:?}");
+        assert!(debugged.contains("CircuitBreaker"));
+        assert!(debugged.contains("failure_count"));
+        assert!(debugged.contains("success_count"));
+        assert!(debugged.contains("last_failure"));
+        assert!(debugged.contains("config"));
+    }
+
+    #[test]
+    fn closed_circuit_allows_operations_and_resets_the_failure_count() {
+        let cb = breaker(CircuitBreakerConfig {
+            failure_threshold: 3,
+            success_threshold: 1,
+            recovery_timeout: Duration::seconds(30),
+        });
+
+        assert!(cb.is_allowed());
+        assert_eq!(cb.state(), CircuitState::Closed);
+
+        cb.record_failure();
+        cb.record_success();
+        assert_eq!(cb.state(), CircuitState::Closed);
+
+        // The success reset the counter, so two more failures stay closed.
+        cb.record_failure();
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Closed);
+    }
+
+    #[test]
+    fn open_circuit_rejects_until_the_recovery_timeout_elapses() {
+        let cb = breaker(CircuitBreakerConfig {
+            failure_threshold: 1,
+            success_threshold: 1,
+            recovery_timeout: Duration::seconds(3600),
+        });
+
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Open);
+        assert!(
+            !cb.is_allowed(),
+            "no time has passed, so the breaker stays open"
+        );
+        assert_eq!(cb.state(), CircuitState::Open);
+
+        // Further failures while open are ignored rather than re-arming timers.
+        cb.record_failure();
+        cb.record_success();
+        assert_eq!(cb.state(), CircuitState::Open);
+    }
+
+    #[test]
+    fn half_open_failure_reopens_the_breaker() {
+        let cb = breaker(CircuitBreakerConfig {
+            failure_threshold: 1,
+            success_threshold: 2,
+            recovery_timeout: Duration::milliseconds(5),
+        });
+
+        cb.record_failure();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(cb.is_allowed());
+        assert_eq!(cb.state(), CircuitState::HalfOpen);
+
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Open, "a failed probe reopens");
+
+        // The probe's success count was cleared, so half-open must be re-earned.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert!(cb.is_allowed());
+        cb.record_success();
+        assert_eq!(cb.state(), CircuitState::HalfOpen);
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_execute_records_successes_and_failures() {
+        let cb = breaker(CircuitBreakerConfig {
+            failure_threshold: 2,
+            success_threshold: 1,
+            recovery_timeout: Duration::seconds(30),
+        });
+
+        // `Fut` is an unconstrained parameter on `CircuitBreaker::execute`, so
+        // each operation names its concrete future type via `ReadyOp`.
+        let verified: ReadyOp = std::future::ready(Ok(VerificationResult::Verified));
+        let ok = cb.execute::<ReadyOp, ReadyOp>(verified).await;
+        assert_eq!(ok.unwrap(), VerificationResult::Verified);
+
+        // A completed operation that does not satisfy the postconditions still
+        // counts as a breaker failure.
+        let failed: ReadyOp = std::future::ready(Ok(VerificationResult::Failed));
+        let unsatisfied = cb.execute::<ReadyOp, ReadyOp>(failed).await;
+        assert_eq!(unsatisfied.unwrap(), VerificationResult::Failed);
+        assert_eq!(cb.state(), CircuitState::Closed);
+
+        let rejected: ReadyOp = std::future::ready(Err(RecoveryError::UnderlyingError {
+            context: "boom".into(),
+        }));
+        let err = cb.execute::<ReadyOp, ReadyOp>(rejected).await;
+        assert!(matches!(
+            err,
+            Err(RecoveryError::UnderlyingError { ref context }) if context == "boom"
+        ));
+        assert_eq!(
+            cb.state(),
+            CircuitState::Open,
+            "two failures opened the breaker"
+        );
+
+        // While open, execute refuses without running the operation.
+        let op: ReadyOp = std::future::ready(Ok(VerificationResult::Verified));
+        let refused = cb.execute::<ReadyOp, ReadyOp>(op).await;
+        assert!(matches!(refused, Err(RecoveryError::CircuitBreakerOpen)));
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_strategy_wraps_the_breaker() {
+        let strategy = CircuitBreakerStrategy::with_default_config();
+        let breaker = strategy.circuit_breaker();
+        assert_eq!(breaker.state(), CircuitState::Closed);
+
+        let factory: FutureFactory = Arc::new(|| Box::pin(async_ok(VerificationResult::Verified)));
+        let outcome = strategy.execute(factory).await;
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Success(VerificationResult::Verified)
+        ));
+        assert!(strategy.is_applicable(VerificationResult::Failed));
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_strategy_reports_an_open_breaker() {
+        let cb = Arc::new(breaker(CircuitBreakerConfig {
+            failure_threshold: 1,
+            success_threshold: 1,
+            recovery_timeout: Duration::seconds(3600),
+        }));
+        cb.record_failure();
+
+        let strategy = CircuitBreakerStrategy::new(cb);
+        let factory: FutureFactory = Arc::new(|| Box::pin(async_ok(VerificationResult::Verified)));
+        let outcome = strategy.execute(factory).await;
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Failure(RecoveryError::CircuitBreakerOpen)
+        ));
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_strategy_propagates_operation_errors() {
+        let strategy = CircuitBreakerStrategy::new(Arc::new(breaker(CircuitBreakerConfig {
+            failure_threshold: 5,
+            success_threshold: 1,
+            recovery_timeout: Duration::seconds(30),
+        })));
+        let factory: FutureFactory =
+            Arc::new(|| Box::pin(async_err(RecoveryError::CircuitBreakerOpen)));
+        let outcome = strategy.execute(factory).await;
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Failure(RecoveryError::CircuitBreakerOpen)
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // Timeout
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn timeout_strategy_exposes_its_duration() {
+        let strategy = TimeoutStrategy::new(Duration::milliseconds(250));
+        assert_eq!(strategy.timeout(), Duration::milliseconds(250));
+    }
+
+    #[tokio::test]
+    async fn timeout_strategy_propagates_an_operation_error() {
+        let strategy = TimeoutStrategy::new(Duration::seconds(1));
+        let factory: FutureFactory = Arc::new(|| {
+            Box::pin(async_err(RecoveryError::UnderlyingError {
+                context: "rejected".into(),
+            }))
+        });
+
+        let outcome = strategy.execute(factory).await;
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Failure(RecoveryError::UnderlyingError { ref context })
+                if context == "rejected"
+        ));
+    }
+
+    #[test]
+    fn timeout_strategy_is_applicable_for_ambiguous_results() {
+        let strategy = TimeoutStrategy::new(Duration::seconds(1));
+        assert!(strategy.is_applicable(VerificationResult::Unknown));
+        assert!(strategy.is_applicable(VerificationResult::Partial));
+        assert!(!strategy.is_applicable(VerificationResult::Failed));
+        assert!(!strategy.is_applicable(VerificationResult::Verified));
+        assert!(!strategy.is_applicable(VerificationResult::Duplicate));
+    }
+
+    // ------------------------------------------------------------------
+    // Executor
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn executor_returns_the_primary_success_without_trying_fallbacks() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let counter = calls.clone();
+        let primary = RecoveryStrategyEnum::Retry(RetryStrategy::with_default_backoff(2));
+        let executor = RecoveryExecutor::new(primary)
+            .with_fallback(RecoveryStrategyEnum::Fallback(FallbackStrategy::new()));
+
+        let outcome = executor
+            .execute(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                async_ok(VerificationResult::Verified)
+            })
+            .await;
+
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Success(VerificationResult::Verified)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn executor_falls_back_to_a_strategy_that_succeeds() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let counter = calls.clone();
+
+        let executor = RecoveryExecutor::new(RecoveryStrategyEnum::Retry(
+            RetryStrategy::with_default_backoff(1),
+        ))
+        .with_fallback(RecoveryStrategyEnum::Retry(
+            RetryStrategy::with_default_backoff(2),
+        ));
+
+        let outcome = executor
+            .execute(move || {
+                let seen = counter.fetch_add(1, Ordering::SeqCst);
+                if seen == 0 {
+                    async_ok(VerificationResult::Unknown)
+                } else {
+                    async_ok(VerificationResult::Verified)
+                }
+            })
+            .await;
+
+        assert!(
+            matches!(
+                outcome,
+                RecoveryOutcome::Success(VerificationResult::Verified)
+            ),
+            "the fallback must be allowed to recover"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn executor_is_blocked_by_an_open_circuit_breaker() {
+        let cb = Arc::new(breaker(CircuitBreakerConfig {
+            failure_threshold: 1,
+            success_threshold: 1,
+            recovery_timeout: Duration::seconds(3600),
+        }));
+        cb.record_failure();
+
+        let executor = RecoveryExecutor::new(RecoveryStrategyEnum::Retry(
+            RetryStrategy::with_default_backoff(1),
+        ))
+        .with_fallback(RecoveryStrategyEnum::Retry(
+            RetryStrategy::with_default_backoff(1),
+        ))
+        .with_circuit_breaker(cb);
+
+        let outcome = executor
+            .execute(|| async_ok(VerificationResult::Unknown))
+            .await;
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Failure(RecoveryError::CircuitBreakerOpen)
+        ));
+    }
+
+    #[tokio::test]
+    async fn execute_and_return_maps_outcomes_to_results() {
+        let success = RecoveryExecutor::new(RecoveryStrategyEnum::Retry(
+            RetryStrategy::with_default_backoff(1),
+        ));
+        let result = success
+            .execute_and_return(|| async_ok(VerificationResult::Verified))
+            .await;
+        assert_eq!(result.unwrap(), VerificationResult::Verified);
+
+        let failing = RecoveryExecutor::new(RecoveryStrategyEnum::Timeout(TimeoutStrategy::new(
+            Duration::milliseconds(1),
+        )));
+        let result = failing
+            .execute_and_return(|| completes_after(50, VerificationResult::Unknown))
+            .await;
+        assert!(matches!(result, Err(RecoveryError::Timeout { .. })));
+    }
+
+    // ------------------------------------------------------------------
+    // Composite
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn composite_stops_at_the_first_successful_strategy() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let counter = calls.clone();
+
+        let composite = CompositeStrategy::new()
+            .add_strategy(RecoveryStrategyEnum::Retry(
+                RetryStrategy::with_default_backoff(1),
+            ))
+            .add_strategy(RecoveryStrategyEnum::Timeout(TimeoutStrategy::new(
+                Duration::seconds(1),
+            )));
+
+        let factory: FutureFactory = Arc::new(move || {
+            let seen = counter.fetch_add(1, Ordering::SeqCst);
+            if seen == 0 {
+                Box::pin(async_ok(VerificationResult::Unknown))
+            } else {
+                Box::pin(async_ok(VerificationResult::Verified))
+            }
+        });
+
+        let outcome = composite.execute(factory).await;
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Success(VerificationResult::Verified)
+        ));
+    }
+
+    #[tokio::test]
+    async fn composite_with_no_strategies_reports_exhaustion() {
+        let composite = CompositeStrategy::default();
+        let factory: FutureFactory = Arc::new(|| Box::pin(async_ok(VerificationResult::Unknown)));
+        let outcome = composite.execute(factory).await;
+        assert!(matches!(
+            outcome,
+            RecoveryOutcome::Failure(RecoveryError::MaxAttemptsExceeded { attempts: 1 })
+        ));
+    }
+
+    #[test]
+    fn composite_is_applicable_when_any_child_strategy_applies() {
+        let composite = CompositeStrategy::new().add_strategy(RecoveryStrategyEnum::Timeout(
+            TimeoutStrategy::new(Duration::seconds(1)),
+        ));
+        assert!(composite.is_applicable(VerificationResult::Unknown));
+        assert!(!composite.is_applicable(VerificationResult::Failed));
+
+        let empty = CompositeStrategy::default();
+        assert!(!empty.is_applicable(VerificationResult::Unknown));
+    }
+
+    #[test]
+    fn composite_strategy_is_debug_and_clone() {
+        let composite = CompositeStrategy::new().add_strategy(RecoveryStrategyEnum::Retry(
+            RetryStrategy::with_default_backoff(1),
+        ));
+        let cloned = composite.clone();
+        assert!(cloned.is_applicable(VerificationResult::Unknown));
+        assert!(std::format!("{composite:?}").contains("CompositeStrategy"));
+    }
+
+    #[test]
+    fn recovery_errors_render_for_every_variant() {
+        let errors = [
+            RecoveryError::MaxAttemptsExceeded { attempts: 3 },
+            RecoveryError::CircuitBreakerOpen,
+            RecoveryError::Timeout {
+                duration: Duration::seconds(2),
+            },
+            RecoveryError::AllFallbacksExhausted,
+            RecoveryError::NotApplicable {
+                result: VerificationResult::Unknown,
+            },
+            RecoveryError::UnderlyingError {
+                context: "provider 500".into(),
+            },
+        ];
+        let rendered: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        assert_eq!(rendered[0], "Maximum retry attempts (3) exceeded");
+        assert_eq!(rendered[1], "Circuit breaker is open, retry not allowed");
+        assert_eq!(rendered[2], "Operation timed out after PT2S");
+        assert_eq!(rendered[3], "All fallback strategies exhausted");
+        assert_eq!(rendered[4], "Recovery not applicable for result: unknown");
+        assert_eq!(rendered[5], "Recovery failed: provider 500");
+
+        let cloned = errors[0].clone();
+        assert!(std::format!("{cloned:?}").contains("MaxAttemptsExceeded"));
+    }
+
+    #[test]
+    fn recovery_outcomes_are_debuggable() {
+        let outcomes = vec![
+            RecoveryOutcome::Success(VerificationResult::Verified),
+            RecoveryOutcome::Failure(RecoveryError::CircuitBreakerOpen),
+            RecoveryOutcome::NotApplicable,
+        ];
+        let debugged = std::format!("{outcomes:?}");
+        assert!(debugged.contains("Success"));
+        assert!(debugged.contains("Failure"));
+        assert!(debugged.contains("NotApplicable"));
     }
 
     #[tokio::test]
