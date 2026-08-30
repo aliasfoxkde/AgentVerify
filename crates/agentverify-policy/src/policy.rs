@@ -89,9 +89,7 @@ impl ActionPattern {
             Self::Exact(name) => action_name == name,
             Self::Prefix(prefix) => action_name.starts_with(prefix),
             Self::Suffix(suffix) => action_name.ends_with(suffix),
-            Self::Regex { regex, .. } => regex
-                .as_ref()
-                .is_some_and(|r| r.is_match(action_name)),
+            Self::Regex { regex, .. } => regex.as_ref().is_some_and(|r| r.is_match(action_name)),
         }
     }
 }

@@ -61,12 +61,16 @@ impl PredicateEngine {
             Predicate::NotEquals { path, value } => {
                 Ok(Self::eval_not_equals(state, path, value, args))
             }
-            Predicate::Contains { path, value } => Ok(Self::eval_contains(state, path, value, args)),
+            Predicate::Contains { path, value } => {
+                Ok(Self::eval_contains(state, path, value, args))
+            }
             Predicate::Matches { path, pattern } => self.eval_matches(state, path, pattern),
             Predicate::GreaterThan { path, value } => {
                 Ok(Self::eval_greater_than(state, path, value, args))
             }
-            Predicate::LessThan { path, value } => Ok(Self::eval_less_than(state, path, value, args)),
+            Predicate::LessThan { path, value } => {
+                Ok(Self::eval_less_than(state, path, value, args))
+            }
             Predicate::Count {
                 path,
                 operator,
@@ -130,12 +134,7 @@ impl PredicateEngine {
         }
     }
 
-    fn eval_contains(
-        state: &Value,
-        path: &str,
-        value: &Value,
-        args: &Value,
-    ) -> VerificationResult {
+    fn eval_contains(state: &Value, path: &str, value: &Value, args: &Value) -> VerificationResult {
         let actual = get_path(state, path);
         let value = resolve_value(value, args);
 

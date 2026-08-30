@@ -208,7 +208,11 @@ impl PolicyEngine {
                 current: b.count,
                 limit: limit.max_count,
                 remaining: limit.max_count.saturating_sub(b.count),
-                window_secs_remaining: limit.window.checked_sub(b.window_start.elapsed()).unwrap().as_secs(),
+                window_secs_remaining: limit
+                    .window
+                    .checked_sub(b.window_start.elapsed())
+                    .unwrap()
+                    .as_secs(),
             },
             _ => RateLimitStatus {
                 current: 0,
@@ -229,7 +233,8 @@ impl PolicyEngine {
         *self
             .idempotency_tracker
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = IdempotencyRateLimitTracker::new();
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            IdempotencyRateLimitTracker::new();
     }
 
     /// Clean up expired rate limit buckets

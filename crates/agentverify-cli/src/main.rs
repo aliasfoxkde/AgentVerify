@@ -190,15 +190,14 @@ async fn serve(port: u16) -> Result<ExitCode> {
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
     tokio::spawn(async move {
         // Setup SIGTERM signal stream
-        let mut sigterm = match
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        {
-            Ok(stream) => stream,
-            Err(error) => {
-                tracing::warn!("Failed to create SIGTERM signal handler: {error}");
-                return;
-            }
-        };
+        let mut sigterm =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    tracing::warn!("Failed to create SIGTERM signal handler: {error}");
+                    return;
+                }
+            };
 
         // Wait for shutdown signal (SIGINT or SIGTERM)
         tokio::select! {
@@ -335,9 +334,7 @@ fn verify_contract_cmd(
 
     // Validate observer URL
     let observer_base_url = Url::parse(&observer_url).with_context(|| {
-        format!(
-            "Invalid observer URL '{observer_url}': must be a valid HTTP/HTTPS URL"
-        )
+        format!("Invalid observer URL '{observer_url}': must be a valid HTTP/HTTPS URL")
     })?;
     if !matches!(observer_base_url.scheme(), "http" | "https") {
         anyhow::bail!(
@@ -348,8 +345,8 @@ fn verify_contract_cmd(
 
     // Load contract
     let path = std::path::Path::new(contract_path);
-    let contract = load_file(path)
-        .with_context(|| format!("Failed to load contract from {contract_path}"))?;
+    let contract =
+        load_file(path).with_context(|| format!("Failed to load contract from {contract_path}"))?;
 
     // Parse action arguments
     let args: serde_json::Value = serde_json::from_str(args_json)

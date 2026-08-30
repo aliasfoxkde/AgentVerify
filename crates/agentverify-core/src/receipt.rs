@@ -191,16 +191,25 @@ impl Receipt {
     }
 
     /// Add an observation
+    ///
+    /// Recomputes the digest so [`Self::verify_digest`] stays true: the
+    /// canonical payload covers observations, so mutating them without
+    /// refreshing the digest would make every receipt with evidence read as
+    /// tampered.
     #[must_use]
     pub fn with_observation(mut self, observation: Observation) -> Self {
         self.observations.push(observation);
+        self.digest = self.compute_digest();
         self
     }
 
-    /// Add postcondition result
+    /// Add a postcondition result
+    ///
+    /// Recomputes the digest for the same reason as [`Self::with_observation`].
     #[must_use]
     pub fn with_postcondition_result(mut self, result: PostconditionResult) -> Self {
         self.postcondition_results.push(result);
+        self.digest = self.compute_digest();
         self
     }
 
@@ -468,10 +477,7 @@ impl ReceiptStore for FileReceiptStore {
             // Update index
             let index_store = Self::new(base_path.clone())
                 .map_err(|e| ReceiptStoreError::Persist(e.to_string()))?;
-            let mut index = index_store
-                .read_index_async()
-                .await
-                .unwrap_or_default();
+            let mut index = index_store.read_index_async().await.unwrap_or_default();
             index.entry(action_id).or_default().push(receipt_id);
             index_store
                 .write_index_async(&index)
@@ -622,6 +628,45 @@ mod tests {
         receipt.result = VerificationResult::Failed;
         assert!(!receipt.verify_digest());
         assert_ne!(receipt.compute_digest(), original_digest);
+    }
+
+    #[test]
+    fn receipt_digest_covers_added_observation() {
+        let receipt = Receipt::new(
+            ActionId::new(),
+            ContractId::new(),
+            VerificationResult::Verified,
+            1,
+        )
+        .with_observation(Observation::new(
+            SourceId("ledger".into()),
+            serde_json::json!({"status": "ok"}),
+        ));
+
+        assert!(receipt.verify_digest(), "adding an observation must keep the digest valid");
+        assert_eq!(receipt.observations.len(), 1);
+    }
+
+    #[test]
+    fn receipt_digest_covers_added_postcondition_result() {
+        let receipt = Receipt::new(
+            ActionId::new(),
+            ContractId::new(),
+            VerificationResult::Verified,
+            1,
+        )
+        .with_postcondition_result(PostconditionResult {
+            predicate: Predicate::exists("refund.status"),
+            description: "refund succeeded".into(),
+            passed: true,
+            error: None,
+        });
+
+        assert!(
+            receipt.verify_digest(),
+            "adding a postcondition result must keep the digest valid"
+        );
+        assert_eq!(receipt.postcondition_results.len(), 1);
     }
 
     #[test]
