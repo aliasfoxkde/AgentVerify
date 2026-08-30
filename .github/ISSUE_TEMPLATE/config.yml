@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & design discussions
+    url: https://github.com/aliasfoxkde/AgentVerify/discussions
+    about: Ask questions and discuss design before opening a feature request.
+  - name: Security vulnerability
+    url: https://github.com/aliasfoxkde/AgentVerify/security/advisories/new
+    about: Report vulnerabilities privately — never open a public issue for security reports.

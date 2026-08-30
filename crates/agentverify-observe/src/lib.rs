@@ -1,13 +1,13 @@
-//! AgentVerify Observe
+//! `AgentVerify` Observe
 //!
 //! Observation adapters for collecting evidence from various data sources.
 //!
 //! This crate provides adapters for observing system state from different sources
-//! such as PostgreSQL, REST APIs, Redis, and other data stores.
+//! such as `PostgreSQL`, REST APIs, Redis, and other data stores.
 //!
 //! # Core Concept
 //!
-//! An [`Observation`] captures evidence from an external system at a point in time.
+//! An `Observation` captures evidence from an external system at a point in time.
 //! Observations are used during the verification phase to determine whether
 //! postconditions are satisfied.
 //!
@@ -15,8 +15,18 @@
 //!
 //! - [`PostgresObserver`] - PostgreSQL-based observation via deadpool-postgres
 //! - [`RedisObserver`] - Redis-based observation via deadpool-redis
-//! - [`RestObserver`] - HTTP/REST-based observation (via agentverify-http)
+//! - `RestObserver` - HTTP/REST-based observation (via agentverify-http)
 
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::print_stderr,
+        clippy::dbg_macro,
+        clippy::panic
+    )
+)]
 mod postgres;
 mod redis_observer;
 

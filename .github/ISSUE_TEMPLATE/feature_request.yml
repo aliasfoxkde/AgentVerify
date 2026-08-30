@@ -1,0 +1,62 @@
+name: Feature request
+description: Suggest an idea for AgentVerify.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check [docs/PLANNING.md](https://github.com/aliasfoxkde/AgentVerify/blob/main/docs/PLANNING.md)
+        first — your idea may already be on the roadmap. Design discussions
+        are welcome in [Discussions](https://github.com/aliasfoxkde/AgentVerify/discussions).
+
+        Things AgentVerify intentionally does **not** do: replace agent
+        frameworks or LLMs, act as a tracing platform, provide LLM judges,
+        or require users to rewrite their workflows.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What are you trying to verify, and what can't you do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like to happen? Sketch the API or contract format if you can.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Core types / contracts
+        - Predicate engine
+        - Runtime / executor
+        - Observers
+        - Recovery
+        - Receipts
+        - Policy
+        - Storage
+        - MCP integration
+        - OpenTelemetry
+        - HTTP gateway
+        - CLI
+        - Testkit
+        - Documentation
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I checked the roadmap (docs/PLANNING.md) and existing issues
+          required: true
+        - label: This does not conflict with the project's stated non-goals
+          required: true

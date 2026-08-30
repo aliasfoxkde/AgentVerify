@@ -23,3 +23,6 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [package.metadata.docs.rs]
 all-features = true
+
+[lints]
+workspace = true

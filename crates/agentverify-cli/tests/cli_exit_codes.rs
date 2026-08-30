@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! CLI exit-code tests
 //!
 //! Verifies that the CLI returns correct exit codes for each verification outcome.

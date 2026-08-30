@@ -102,6 +102,7 @@ pub struct Receipt {
 
 impl Receipt {
     /// Create a new receipt
+    #[must_use]
     pub fn new(
         action_id: ActionId,
         contract_id: ContractId,
@@ -149,7 +150,7 @@ impl Receipt {
             postcondition_results: Vec::new(),
             digest: String::new(),
             key_id: None,
-            idempotency_key: idempotency_key.clone(),
+            idempotency_key,
             signature: None,
             timestamp: Utc::now(),
         };
@@ -163,6 +164,7 @@ impl Receipt {
     }
 
     /// Compute canonical digest (SHA-256) of the receipt data
+    #[must_use]
     pub fn compute_digest(&self) -> String {
         let canonical = self.canonical_data();
         let mut hasher = Sha256::new();
@@ -189,48 +191,77 @@ impl Receipt {
     }
 
     /// Add an observation
+    ///
+    /// Recomputes the digest so [`Self::verify_digest`] stays true: the
+    /// canonical payload covers observations, so mutating them without
+    /// refreshing the digest would make every receipt with evidence read as
+    /// tampered.
+    #[must_use]
     pub fn with_observation(mut self, observation: Observation) -> Self {
         self.observations.push(observation);
+        self.digest = self.compute_digest();
         self
     }
 
-    /// Add postcondition result
+    /// Add a postcondition result
+    ///
+    /// Recomputes the digest for the same reason as [`Self::with_observation`].
+    #[must_use]
     pub fn with_postcondition_result(mut self, result: PostconditionResult) -> Self {
         self.postcondition_results.push(result);
+        self.digest = self.compute_digest();
         self
     }
 
     /// Set the key identifier
+    #[must_use]
     pub fn with_key_id(mut self, key_id: impl Into<String>) -> Self {
         self.key_id = Some(key_id.into());
         self
     }
 
     /// Sign the receipt
+    #[must_use]
     pub fn sign(mut self, signature: Vec<u8>) -> Self {
         self.signature = Some(signature);
         self
     }
 
     /// Check if receipt is signed
+    #[must_use]
     pub fn is_signed(&self) -> bool {
         self.signature.is_some()
     }
 
     /// Verify the digest matches the receipt content
+    #[must_use]
     pub fn verify_digest(&self) -> bool {
         self.digest == self.compute_digest()
     }
 
     /// Get the schema version
+    #[must_use]
     pub fn version(&self) -> &str {
         &self.version
     }
 
     /// Get the key identifier if set
+    #[must_use]
     pub fn key_id(&self) -> Option<&str> {
         self.key_id.as_deref()
     }
+}
+
+/// Errors that can occur while persisting a receipt.
+#[derive(Debug, thiserror::Error)]
+pub enum ReceiptStoreError {
+    /// The receipt could not be persisted to the backing store.
+    #[error("failed to persist receipt: {0}")]
+    Persist(String),
+
+    /// The receipt could not be serialized.
+    #[error("failed to serialize receipt: {0}")]
+    Serialize(String),
 }
 
 /// Receipt store trait for persistence
@@ -241,20 +272,38 @@ impl Receipt {
 /// - Database for durable storage
 ///
 /// # Key semantics
-/// - Key scope: receipts are stored by ReceiptId
+/// - Key scope: receipts are stored by `ReceiptId`
 /// - Collision: overwrite with newer receipt (same ID)
 /// - Expiry: implementors may choose to expire entries after TTL
+///
+/// Asynchronous by design: each method returns a boxed future so
+/// implementations can be backed by a database, filesystem, or network service
+/// without the trait itself being `async` (which would not be object-safe).
 pub trait ReceiptStore: Send + Sync {
     /// Store a receipt
-    fn store<'a>(&'a self, receipt: &'a Receipt) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReceiptStoreError` if the receipt cannot be serialized or
+    /// written to the backing store. Implementations must not panic on I/O
+    /// failure: evidence persistence is best-effort but its failure is
+    /// always observable to the caller.
+    fn store<'a>(
+        &'a self,
+        receipt: &'a Receipt,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ReceiptStoreError>> + Send + 'a>>;
 
     /// Retrieve a receipt by ID
+    ///
+    /// Returns `None` when no receipt with that ID is held by the store.
     fn get<'a>(
         &'a self,
         id: &'a ReceiptId,
     ) -> Pin<Box<dyn Future<Output = Option<Receipt>> + Send + 'a>>;
 
     /// List receipts for an action
+    ///
+    /// Returns an empty vector when the action has no recorded receipts.
     fn list_by_action<'a>(
         &'a self,
         action_id: &'a ActionId,
@@ -270,13 +319,15 @@ pub trait ReceiptStore: Send + Sync {
 /// - Process-local only: does not persist across restarts
 /// - No TTL: entries live until process exits
 ///
-/// For production, use a distributed store implementing ReceiptStore.
+/// For production, use a distributed store implementing `ReceiptStore`.
 pub struct InMemoryReceiptStore {
     receipts: tokio::sync::RwLock<std::collections::HashMap<ReceiptId, Receipt>>,
     by_action: tokio::sync::RwLock<std::collections::HashMap<ActionId, Vec<ReceiptId>>>,
 }
 
 impl InMemoryReceiptStore {
+    /// Create an empty in-memory receipt store.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             receipts: tokio::sync::RwLock::new(std::collections::HashMap::new()),
@@ -286,7 +337,10 @@ impl InMemoryReceiptStore {
 }
 
 impl ReceiptStore for InMemoryReceiptStore {
-    fn store<'a>(&'a self, receipt: &'a Receipt) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn store<'a>(
+        &'a self,
+        receipt: &'a Receipt,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ReceiptStoreError>> + Send + 'a>> {
         Box::pin(async move {
             let mut receipts = self.receipts.write().await;
             let mut by_action = self.by_action.write().await;
@@ -295,6 +349,7 @@ impl ReceiptStore for InMemoryReceiptStore {
                 .entry(receipt.action_id)
                 .or_default()
                 .push(receipt.id);
+            Ok(())
         })
     }
 
@@ -339,11 +394,11 @@ impl Default for InMemoryReceiptStore {
 ///
 /// # Storage Format
 /// - Each receipt stored as a single JSON file named `{receipt_id}.json`
-/// - Index file `index.json` maps action_id → list of receipt_ids
+/// - Index file `index.json` maps `action_id` → list of `receipt_ids`
 /// - Directory structure: `{base_path}/{receipt_id}.json`
 ///
 /// # Key semantics
-/// - Key scope: receipts stored by ReceiptId
+/// - Key scope: receipts stored by `ReceiptId`
 /// - Collision: overwrite with newer receipt (same ID)
 /// - Atomic writes: use temp file + rename for crash safety
 ///
@@ -351,7 +406,7 @@ impl Default for InMemoryReceiptStore {
 /// - Local filesystem only, not suitable for multi-process access without file locking
 /// - No TTL: entries persist until manually cleaned up
 ///
-/// For production distributed use, implement ReceiptStore with a proper
+/// For production distributed use, implement `ReceiptStore` with a proper
 /// distributed store (Postgres, Redis, etc.).
 pub struct FileReceiptStore {
     base_path: std::path::PathBuf,
@@ -406,40 +461,39 @@ impl FileReceiptStore {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ReceiptStore for FileReceiptStore {
-    fn store<'a>(&'a self, receipt: &'a Receipt) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    fn store<'a>(
+        &'a self,
+        receipt: &'a Receipt,
+    ) -> Pin<Box<dyn Future<Output = Result<(), ReceiptStoreError>> + Send + 'a>> {
         let base_path = self.base_path.clone();
         Box::pin(async move {
             let receipt_id = receipt.id.to_string();
             let action_id = receipt.action_id.to_string();
 
             // Serialize receipt
-            let content =
-                serde_json::to_string_pretty(receipt).expect("serialization should not fail");
+            let content = serde_json::to_string_pretty(receipt)
+                .map_err(|e| ReceiptStoreError::Serialize(e.to_string()))?;
 
             // Write to temp file then rename for atomicity
-            let receipt_path = base_path.join(format!("{}.json", receipt_id));
-            let temp_path = base_path.join(format!("{}.tmp", receipt_id));
+            let receipt_path = base_path.join(format!("{receipt_id}.json"));
+            let temp_path = base_path.join(format!("{receipt_id}.tmp"));
             tokio::fs::write(&temp_path, &content)
                 .await
-                .expect("write should not fail");
+                .map_err(|e| ReceiptStoreError::Persist(e.to_string()))?;
             tokio::fs::rename(&temp_path, &receipt_path)
                 .await
-                .expect("rename should not fail");
+                .map_err(|e| ReceiptStoreError::Persist(e.to_string()))?;
 
             // Update index
-            let mut index = Self::new(base_path.clone())
-                .expect("store should initialize")
-                .read_index_async()
-                .await
-                .unwrap_or_default();
+            let index_store = Self::new(base_path.clone())
+                .map_err(|e| ReceiptStoreError::Persist(e.to_string()))?;
+            let mut index = index_store.read_index_async().await.unwrap_or_default();
             index.entry(action_id).or_default().push(receipt_id);
-            if let Err(e) = Self::new(base_path)
-                .expect("store should initialize")
+            index_store
                 .write_index_async(&index)
                 .await
-            {
-                eprintln!("warning: failed to update index: {}", e);
-            }
+                .map_err(|e| ReceiptStoreError::Persist(e.to_string()))?;
+            Ok(())
         })
     }
 
@@ -449,7 +503,7 @@ impl ReceiptStore for FileReceiptStore {
     ) -> Pin<Box<dyn Future<Output = Option<Receipt>> + Send + 'a>> {
         let base_path = self.base_path.clone();
         Box::pin(async move {
-            let path = base_path.join(format!("{}.json", id));
+            let path = base_path.join(format!("{id}.json"));
             if !path.exists() {
                 return None;
             }
@@ -464,13 +518,11 @@ impl ReceiptStore for FileReceiptStore {
     ) -> Pin<Box<dyn Future<Output = Vec<Receipt>> + Send + 'a>> {
         let base_path = self.base_path.clone();
         Box::pin(async move {
-            let index = match Self::new(base_path.clone())
-                .expect("store should initialize")
-                .read_index_async()
-                .await
-            {
-                Ok(i) => i,
-                Err(_) => return Vec::new(),
+            let Ok(store) = Self::new(base_path.clone()) else {
+                return Vec::new();
+            };
+            let Ok(index) = store.read_index_async().await else {
+                return Vec::new();
             };
             let receipt_ids = match index.get(action_id.to_string().as_str()) {
                 Some(ids) => ids.clone(),
@@ -478,7 +530,7 @@ impl ReceiptStore for FileReceiptStore {
             };
             let mut receipts = Vec::new();
             for receipt_id in receipt_ids {
-                let path = base_path.join(format!("{}.json", receipt_id));
+                let path = base_path.join(format!("{receipt_id}.json"));
                 if let Ok(content) = tokio::fs::read_to_string(&path).await {
                     if let Ok(receipt) = serde_json::from_str::<Receipt>(&content) {
                         receipts.push(receipt);
@@ -491,7 +543,7 @@ impl ReceiptStore for FileReceiptStore {
 
     fn exists<'a>(&'a self, id: &'a ReceiptId) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
         let base_path = self.base_path.clone();
-        Box::pin(async move { base_path.join(format!("{}.json", id)).exists() })
+        Box::pin(async move { base_path.join(format!("{id}.json")).exists() })
     }
 }
 
@@ -587,6 +639,48 @@ mod tests {
     }
 
     #[test]
+    fn receipt_digest_covers_added_observation() {
+        let receipt = Receipt::new(
+            ActionId::new(),
+            ContractId::new(),
+            VerificationResult::Verified,
+            1,
+        )
+        .with_observation(Observation::new(
+            SourceId("ledger".into()),
+            serde_json::json!({"status": "ok"}),
+        ));
+
+        assert!(
+            receipt.verify_digest(),
+            "adding an observation must keep the digest valid"
+        );
+        assert_eq!(receipt.observations.len(), 1);
+    }
+
+    #[test]
+    fn receipt_digest_covers_added_postcondition_result() {
+        let receipt = Receipt::new(
+            ActionId::new(),
+            ContractId::new(),
+            VerificationResult::Verified,
+            1,
+        )
+        .with_postcondition_result(PostconditionResult {
+            predicate: Predicate::exists("refund.status"),
+            description: "refund succeeded".into(),
+            passed: true,
+            error: None,
+        });
+
+        assert!(
+            receipt.verify_digest(),
+            "adding a postcondition result must keep the digest valid"
+        );
+        assert_eq!(receipt.postcondition_results.len(), 1);
+    }
+
+    #[test]
     fn receipt_is_signed_false_when_unsigned() {
         let receipt = Receipt::new(
             ActionId::new(),
@@ -651,7 +745,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let store_ref = &store;
         let receipt_ref = &receipt;
-        rt.block_on(store_ref.store(receipt_ref));
+        let _ = rt.block_on(store_ref.store(receipt_ref));
 
         // Retrieve it
         let retrieved = rt.block_on(store.get(&receipt.id));
@@ -677,12 +771,368 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let store_ref = &store;
         let receipt_ref = &receipt;
-        rt.block_on(store_ref.store(receipt_ref));
+        let _ = rt.block_on(store_ref.store(receipt_ref));
 
         let exists = rt.block_on(store.exists(&receipt.id));
         assert!(exists);
 
         let non_existent = rt.block_on(store.exists(&ReceiptId::new()));
         assert!(!non_existent);
+    }
+
+    fn sample_receipt(action: &ActionId) -> Receipt {
+        Receipt::with_contract_version_and_key(
+            *action,
+            ContractId::new(),
+            "1.2",
+            VerificationResult::Verified,
+            1,
+            Some("idem-1".to_string()),
+        )
+        .with_key_id("test-key")
+        .with_observation(Observation::new(
+            SourceId("postgres".into()),
+            serde_json::json!({"refund": {"status": "ok"}}),
+        ))
+        .with_postcondition_result(PostconditionResult {
+            predicate: Predicate::exists("refund.status"),
+            description: "refund recorded".into(),
+            passed: true,
+            error: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn in_memory_store_roundtrips_a_receipt() {
+        let store = InMemoryReceiptStore::default();
+        let action = ActionId::new();
+        let receipt = sample_receipt(&action);
+
+        store.store(&receipt).await.expect("store must succeed");
+
+        assert!(store.exists(&receipt.id).await);
+        assert!(!store.exists(&ReceiptId::new()).await);
+
+        let fetched = store.get(&receipt.id).await.expect("receipt present");
+        assert_eq!(fetched.id, receipt.id);
+        assert_eq!(fetched.digest, receipt.digest);
+        assert_eq!(
+            serde_json::to_value(&fetched.observations).unwrap(),
+            serde_json::to_value(&receipt.observations).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&fetched.postcondition_results).unwrap(),
+            serde_json::to_value(&receipt.postcondition_results).unwrap()
+        );
+        assert_eq!(fetched.key_id(), receipt.key_id());
+
+        assert!(store.get(&ReceiptId::new()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn in_memory_store_lists_only_the_requested_action() {
+        let store = InMemoryReceiptStore::new();
+        let action_a = ActionId::new();
+        let action_b = ActionId::new();
+
+        store.store(&sample_receipt(&action_a)).await.unwrap();
+        store.store(&sample_receipt(&action_a)).await.unwrap();
+        store.store(&sample_receipt(&action_b)).await.unwrap();
+
+        let for_a = store.list_by_action(&action_a).await;
+        assert_eq!(for_a.len(), 2);
+        assert!(for_a.iter().all(|r| r.action_id == action_a));
+
+        assert_eq!(store.list_by_action(&action_b).await.len(), 1);
+        assert!(store.list_by_action(&ActionId::new()).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn in_memory_store_reports_absent_action_as_empty() {
+        let store = InMemoryReceiptStore::new();
+        let action = ActionId::new();
+        assert!(store.list_by_action(&action).await.is_empty());
+        assert!(!store.exists(&ReceiptId::new()).await);
+    }
+
+    #[tokio::test]
+    async fn file_store_returns_none_for_missing_receipt() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = FileReceiptStore::new(temp_dir.path()).unwrap();
+
+        assert!(store.get(&ReceiptId::new()).await.is_none());
+        assert!(!store.exists(&ReceiptId::new()).await);
+        assert!(store.list_by_action(&ActionId::new()).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn file_store_lists_receipts_recorded_for_an_action() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = FileReceiptStore::new(temp_dir.path()).unwrap();
+        let action = ActionId::new();
+
+        let first = sample_receipt(&action);
+        let second = sample_receipt(&action);
+        store.store(&first).await.unwrap();
+        // The second store call reads the index written by the first, which is
+        // what exercises the index reload path.
+        store.store(&second).await.unwrap();
+
+        let listed = store.list_by_action(&action).await;
+        assert_eq!(listed.len(), 2, "both receipts must be indexed");
+        let ids: Vec<_> = listed.iter().map(|r| r.id).collect();
+        assert!(ids.contains(&first.id));
+        assert!(ids.contains(&second.id));
+
+        // Reopening the same directory must see the same evidence: the index
+        // and receipt files are the whole persistence story.
+        let reopened = FileReceiptStore::new(temp_dir.path()).unwrap();
+        let reopened_list = reopened.list_by_action(&action).await;
+        assert_eq!(reopened_list.len(), 2);
+        assert!(reopened
+            .get(&first.id)
+            .await
+            .expect("persisted")
+            .verify_digest());
+    }
+
+    #[tokio::test]
+    async fn file_store_skips_receipt_files_that_cannot_be_parsed() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = FileReceiptStore::new(temp_dir.path()).unwrap();
+        let action = ActionId::new();
+
+        let good = sample_receipt(&action);
+        let corrupt = sample_receipt(&action);
+        store.store(&good).await.unwrap();
+        store.store(&corrupt).await.unwrap();
+
+        let corrupt_path = temp_dir.path().join(format!("{}.json", corrupt.id));
+        std::fs::write(&corrupt_path, "{ not json").unwrap();
+
+        let listed = store.list_by_action(&action).await;
+        assert_eq!(listed.len(), 1, "unreadable receipt must be skipped");
+        assert_eq!(listed[0].id, good.id);
+
+        // `get` on a corrupt file must yield None rather than panic.
+        assert!(store.get(&corrupt.id).await.is_none());
+        // The good receipt still verifies.
+        assert!(listed[0].verify_digest());
+    }
+
+    #[tokio::test]
+    async fn file_store_tolerates_index_entries_with_no_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = FileReceiptStore::new(temp_dir.path()).unwrap();
+        let action = ActionId::new();
+
+        let kept = sample_receipt(&action);
+        let removed = sample_receipt(&action);
+        store.store(&kept).await.unwrap();
+        store.store(&removed).await.unwrap();
+        std::fs::remove_file(temp_dir.path().join(format!("{}.json", removed.id))).unwrap();
+
+        let listed = store.list_by_action(&action).await;
+        assert_eq!(listed.len(), 1, "missing files must not abort the listing");
+        assert_eq!(listed[0].id, kept.id);
+    }
+
+    #[tokio::test]
+    async fn file_store_lists_nothing_when_the_index_cannot_be_read() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join("index.json"), "not a json index").unwrap();
+
+        let store = FileReceiptStore::new(temp_dir.path()).unwrap();
+        assert!(
+            store.list_by_action(&ActionId::new()).await.is_empty(),
+            "an unreadable index must degrade to an empty listing"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_store_rebuilds_index_when_index_file_is_corrupt() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join("index.json"), "not a json index").unwrap();
+
+        let store = FileReceiptStore::new(temp_dir.path()).unwrap();
+        let action = ActionId::new();
+        let receipt = sample_receipt(&action);
+        store.store(&receipt).await.unwrap();
+
+        // The unreadable index is discarded rather than propagated, so the new
+        // receipt is the only one recorded.
+        assert!(store.list_by_action(&ActionId::new()).await.is_empty());
+        let listed = store.list_by_action(&action).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, receipt.id);
+    }
+
+    #[tokio::test]
+    async fn file_store_listing_survives_an_unusable_directory() {
+        // A base path that is a regular file cannot hold the index, so the
+        // listing degrades to "no receipts" instead of erroring.
+        let parent = tempfile::tempdir().unwrap();
+        let not_a_dir = parent.path().join("blocker");
+        std::fs::write(&not_a_dir, "not a directory").unwrap();
+
+        let store = FileReceiptStore::new(parent.path()).unwrap();
+        assert!(store.list_by_action(&ActionId::new()).await.is_empty());
+    }
+
+    #[test]
+    fn file_store_cannot_be_created_inside_a_regular_file() {
+        let parent = tempfile::tempdir().unwrap();
+        let blocker = parent.path().join("blocker");
+        std::fs::write(&blocker, "not a directory").unwrap();
+
+        let result = FileReceiptStore::new(blocker.join("receipts"));
+        assert!(result.is_err(), "create_dir_all must surface the failure");
+    }
+
+    #[test]
+    fn file_store_debug_includes_base_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = FileReceiptStore::new(temp_dir.path()).unwrap();
+        let debugged = std::format!("{store:?}");
+        assert!(debugged.contains("FileReceiptStore"));
+        assert!(debugged.contains("base_path"));
+    }
+
+    #[tokio::test]
+    async fn file_store_overwrites_receipt_with_the_same_id() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let store = FileReceiptStore::new(temp_dir.path()).unwrap();
+        let action = ActionId::new();
+
+        let mut receipt = sample_receipt(&action);
+        store.store(&receipt).await.unwrap();
+
+        receipt = receipt.sign(vec![7u8; 64]);
+        store.store(&receipt).await.unwrap();
+
+        let fetched = store.get(&receipt.id).await.expect("still present");
+        assert!(fetched.is_signed());
+        assert!(store.exists(&receipt.id).await);
+    }
+
+    #[test]
+    fn receipt_store_errors_render_their_cause() {
+        let persist = ReceiptStoreError::Persist("disk full".into());
+        let serialize = ReceiptStoreError::Serialize("bad utf-8".into());
+
+        assert_eq!(persist.to_string(), "failed to persist receipt: disk full");
+        assert_eq!(
+            serialize.to_string(),
+            "failed to serialize receipt: bad utf-8"
+        );
+        assert!(std::format!("{persist:?}").contains("Persist"));
+    }
+
+    #[test]
+    fn receipt_schema_version_constant_is_current() {
+        assert_eq!(RECEIPT_SCHEMA_VERSION, "1.0");
+        assert_eq!(
+            Receipt::new(
+                ActionId::new(),
+                ContractId::new(),
+                VerificationResult::Verified,
+                1
+            )
+            .version(),
+            RECEIPT_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn digest_excludes_signature_so_signing_is_idempotent_for_the_digest() {
+        let receipt = Receipt::new(
+            ActionId::new(),
+            ContractId::new(),
+            VerificationResult::Verified,
+            1,
+        );
+        let unsigned_digest = receipt.digest.clone();
+        let signed = receipt.sign(vec![1u8; 64]);
+        assert_eq!(signed.digest, unsigned_digest);
+        assert!(signed.verify_digest());
+    }
+
+    #[test]
+    fn digest_detects_tampering_with_evidence() {
+        let receipt = sample_receipt(&ActionId::new());
+        assert!(receipt.verify_digest());
+
+        let mut tampered_observation = receipt.clone();
+        tampered_observation.observations[0].state =
+            serde_json::json!({"refund": {"status": "failed"}});
+        assert!(!tampered_observation.verify_digest());
+
+        let mut tampered_result = receipt.clone();
+        tampered_result.postcondition_results[0].passed = false;
+        assert!(!tampered_result.verify_digest());
+
+        let mut tampered_result_error = receipt.clone();
+        tampered_result_error.postcondition_results[0].error = Some("overflow".into());
+        assert!(!tampered_result_error.verify_digest());
+    }
+
+    #[test]
+    fn digest_survives_a_serde_roundtrip() {
+        let receipt = sample_receipt(&ActionId::new());
+        let json = serde_json::to_string(&receipt).unwrap();
+        let back: Receipt = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.digest, receipt.digest);
+        assert!(
+            back.verify_digest(),
+            "canonical form must be stable across serde"
+        );
+    }
+
+    #[test]
+    fn postcondition_result_keeps_the_error_field_optional() {
+        let passed = PostconditionResult {
+            predicate: Predicate::equals("refund.status", "ok"),
+            description: "status matches".into(),
+            passed: true,
+            error: None,
+        };
+        let failed = PostconditionResult {
+            predicate: Predicate::equals("refund.status", "ok"),
+            description: "status matches".into(),
+            passed: false,
+            error: Some("value was \"failed\"".into()),
+        };
+
+        let json = serde_json::to_string(&passed).unwrap();
+        assert!(!json.contains("error"), "absent error must be omitted");
+        let back: PostconditionResult = serde_json::from_str(&json).unwrap();
+        assert!(back.passed);
+        assert!(back.error.is_none());
+
+        let json = serde_json::to_string(&failed).unwrap();
+        let back: PostconditionResult = serde_json::from_str(&json).unwrap();
+        assert!(!back.passed);
+        assert_eq!(back.error.as_deref(), Some("value was \"failed\""));
+    }
+
+    #[tokio::test]
+    async fn receipt_store_is_object_safe_and_reachable_through_the_trait() {
+        // Callers depend on `dyn ReceiptStore`, so every method must be usable
+        // without knowing the concrete store type.
+        let file_dir = tempfile::tempdir().unwrap();
+        let stores: Vec<std::sync::Arc<dyn ReceiptStore>> = vec![
+            std::sync::Arc::new(InMemoryReceiptStore::new()),
+            std::sync::Arc::new(FileReceiptStore::new(file_dir.path()).unwrap()),
+        ];
+        let action = ActionId::new();
+
+        for store in &stores {
+            let receipt = sample_receipt(&action);
+            store.store(&receipt).await.expect("store must succeed");
+            assert!(store.exists(&receipt.id).await);
+            assert!(store.get(&receipt.id).await.is_some());
+            assert_eq!(store.list_by_action(&action).await.len(), 1);
+            assert!(store.list_by_action(&ActionId::new()).await.is_empty());
+        }
     }
 }

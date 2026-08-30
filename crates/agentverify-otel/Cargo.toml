@@ -30,6 +30,10 @@ anyhow = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
+serde_json = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true
+
+[lints]
+workspace = true

@@ -22,26 +22,34 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
 
+/// Errors produced while submitting receipts to Control Center
 #[derive(Debug, Error)]
 pub enum ControlCenterClientError {
+    /// Underlying HTTP transport failed
     #[error("HTTP request failed: {0}")]
     HttpError(#[from] reqwest::Error),
 
+    /// Configured or constructed URL is not usable
     #[error("Invalid URL: {0}")]
     InvalidUrl(String),
 
+    /// Request or response body could not be serialized or parsed
     #[error("Response parse error: {0}")]
     ParseError(String),
 
+    /// Request exceeded the configured timeout
     #[error("Request timeout after {0}ms")]
     Timeout(u64),
 
+    /// Server accepted the request but refused the receipt
     #[error("Server rejected receipt: {0}")]
     Rejected(String),
 
+    /// Credentials missing or invalid
     #[error("Unauthorized - check credentials")]
     Unauthorized,
 
+    /// Credentials valid but lacking permission for this resource
     #[error("Forbidden - not authorized for this resource")]
     Forbidden,
 }
@@ -62,7 +70,7 @@ pub struct ControlCenterClientConfig {
 }
 
 impl ControlCenterClientConfig {
-    /// Create a new config with required base_url
+    /// Create a new config with required `base_url`
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
@@ -74,18 +82,21 @@ impl ControlCenterClientConfig {
     }
 
     /// Set the bearer token
+    #[must_use]
     pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
         self.bearer_token = Some(token.into());
         self
     }
 
     /// Set the timeout
+    #[must_use]
     pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = timeout_ms;
         self
     }
 
     /// Add a field to redact
+    #[must_use]
     pub fn with_redact_field(mut self, field: impl Into<String>) -> Self {
         self.redact_fields.push(field.into());
         self
@@ -118,6 +129,10 @@ pub struct ControlCenterClient {
 
 impl ControlCenterClient {
     /// Create a new client with the given configuration
+    ///
+    /// # Errors
+    /// Returns [`ControlCenterClientError::HttpError`] if the underlying HTTP
+    /// client cannot be built from the configured timeout.
     pub fn new(config: ControlCenterClientConfig) -> Result<Self, ControlCenterClientError> {
         let http_client = Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
@@ -138,6 +153,14 @@ impl ControlCenterClient {
     /// This method implements timeout-to-UNKNOWN semantics: timeouts return
     /// a successful response with `accepted: false` rather than propagating
     /// an error.
+    ///
+    /// # Errors
+    /// Returns [`ControlCenterClientError::HttpError`] on transport failure,
+    /// [`ControlCenterClientError::Timeout`] when the request exceeds the
+    /// configured timeout, [`ControlCenterClientError::Unauthorized`] and
+    /// [`ControlCenterClientError::Forbidden`] on auth rejection, and
+    /// [`ControlCenterClientError::ParseError`] when the receipt or the
+    /// response body cannot be serialized or parsed.
     pub async fn submit_receipt(
         &self,
         receipt: &Receipt,
@@ -190,17 +213,22 @@ impl ControlCenterClient {
 
         // Parse response
         let body = response.text().await.map_err(|e| {
-            ControlCenterClientError::ParseError(format!("failed to read response: {}", e))
+            ControlCenterClientError::ParseError(format!("failed to read response: {e}"))
         })?;
 
         serde_json::from_str(&body).map_err(|e| {
-            ControlCenterClientError::ParseError(format!("failed to parse response: {}", e))
+            ControlCenterClientError::ParseError(format!("failed to parse response: {e}"))
         })
     }
 
     /// Submit a receipt, returning UNKNOWN on timeout instead of error
     ///
     /// This is the preferred method as it implements correct UNKNOWN semantics.
+    ///
+    /// # Errors
+    /// Propagates the same errors as [`Self::submit_receipt`], except
+    /// [`ControlCenterClientError::Timeout`], which is converted into a
+    /// non-accepted response.
     pub async fn submit_receipt_with_unknown_on_timeout(
         &self,
         receipt: &Receipt,
@@ -225,13 +253,13 @@ impl ControlCenterClient {
 
         // Apply redactions
         for field in &self.config.redact_fields {
-            self.redact_field(&mut value, field);
+            Self::redact_field(&mut value, field);
         }
 
         value
     }
 
-    fn redact_field(&self, value: &mut serde_json::Value, path: &str) {
+    fn redact_field(value: &mut serde_json::Value, path: &str) {
         // Simple field redaction - just set to [REDACTED]
         if let serde_json::Value::Object(map) = value {
             for (key, val) in map.iter_mut() {
@@ -239,14 +267,14 @@ impl ControlCenterClient {
                     *val = serde_json::Value::String("[REDACTED]".to_string());
                 }
                 if let serde_json::Value::Object(_) = val {
-                    self.redact_field(val, path);
+                    Self::redact_field(val, path);
                 }
             }
         }
     }
 }
 
-/// Builder for creating a ControlCenterClient
+/// Builder for creating a `ControlCenterClient`
 #[derive(Debug, Default)]
 pub struct ControlCenterClientBuilder {
     config: ControlCenterClientConfig,
@@ -292,6 +320,10 @@ impl ControlCenterClientBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agentverify_core::{
+        ActionId, ContractId, Observation, PostconditionResult, Predicate, SourceId,
+        VerificationResult,
+    };
 
     #[test]
     fn config_default_values() {
@@ -396,5 +428,170 @@ mod tests {
             .with_redact_field("field3");
 
         assert_eq!(config.redact_fields.len(), 3);
+    }
+
+    #[test]
+    fn builder_sets_every_config_knob() {
+        let client = ControlCenterClientBuilder::new()
+            .base_url("https://cc.eu-west.example.com")
+            .bearer_token("cc-token-9")
+            .timeout_ms(1_500)
+            .max_receipt_size(2_048)
+            .redact_field("signature")
+            .redact_field("key_id")
+            .build()
+            .expect("a fully specified config must build a client");
+
+        assert_eq!(client.config.base_url, "https://cc.eu-west.example.com");
+        assert_eq!(client.config.bearer_token.as_deref(), Some("cc-token-9"));
+        assert_eq!(client.config.timeout_ms, 1_500);
+        assert_eq!(client.config.max_receipt_size, 2_048);
+        assert_eq!(
+            client.config.redact_fields,
+            vec!["signature".to_string(), "key_id".to_string()]
+        );
+    }
+
+    #[test]
+    fn builder_defaults_to_the_default_config() {
+        let client = ControlCenterClientBuilder::new()
+            .build()
+            .expect("the default config must build a client");
+
+        assert_eq!(client.config.base_url, "http://localhost:8080");
+        assert_eq!(client.config.max_receipt_size, 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn oversized_receipt_is_refused_without_leaving_the_process() {
+        let server = wiremock::MockServer::start().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/api/v1/verification-receipts"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        // A 64-byte cap is far below any real receipt, which carries a
+        // 64-character digest plus evidence.
+        let client = ControlCenterClientBuilder::new()
+            .base_url(server.uri())
+            .max_receipt_size(64)
+            .build()
+            .expect("capped client builds");
+
+        let response = client
+            .submit_receipt(&sample_receipt())
+            .await
+            .expect("the size guard refuses in-band rather than erroring");
+
+        assert!(!response.accepted);
+        assert_eq!(response.correlation_id, None);
+        assert_eq!(
+            response.error.as_deref(),
+            Some("Receipt exceeds maximum size")
+        );
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "an oversized receipt must not reach the server"
+        );
+    }
+
+    #[test]
+    fn redact_receipt_applies_each_configured_field() {
+        let client = ControlCenterClient::new(
+            ControlCenterClientConfig::new("http://localhost:8080")
+                .with_redact_field("key_id")
+                .with_redact_field("idempotency_key"),
+        )
+        .expect("client builds");
+
+        let redacted = client.redact_receipt(&sample_receipt());
+
+        assert_eq!(redacted["key_id"], "[REDACTED]");
+        assert_eq!(redacted["idempotency_key"], "[REDACTED]");
+        // Everything outside the redaction list stays intact.
+        assert_eq!(redacted["result"], "verified");
+        assert_eq!(redacted["observations"][0]["source"], "postgres");
+        assert_eq!(redacted["attempts"], 2);
+    }
+
+    #[test]
+    fn redact_field_descends_into_nested_objects() {
+        let mut value = serde_json::json!({
+            "receipt": {
+                "key_id": "vk-2026-08",
+                "issued_by": { "key_id": "vk-2026-08", "region": "eu-west-1" },
+            },
+            "key_id": "vk-2026-08",
+        });
+
+        ControlCenterClient::redact_field(&mut value, "key_id");
+
+        assert_eq!(value["key_id"], "[REDACTED]");
+        assert_eq!(value["receipt"]["key_id"], "[REDACTED]");
+        assert_eq!(value["receipt"]["issued_by"]["key_id"], "[REDACTED]");
+        assert_eq!(value["receipt"]["issued_by"]["region"], "eu-west-1");
+    }
+
+    #[test]
+    fn redact_field_wildcard_scrubs_every_value() {
+        let mut value = serde_json::json!({
+            "result": "verified",
+            "attempts": 2,
+            "nested": { "digest": "abc", "keep": true },
+        });
+
+        ControlCenterClient::redact_field(&mut value, "*");
+
+        assert_eq!(value["result"], "[REDACTED]");
+        assert_eq!(value["attempts"], "[REDACTED]");
+        // A wildcard replaces a whole subtree in one step, so nested content
+        // never survives.
+        assert_eq!(value["nested"], "[REDACTED]");
+    }
+
+    #[test]
+    fn redact_field_ignores_non_object_payloads() {
+        let mut scalar = serde_json::Value::String("verified".to_string());
+        ControlCenterClient::redact_field(&mut scalar, "result");
+        assert_eq!(scalar, serde_json::Value::String("verified".to_string()));
+
+        let mut array = serde_json::json!(["verified", 2]);
+        ControlCenterClient::redact_field(&mut array, "0");
+        assert_eq!(array, serde_json::json!(["verified", 2]));
+    }
+
+    #[test]
+    fn invalid_url_error_is_descriptive() {
+        let error = ControlCenterClientError::InvalidUrl("no scheme in url".to_string());
+        assert_eq!(error.to_string(), "Invalid URL: no scheme in url");
+    }
+
+    /// A receipt with evidence and a postcondition outcome, close to what the
+    /// runtime produces after a successful verification.
+    fn sample_receipt() -> Receipt {
+        Receipt::with_contract_version_and_key(
+            ActionId::new(),
+            ContractId::new(),
+            "1.0.0",
+            VerificationResult::Verified,
+            2,
+            Some("create-customer-42".to_string()),
+        )
+        .with_observation(Observation::new(
+            SourceId("postgres".to_string()),
+            serde_json::json!({ "customers": [{ "id": 42 }] }),
+        ))
+        .with_postcondition_result(PostconditionResult {
+            predicate: Predicate::Exists {
+                path: "customers.0.id".to_string(),
+            },
+            description: "customer row exists".to_string(),
+            passed: true,
+            error: None,
+        })
+        .with_key_id("vk-2026-08")
     }
 }

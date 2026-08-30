@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for REST observer using wiremock
 //!
 //! Tests authenticated mock server interactions: success, unauthorized access,
@@ -49,7 +50,7 @@ async fn mock_server_success_with_valid_auth() {
     let contract = Contract::new("test");
 
     let result = observer.observe(&action, &contract).await;
-    assert!(result.is_ok(), "expected success, got {:?}", result);
+    assert!(result.is_ok(), "expected success, got {result:?}");
 
     let observation = result.unwrap();
     assert_eq!(observation.source, SourceId("rest".into()));
@@ -76,12 +77,11 @@ async fn mock_server_unauthorized_missing_auth() {
 
     // HTTP 401 returns error (wrapped as Unknown) - this is correct behavior
     let result = observer.observe(&action, &contract).await;
-    assert!(result.is_err(), "401 should return error, got {:?}", result);
-    let err_str = format!("{:?}", result);
+    assert!(result.is_err(), "401 should return error, got {result:?}");
+    let err_str = format!("{result:?}");
     assert!(
         err_str.contains("401") || err_str.contains("Unauthorized"),
-        "Expected 401 error, got: {}",
-        err_str
+        "Expected 401 error, got: {err_str}"
     );
 }
 
@@ -108,12 +108,11 @@ async fn mock_server_unauthorized_invalid_token() {
 
     // HTTP 403 returns error - auth failure is treated as error
     let result = observer.observe(&action, &contract).await;
-    assert!(result.is_err(), "403 should return error, got {:?}", result);
-    let err_str = format!("{:?}", result);
+    assert!(result.is_err(), "403 should return error, got {result:?}");
+    let err_str = format!("{result:?}");
     assert!(
         err_str.contains("403") || err_str.contains("Forbidden"),
-        "Expected 403 error, got: {}",
-        err_str
+        "Expected 403 error, got: {err_str}"
     );
 }
 
@@ -141,8 +140,7 @@ async fn mock_server_malformed_response() {
     let result = observer.observe(&action, &contract).await;
     assert!(
         result.is_err(),
-        "malformed JSON should return error, got {:?}",
-        result
+        "malformed JSON should return error, got {result:?}"
     );
 }
 
@@ -209,14 +207,12 @@ async fn mock_server_timeout() {
     let result = observer.observe(&action, &contract).await;
     assert!(
         result.is_err(),
-        "timeout should return error, got {:?}",
-        result
+        "timeout should return error, got {result:?}"
     );
-    let err_str = format!("{:?}", result);
+    let err_str = format!("{result:?}");
     assert!(
         err_str.contains("timeout") || err_str.contains("Timeout") || err_str.contains("fetch"),
-        "Expected timeout error, got: {}",
-        err_str
+        "Expected timeout error, got: {err_str}"
     );
 }
 
@@ -281,4 +277,24 @@ async fn mock_server_redaction_in_response() {
     assert_eq!(observation.state["username"], "testuser");
     assert_eq!(observation.state["password"], "[REDACTED]");
     assert_eq!(observation.state["api_key"], "[REDACTED]");
+}
+
+#[tokio::test]
+async fn mock_server_action_name_that_breaks_the_url_is_unknown() {
+    // No server is needed: the observer refuses to build the URL at all.
+    let observer = make_observer("http://127.0.0.1:9", None);
+
+    let action = Action::new("auto-generated-id", serde_json::json!({}));
+    let contract = Contract::new("../../../etc/passwd");
+
+    let result = observer.observe(&action, &contract).await;
+    assert!(
+        result.is_err(),
+        "a broken URL must not produce an observation, got {result:?}"
+    );
+    let err_str = format!("{result:?}");
+    assert!(
+        err_str.contains("Failed to build URL"),
+        "expected the URL failure to be reported as UNKNOWN, got: {err_str}"
+    );
 }

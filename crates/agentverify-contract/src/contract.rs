@@ -21,7 +21,7 @@ impl std::fmt::Display for SourceLocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.file, self.line)?;
         if let Some(col) = self.column {
-            write!(f, ":{}", col)?;
+            write!(f, ":{col}")?;
         }
         Ok(())
     }
@@ -66,6 +66,7 @@ impl ContractContext {
     }
 
     /// Create with contract ID
+    #[must_use]
     pub fn with_contract_id(contract_id: ContractId) -> Self {
         Self {
             contract_id: Some(contract_id),
@@ -78,10 +79,10 @@ impl std::fmt::Display for ContractContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut parts = Vec::new();
         if let Some(id) = &self.contract_id {
-            parts.push(format!("contract_id={}", id));
+            parts.push(format!("contract_id={id}"));
         }
         if let Some(name) = &self.action_name {
-            parts.push(format!("action_name={}", name));
+            parts.push(format!("action_name={name}"));
         }
         write!(f, "{}", parts.join(", "))
     }
@@ -104,57 +105,86 @@ impl std::fmt::Display for PredicatePath {
 /// Helper function to format context for error messages
 fn fmt_ctx(
     f: &mut std::fmt::Formatter<'_>,
-    location: &Option<SourceLocation>,
-    context: &Option<ContractContext>,
+    location: Option<&SourceLocation>,
+    context: Option<&ContractContext>,
 ) -> std::fmt::Result {
     let mut ctx_parts = Vec::new();
     if let Some(loc) = location {
-        ctx_parts.push(format!(" ({})", loc));
+        ctx_parts.push(format!(" ({loc})"));
     }
     if let Some(c) = context {
         let ctx_str = c.to_string();
         if !ctx_str.is_empty() {
-            ctx_parts.push(format!(" [{}]", ctx_str));
+            ctx_parts.push(format!(" [{ctx_str}]"));
         }
     }
     write!(f, "{}", ctx_parts.join(""))
 }
 
+/// Errors raised while parsing, loading, or validating a contract.
 #[derive(Debug)]
 pub enum ContractError {
+    /// The contract JSON could not be deserialized.
     JsonError {
+        /// Underlying `serde_json` error.
         source: serde_json::Error,
+        /// Input location the error was attributed to, if known.
         location: Option<SourceLocation>,
+        /// Contract context (action name, contract id) for the error.
         context: Option<ContractContext>,
     },
+    /// The contract YAML could not be deserialized.
     YamlError {
+        /// Underlying `serde_yaml` error.
         source: serde_yaml::Error,
+        /// Input location the error was attributed to, if known.
         location: Option<SourceLocation>,
+        /// Contract context (action name, contract id) for the error.
         context: Option<ContractContext>,
     },
+    /// The contract file could not be read.
     IoError {
+        /// Underlying I/O error.
         source: std::io::Error,
+        /// File location the error was attributed to, if known.
         location: Option<SourceLocation>,
+        /// Contract context (action name, contract id) for the error.
         context: Option<ContractContext>,
     },
+    /// The contract is structurally valid but violates a validation rule.
     InvalidContract {
+        /// Human-readable description of the violation.
         reason: String,
+        /// Input location the error was attributed to, if known.
         location: Option<SourceLocation>,
+        /// Contract context (action name, contract id) for the error.
         context: Option<ContractContext>,
     },
+    /// A predicate inside the contract is not valid.
     InvalidPredicate {
+        /// Human-readable description of the violation.
         reason: String,
+        /// Path of the offending predicate inside the contract.
         path: PredicatePath,
+        /// Contract context (action name, contract id) for the error.
         context: Option<ContractContext>,
     },
+    /// The contract schema version does not match the supported version.
     SchemaVersionMismatch {
+        /// Schema version expected by this build.
         expected: String,
+        /// Schema version declared by the contract.
         actual: String,
+        /// Contract context (action name, contract id) for the error.
         context: Option<ContractContext>,
     },
+    /// The contract file has an extension this parser does not handle.
     UnknownFileExtension {
+        /// The unrecognized extension.
         extension: String,
+        /// File location the error was attributed to.
         location: Option<SourceLocation>,
+        /// Contract context (action name, contract id) for the error.
         context: Option<ContractContext>,
     },
 }
@@ -168,8 +198,8 @@ impl std::fmt::Display for ContractError {
                 context,
             } => {
                 write!(f, "Failed to parse JSON")?;
-                fmt_ctx(f, location, context)?;
-                write!(f, ": {}", source)
+                fmt_ctx(f, location.as_ref(), context.as_ref())?;
+                write!(f, ": {source}")
             }
             ContractError::YamlError {
                 source,
@@ -177,16 +207,16 @@ impl std::fmt::Display for ContractError {
                 context,
             } => {
                 write!(f, "Failed to parse YAML")?;
-                fmt_ctx(f, location, context)?;
-                write!(f, ": {}", source)
+                fmt_ctx(f, location.as_ref(), context.as_ref())?;
+                write!(f, ": {source}")
             }
             ContractError::IoError {
                 source,
                 location,
                 context,
             } => {
-                write!(f, "Failed to read file: {}", source)?;
-                fmt_ctx(f, location, context)
+                write!(f, "Failed to read file: {source}")?;
+                fmt_ctx(f, location.as_ref(), context.as_ref())
             }
             ContractError::InvalidContract {
                 reason,
@@ -194,8 +224,8 @@ impl std::fmt::Display for ContractError {
                 context,
             } => {
                 write!(f, "Invalid contract")?;
-                fmt_ctx(f, location, context)?;
-                write!(f, ": {}", reason)
+                fmt_ctx(f, location.as_ref(), context.as_ref())?;
+                write!(f, ": {reason}")
             }
             ContractError::InvalidPredicate {
                 reason,
@@ -206,10 +236,10 @@ impl std::fmt::Display for ContractError {
                 if let Some(c) = context {
                     let ctx_str = c.to_string();
                     if !ctx_str.is_empty() {
-                        write!(f, " [{}]", ctx_str)?;
+                        write!(f, " [{ctx_str}]")?;
                     }
                 }
-                write!(f, " {}: {}", path, reason)
+                write!(f, " {path}: {reason}")
             }
             ContractError::SchemaVersionMismatch {
                 expected,
@@ -218,18 +248,17 @@ impl std::fmt::Display for ContractError {
             } => {
                 write!(
                     f,
-                    "Schema version mismatch: expected {}, got {}",
-                    expected, actual
+                    "Schema version mismatch: expected {expected}, got {actual}"
                 )?;
-                fmt_ctx(f, &None, context)
+                fmt_ctx(f, None, context.as_ref())
             }
             ContractError::UnknownFileExtension {
                 extension,
                 location,
                 context,
             } => {
-                write!(f, "Unknown file extension: {}", extension)?;
-                fmt_ctx(f, location, context)
+                write!(f, "Unknown file extension: {extension}")?;
+                fmt_ctx(f, location.as_ref(), context.as_ref())
             }
         }
     }
@@ -248,6 +277,7 @@ impl std::error::Error for ContractError {
 
 impl ContractError {
     /// Add source location to the error
+    #[must_use]
     pub fn with_location(self, location: SourceLocation) -> Self {
         match self {
             ContractError::JsonError {
@@ -300,6 +330,7 @@ impl ContractError {
     }
 
     /// Add contract context to the error
+    #[must_use]
     pub fn with_context(self, context: ContractContext) -> Self {
         match self {
             ContractError::JsonError {
@@ -370,6 +401,7 @@ impl ContractError {
     }
 
     /// Get the contract ID if available
+    #[must_use]
     pub fn contract_id(&self) -> Option<&ContractId> {
         match self {
             ContractError::JsonError { context, .. }
@@ -385,6 +417,7 @@ impl ContractError {
     }
 
     /// Get the action name if available
+    #[must_use]
     pub fn action_name(&self) -> Option<&str> {
         match self {
             ContractError::JsonError { context, .. }
@@ -401,6 +434,12 @@ impl ContractError {
 }
 
 /// Parse a contract from JSON string
+///
+/// # Errors
+///
+/// Returns [`ContractError::JsonError`] if the input is not valid JSON and
+/// [`ContractError::InvalidContract`] / [`ContractError::InvalidPredicate`] if
+/// validation fails.
 pub fn parse_json(json: &str) -> Result<Contract, ContractError> {
     let contract: Contract = serde_json::from_str(json).map_err(|e| ContractError::JsonError {
         source: e,
@@ -412,6 +451,12 @@ pub fn parse_json(json: &str) -> Result<Contract, ContractError> {
 }
 
 /// Parse a contract from YAML string
+///
+/// # Errors
+///
+/// Returns [`ContractError::YamlError`] if the input is not valid YAML and
+/// [`ContractError::InvalidContract`] / [`ContractError::InvalidPredicate`] if
+/// validation fails.
 pub fn parse_yaml(yaml: &str) -> Result<Contract, ContractError> {
     let contract: Contract = serde_yaml::from_str(yaml).map_err(|e| ContractError::YamlError {
         source: e,
@@ -423,6 +468,13 @@ pub fn parse_yaml(yaml: &str) -> Result<Contract, ContractError> {
 }
 
 /// Load a contract from a file (auto-detects format by extension)
+///
+/// # Errors
+///
+/// Returns [`ContractError::IoError`] if the file cannot be read,
+/// [`ContractError::UnknownFileExtension`] if the extension is not `.json`,
+/// `.yaml`, or `.yml`, or the parse/validation errors from
+/// [`parse_json`] / [`parse_yaml`] otherwise.
 pub fn load_file(path: impl AsRef<Path>) -> Result<Contract, ContractError> {
     let content = fs::read_to_string(path.as_ref()).map_err(|e| ContractError::IoError {
         source: e,
@@ -435,7 +487,7 @@ pub fn load_file(path: impl AsRef<Path>) -> Result<Contract, ContractError> {
         match ext.to_str() {
             Some("json") => parse_json(&content)
                 .map_err(|e| e.with_location(SourceLocation::new(path.display().to_string(), 1))),
-            Some("yaml") | Some("yml") => parse_yaml(&content)
+            Some("yaml" | "yml") => parse_yaml(&content)
                 .map_err(|e| e.with_location(SourceLocation::new(path.display().to_string(), 1))),
             _ => Err(ContractError::UnknownFileExtension {
                 extension: ext.to_string_lossy().into_owned(),
@@ -452,6 +504,11 @@ pub fn load_file(path: impl AsRef<Path>) -> Result<Contract, ContractError> {
 }
 
 /// Validate a contract for basic correctness
+///
+/// # Errors
+///
+/// Returns [`ContractError::InvalidContract`] when required fields are missing
+/// and [`ContractError::InvalidPredicate`] when any predicate is malformed.
 pub fn validate_contract(contract: &Contract) -> Result<(), ContractError> {
     let ctx = ContractContext::with_action(&contract.action_name);
 
@@ -477,7 +534,7 @@ pub fn validate_contract(contract: &Contract) -> Result<(), ContractError> {
         validate_predicate(
             &postcond.predicate,
             &PredicatePath {
-                path: format!("postconditions[{}]", i),
+                path: format!("postconditions[{i}]"),
             },
             Some(ctx.clone()),
         )?;
@@ -488,7 +545,7 @@ pub fn validate_contract(contract: &Contract) -> Result<(), ContractError> {
         validate_predicate(
             &precond.predicate,
             &PredicatePath {
-                path: format!("preconditions[{}]", i),
+                path: format!("preconditions[{i}]"),
             },
             Some(ctx.clone()),
         )?;
@@ -517,19 +574,7 @@ fn validate_predicate(
                 context: ctx,
             })
         }
-        Predicate::All { predicates } => {
-            for (i, p) in predicates.iter().enumerate() {
-                validate_predicate(
-                    p,
-                    &PredicatePath {
-                        path: format!("{}[{}]", path.path, i),
-                    },
-                    ctx.clone(),
-                )?;
-            }
-            Ok(())
-        }
-        Predicate::Any { predicates } => {
+        Predicate::All { predicates } | Predicate::Any { predicates } => {
             for (i, p) in predicates.iter().enumerate() {
                 validate_predicate(
                     p,
@@ -572,6 +617,10 @@ fn validate_predicate(
 }
 
 /// Convert a contract to JSON string
+///
+/// # Errors
+///
+/// Returns [`ContractError::JsonError`] if the contract cannot be serialized.
 pub fn to_json(contract: &Contract) -> Result<String, ContractError> {
     serde_json::to_string_pretty(contract).map_err(|e| ContractError::JsonError {
         source: e,
@@ -581,6 +630,10 @@ pub fn to_json(contract: &Contract) -> Result<String, ContractError> {
 }
 
 /// Convert a contract to YAML string
+///
+/// # Errors
+///
+/// Returns [`ContractError::YamlError`] if the contract cannot be serialized.
 pub fn to_yaml(contract: &Contract) -> Result<String, ContractError> {
     serde_yaml::to_string(contract).map_err(|e| ContractError::YamlError {
         source: e,
@@ -613,14 +666,14 @@ mod tests {
 
     #[test]
     fn parse_yaml_contract() {
-        let yaml = r#"
+        let yaml = r"
 action_name: create_customer
 postconditions:
   - predicate:
       type: exists
       path: customer.id
     description: Customer was created
-"#;
+";
 
         let contract = parse_yaml(yaml).unwrap();
         assert_eq!(contract.action_name, "create_customer");
@@ -698,14 +751,14 @@ postconditions:
 
     #[test]
     fn parse_yaml_contract_with_schema() {
-        let yaml = r#"
+        let yaml = r"
 action_name: test_action
 postconditions:
   - predicate:
       type: exists
       path: x
     description: x exists
-"#;
+";
         let contract = parse_yaml(yaml).unwrap();
         assert_eq!(contract.action_name, "test_action");
         assert_eq!(contract.postconditions.len(), 1);

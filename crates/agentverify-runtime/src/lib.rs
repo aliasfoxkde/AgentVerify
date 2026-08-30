@@ -1,7 +1,8 @@
-//! AgentVerify Runtime
+//! `AgentVerify` Runtime
 //!
 //! Verified execution runtime
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 mod action_executor;
 mod executor;
 mod idempotency_store;
