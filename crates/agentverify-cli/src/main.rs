@@ -47,6 +47,7 @@ async fn shutdown(State(state): State<ServeState>) -> Response {
 #[derive(Parser)]
 #[command(name = "agentverify")]
 #[command(about = "Outcome verification for AI agents")]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
