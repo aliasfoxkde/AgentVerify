@@ -36,13 +36,41 @@ deferred (see [Non-goals](#non-goals)).
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Clippy `pedantic` clean, `-D warnings` in CI | 🚧 | Default-feature build clean; all-features sweep in flight |
-| Lint ratchet baseline | 🚧 | Record remaining `pedantic` warnings; CI fails on regressions, then ratchet down |
-| Coverage baseline → 90% core crates | 🚧 | `cargo llvm-cov` in CI (Codecov); engine targets 100% predicate coverage |
-| Docs build with `-D warnings` | 🚧 | `missing_docs` sweep across all crates |
-| Failure-injection tests (timeouts, partial failures, duplicates) | ⬜ | See `PLANNING.md` Phase 22 |
+| Clippy `pedantic` clean, `-D warnings` in CI | ✅ | 439 warnings cleared workspace-wide (default + all-features) |
+| Coverage baseline → 90%+ per crate | ✅ | Workspace ~97% line coverage; live Postgres/Redis in CI service containers |
+| Docs build with `-D warnings` | ✅ | `missing_docs` enforced; 100% public-item doc coverage |
+| Failure-injection tests (timeouts, partial failures, duplicates) | 🚧 | Duplicate/timeout/partial paths covered in runtime suite; fault-injection harness remains |
 | `cargo-deny` advisories/bans/licenses/sources in CI | ✅ | `deny.toml` |
 | MSRV policy | ✅ | `rust-version = 1.88` (floor of the dependency tree), CI-verified with `cargo hack` |
+
+### Known limitations (accepted for 0.1, scheduled for 0.2)
+
+Found during the coverage push and audit; each is documented here rather
+than silently present:
+
+1. **`FileIdempotencyStore` cache staleness** — an instance that cached an
+   in-flight entry never re-validates it, so a completion written by another
+   process is not observed until restart. Single-instance deployments are
+   unaffected; multi-instance deployments should use the Redis store. 0.2:
+   TTL/revalidation policy.
+2. **Executor `Unknown` retry branches are unreachable** —
+   `PredicateEngine::evaluate` can only return Verified/Failed today, so the
+   executor's indeterminate-verdict handling is defensive. 0.2: plumb real
+   consistency-mode results (timestamp/sequencing checks) into the verdict so
+   `UNKNOWN` verdicts become reachable end-to-end.
+3. **`OtlpExporter::new` requires a tokio runtime** (tonic channel worker);
+   the doc example implies otherwise. 0.2: document or make runtime-agnostic.
+4. **`OtlpExporter::shutdown` returns `Ok` when the collector is
+   unreachable** — span loss is only logged by the SDK. Pinned by test.
+5. **`ControlCenterClientBuilder` is not re-exported** from
+   `agentverify-http` and `max_receipt_size` has no public setter, so the
+   1 MiB receipt cap is not configurable by dependents. 0.2: API surface fix.
+6. **MCP client error variants `NotInitialized`, `ServerError`,
+   `CapabilityNotSupported` are never constructed** (no initialize guard
+   before tool calls). 0.2: enforce the initialize handshake.
+7. **`RecoveryOutcome::NotApplicable` has no constructor site** in
+   `agentverify-recovery`. 0.2: either produce it from strategy dispatch or
+   remove the variant.
 
 ## Milestone 0.2 — dependency and API modernization
 
