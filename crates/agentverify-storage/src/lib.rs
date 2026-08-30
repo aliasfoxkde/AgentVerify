@@ -381,6 +381,7 @@ impl Storage for MemStorage {
 mod tests {
     use super::*;
     use agentverify_core::{ContractId, Observation, VerificationResult};
+    use std::ffi::OsString;
     use tempfile::TempDir;
 
     fn create_test_receipt(action_id: ActionId, contract_id: ContractId) -> Receipt {
@@ -570,5 +571,199 @@ mod tests {
 
         let receipts = storage.list_by_action(&action_id).await.unwrap();
         assert_eq!(receipts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mem_storage_default_matches_new() {
+        let storage = MemStorage::default();
+        assert!(!storage.exists(&ReceiptId::new()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn mem_storage_list_ids_returns_every_stored_receipt() {
+        let storage = MemStorage::new();
+
+        let receipt1 = create_test_receipt(ActionId::new(), ContractId::new());
+        let receipt2 = create_test_receipt(ActionId::new(), ContractId::new());
+        storage.store(&receipt1).await.unwrap();
+        storage.store(&receipt2).await.unwrap();
+
+        let ids = storage.list_ids().await.unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&receipt1.id));
+        assert!(ids.contains(&receipt2.id));
+
+        // Deleting an unknown ID reports NotFound rather than silently succeeding.
+        let unknown = ReceiptId::new();
+        let err = storage.delete(&unknown).await.unwrap_err();
+        assert_eq!(err.to_string(), format!("Receipt not found: {unknown}"));
+        assert!(matches!(err, StorageError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn storage_error_display_covers_every_variant() {
+        let id = ReceiptId::new();
+
+        let io_error = std::fs::File::open("/agentverify-nonexistent-path/receipt.json")
+            .expect_err("missing file should fail");
+        assert!(StorageError::Io(io_error)
+            .to_string()
+            .starts_with("IO error: "));
+
+        let serialization_error: StorageError = serde_json::from_str::<Receipt>("{not json")
+            .unwrap_err()
+            .into();
+        assert!(serialization_error
+            .to_string()
+            .starts_with("Serialization error: "));
+
+        assert_eq!(
+            StorageError::NotFound(id).to_string(),
+            format!("Receipt not found: {id}")
+        );
+        assert_eq!(
+            StorageError::AlreadyExists(id).to_string(),
+            format!("Receipt already exists: {id}")
+        );
+        assert_eq!(
+            StorageError::InvalidPath("not utf-8".to_string()).to_string(),
+            "Invalid path: not utf-8"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_storage_rejects_paths_that_are_not_valid_utf8() {
+        use std::os::unix::ffi::OsStringExt;
+
+        // `FileStorage` builds receipt filenames from the base path, so a
+        // non-UTF-8 path cannot be represented and must be rejected up front.
+        let invalid = PathBuf::from(OsString::from_vec(vec![0x2f, 0xff, 0xfe]));
+        let err = FileStorage::new(invalid).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Invalid path: Path must be a valid UTF-8 string"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_storage_new_surfaces_io_failures() {
+        let temp_dir = TempDir::new().unwrap();
+        let blocking_file = temp_dir.path().join("occupied");
+        std::fs::write(&blocking_file, b"not a directory").unwrap();
+
+        // `create_dir_all` cannot create a directory beneath a regular file.
+        let err = FileStorage::new(blocking_file.join("receipts")).unwrap_err();
+        assert!(err.to_string().starts_with("IO error: "));
+    }
+
+    #[tokio::test]
+    async fn file_storage_store_surfaces_io_failures_when_directory_vanishes() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStorage::new(temp_dir.path()).unwrap();
+
+        // Removing the directory out from under the adapter must surface an
+        // error instead of losing the receipt silently.
+        std::fs::remove_dir(temp_dir.path()).unwrap();
+
+        let receipt = create_test_receipt(ActionId::new(), ContractId::new());
+        let err = storage.store(&receipt).await.unwrap_err();
+        assert!(err.to_string().starts_with("IO error: "));
+
+        let err = storage.list_ids().await.unwrap_err();
+        assert!(err.to_string().starts_with("IO error: "));
+    }
+
+    #[tokio::test]
+    async fn file_storage_debug_reports_base_path_without_cache_contents() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStorage::new(temp_dir.path()).unwrap();
+
+        let rendered = format!("{storage:?}");
+        assert!(rendered.starts_with("FileStorage"));
+        assert!(rendered.contains("base_path"));
+        // The cache is elided on purpose so debug output stays bounded.
+        assert!(rendered.contains(".."));
+    }
+
+    #[tokio::test]
+    async fn file_storage_load_reports_serialization_errors() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStorage::new(temp_dir.path()).unwrap();
+
+        let id = ReceiptId::new();
+        std::fs::write(temp_dir.path().join(format!("{id}.json")), "{not a receipt").unwrap();
+
+        let err = storage.load(&id).await.unwrap_err();
+        assert!(err.to_string().starts_with("Serialization error: "));
+    }
+
+    #[tokio::test]
+    async fn file_storage_list_by_action_skips_unreadable_receipts() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStorage::new(temp_dir.path()).unwrap();
+
+        let action_id = ActionId::new();
+        let good = create_test_receipt(action_id, ContractId::new());
+        storage.store(&good).await.unwrap();
+
+        // A corrupt file whose name is still a valid receipt ID.
+        let corrupt_id = ReceiptId::new();
+        std::fs::write(
+            temp_dir.path().join(format!("{corrupt_id}.json")),
+            "{corrupt",
+        )
+        .unwrap();
+
+        assert_eq!(storage.list_ids().await.unwrap().len(), 2);
+
+        let receipts = storage.list_by_action(&action_id).await.unwrap();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].id, good.id);
+    }
+
+    #[tokio::test]
+    async fn file_storage_refresh_cache_ignores_files_that_are_not_receipts() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStorage::new(temp_dir.path()).unwrap();
+
+        let receipt = create_test_receipt(ActionId::new(), ContractId::new());
+        storage.store(&receipt).await.unwrap();
+
+        // Foreign files that a human or another process may have left behind
+        // must be ignored, not surfaced as receipts.
+        std::fs::write(temp_dir.path().join("README.txt"), b"notes").unwrap();
+        std::fs::write(temp_dir.path().join("not-a-uuid.json"), b"{}").unwrap();
+        std::fs::write(
+            temp_dir
+                .path()
+                .join("00000000-0000-0000-0000-000000000000.json"),
+            b"{}",
+        )
+        .unwrap();
+
+        let ids = storage.list_ids().await.unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&receipt.id));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn file_storage_refresh_cache_ignores_non_utf8_filenames() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let storage = FileStorage::new(temp_dir.path()).unwrap();
+
+        let receipt = create_test_receipt(ActionId::new(), ContractId::new());
+        storage.store(&receipt).await.unwrap();
+
+        // A `.json` file whose stem is not valid UTF-8 has no parseable
+        // receipt ID and must be skipped rather than corrupting the listing.
+        let foreign = std::ffi::OsStr::from_bytes(&[0xff, 0xfe, 0x2e, 0x6a, 0x73, 0x6f, 0x6e]);
+        std::fs::write(temp_dir.path().join(foreign), b"{}").unwrap();
+
+        let ids = storage.list_ids().await.unwrap();
+        assert_eq!(ids, vec![receipt.id]);
     }
 }

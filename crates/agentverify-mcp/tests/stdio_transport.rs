@@ -3,7 +3,10 @@
 //! Every test talks to a real subprocess peer, `fixtures/mcp_stdio_server.py`,
 //! which speaks newline-delimited JSON-RPC 2.0 over stdin/stdout. The framing,
 //! child lifetime, and failure modes exercised here are therefore the real
-//! ones rather than stand-ins.
+//! ones rather than stand-ins. The peer also uses the MCP specification's
+//! lowerCamelCase payload keys and rejects an `initialize` request that
+//! carries `snake_case` keys instead, so these tests fail if the client stops
+//! speaking the specification's wire format.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -340,11 +343,17 @@ async fn transport_preserves_string_request_ids() {
         .await
         .unwrap();
 
+    // Hand-written params, exactly as the specification writes them.
+    let params = json!({
+        "protocolVersion": MCP_PROTOCOL_VERSION,
+        "capabilities": {},
+        "clientInfo": {"name": "agentverify-mcp", "version": "0.1.0"}
+    });
     transport
         .send(JsonRpcMessage::Request(JsonRpcRequest::with_string_id(
             "session-1",
             "initialize",
-            None,
+            Some(params),
         )))
         .await
         .unwrap();
@@ -356,8 +365,8 @@ async fn transport_preserves_string_request_ids() {
     let raw = to_wire(&reply);
     assert_eq!(raw["id"], json!("session-1"), "unexpected reply: {raw}");
     assert_eq!(
-        raw["result"]["protocol_version"],
+        raw["result"]["protocolVersion"],
         json!(MCP_PROTOCOL_VERSION),
-        "unexpected reply: {raw}"
+        "the peer speaks the specification's camelCase: {raw}"
     );
 }
