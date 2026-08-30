@@ -1,10 +1,13 @@
 [package]
 name = "agentverify-http"
+description = "HTTP gateway and REST observer clients for AgentVerify"
+keywords = ["verification", "agents", "postconditions", "idempotency", "reliability"]
+categories = ["development-tools", "development-tools::testing", "asynchronous"]
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
@@ -28,3 +31,6 @@ jsonpath-rust = { workspace = true }
 [dev-dependencies]
 wiremock = "0.6"
 tokio = { version = "1.0", features = ["full"] }
+
+[package.metadata.docs.rs]
+all-features = true
