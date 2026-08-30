@@ -55,18 +55,23 @@ use uuid::Uuid;
 /// Errors that can occur during storage operations
 #[derive(Debug, Error)]
 pub enum StorageError {
+    /// An underlying filesystem operation failed.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A receipt could not be serialized or deserialized.
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    /// No receipt was stored under the requested ID.
     #[error("Receipt not found: {0}")]
     NotFound(ReceiptId),
 
+    /// A receipt is already stored under the requested ID.
     #[error("Receipt already exists: {0}")]
     AlreadyExists(ReceiptId),
 
+    /// The supplied storage path was rejected (e.g. not a directory).
     #[error("Invalid path: {0}")]
     InvalidPath(String),
 }
@@ -299,9 +304,11 @@ impl Storage for FileStorage {
 
 impl std::fmt::Debug for FileStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `cache` mirrors on-disk state and its contents would dominate
+        // debug output, so it is elided rather than printed in full.
         f.debug_struct("FileStorage")
             .field("base_path", &self.base_path)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -481,13 +488,13 @@ mod tests {
         let other_action_id = ActionId::new();
         let contract_id = ContractId::new();
 
-        let receipt1 = create_test_receipt(action_id, contract_id);
-        let receipt2 = create_test_receipt(action_id, contract_id);
-        let receipt3 = create_test_receipt(other_action_id, contract_id);
+        let primary = create_test_receipt(action_id, contract_id);
+        let secondary = create_test_receipt(action_id, contract_id);
+        let unrelated = create_test_receipt(other_action_id, contract_id);
 
-        storage.store(&receipt1).await.unwrap();
-        storage.store(&receipt2).await.unwrap();
-        storage.store(&receipt3).await.unwrap();
+        storage.store(&primary).await.unwrap();
+        storage.store(&secondary).await.unwrap();
+        storage.store(&unrelated).await.unwrap();
 
         let receipts = storage.list_by_action(&action_id).await.unwrap();
         assert_eq!(receipts.len(), 2);

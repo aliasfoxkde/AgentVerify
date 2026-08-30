@@ -150,7 +150,7 @@ impl Receipt {
             postcondition_results: Vec::new(),
             digest: String::new(),
             key_id: None,
-            idempotency_key: idempotency_key.clone(),
+            idempotency_key,
             signature: None,
             timestamp: Utc::now(),
         };
@@ -214,6 +214,7 @@ impl Receipt {
     }
 
     /// Set the key identifier
+    #[must_use]
     pub fn with_key_id(mut self, key_id: impl Into<String>) -> Self {
         self.key_id = Some(key_id.into());
         self
@@ -251,17 +252,6 @@ impl Receipt {
     }
 }
 
-/// Receipt store trait for persistence
-///
-/// Implement this trait to provide custom receipt storage:
-/// - In-memory for tests
-/// - File-based for local persistence
-/// - Database for durable storage
-///
-/// # Key semantics
-/// - Key scope: receipts are stored by `ReceiptId`
-/// - Collision: overwrite with newer receipt (same ID)
-/// - Expiry: implementors may choose to expire entries after TTL
 /// Errors that can occur while persisting a receipt.
 #[derive(Debug, thiserror::Error)]
 pub enum ReceiptStoreError {
@@ -274,12 +264,27 @@ pub enum ReceiptStoreError {
     Serialize(String),
 }
 
+/// Receipt store trait for persistence
+///
+/// Implement this trait to provide custom receipt storage:
+/// - In-memory for tests
+/// - File-based for local persistence
+/// - Database for durable storage
+///
+/// # Key semantics
+/// - Key scope: receipts are stored by `ReceiptId`
+/// - Collision: overwrite with newer receipt (same ID)
+/// - Expiry: implementors may choose to expire entries after TTL
+///
+/// Asynchronous by design: each method returns a boxed future so
+/// implementations can be backed by a database, filesystem, or network service
+/// without the trait itself being `async` (which would not be object-safe).
 pub trait ReceiptStore: Send + Sync {
     /// Store a receipt
     ///
     /// # Errors
     ///
-    /// Returns [`ReceiptStoreError`] if the receipt cannot be serialized or
+    /// Returns `ReceiptStoreError` if the receipt cannot be serialized or
     /// written to the backing store. Implementations must not panic on I/O
     /// failure: evidence persistence is best-effort but its failure is
     /// always observable to the caller.
@@ -289,12 +294,16 @@ pub trait ReceiptStore: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), ReceiptStoreError>> + Send + 'a>>;
 
     /// Retrieve a receipt by ID
+    ///
+    /// Returns `None` when no receipt with that ID is held by the store.
     fn get<'a>(
         &'a self,
         id: &'a ReceiptId,
     ) -> Pin<Box<dyn Future<Output = Option<Receipt>> + Send + 'a>>;
 
     /// List receipts for an action
+    ///
+    /// Returns an empty vector when the action has no recorded receipts.
     fn list_by_action<'a>(
         &'a self,
         action_id: &'a ActionId,
@@ -317,6 +326,7 @@ pub struct InMemoryReceiptStore {
 }
 
 impl InMemoryReceiptStore {
+    /// Create an empty in-memory receipt store.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -508,13 +518,11 @@ impl ReceiptStore for FileReceiptStore {
     ) -> Pin<Box<dyn Future<Output = Vec<Receipt>> + Send + 'a>> {
         let base_path = self.base_path.clone();
         Box::pin(async move {
-            let store = match Self::new(base_path.clone()) {
-                Ok(s) => s,
-                Err(_) => return Vec::new(),
+            let Ok(store) = Self::new(base_path.clone()) else {
+                return Vec::new();
             };
-            let index = match store.read_index_async().await {
-                Ok(i) => i,
-                Err(_) => return Vec::new(),
+            let Ok(index) = store.read_index_async().await else {
+                return Vec::new();
             };
             let receipt_ids = match index.get(action_id.to_string().as_str()) {
                 Some(ids) => ids.clone(),
@@ -643,7 +651,10 @@ mod tests {
             serde_json::json!({"status": "ok"}),
         ));
 
-        assert!(receipt.verify_digest(), "adding an observation must keep the digest valid");
+        assert!(
+            receipt.verify_digest(),
+            "adding an observation must keep the digest valid"
+        );
         assert_eq!(receipt.observations.len(), 1);
     }
 
@@ -734,7 +745,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let store_ref = &store;
         let receipt_ref = &receipt;
-        rt.block_on(store_ref.store(receipt_ref));
+        let _ = rt.block_on(store_ref.store(receipt_ref));
 
         // Retrieve it
         let retrieved = rt.block_on(store.get(&receipt.id));
@@ -760,7 +771,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let store_ref = &store;
         let receipt_ref = &receipt;
-        rt.block_on(store_ref.store(receipt_ref));
+        let _ = rt.block_on(store_ref.store(receipt_ref));
 
         let exists = rt.block_on(store.exists(&receipt.id));
         assert!(exists);

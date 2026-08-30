@@ -44,24 +44,31 @@ use tokio_postgres::NoTls;
 /// `PostgreSQL` observer-specific errors
 #[derive(Debug, Error)]
 pub enum PostgresObserverError {
+    /// A connection setting was missing or invalid.
     #[error("Configuration error: {0}")]
     Config(String),
 
+    /// The deadpool connection pool could not be created.
     #[error("Pool creation failed: {0}")]
     PoolCreation(String),
 
+    /// A query failed while executing against the server.
     #[error("Query execution failed: {0}")]
     QueryError(String),
 
+    /// A query could not be constructed from the contract.
     #[error("Query building failed: {0}")]
     QueryBuildError(String),
 
+    /// A query result could not be converted to JSON.
     #[error("Result parsing failed: {0}")]
     ParseError(String),
 
+    /// The server did not respond within the configured timeout.
     #[error("Connection timeout")]
     Timeout,
 
+    /// The contract declares no postconditions to observe.
     #[error("No postconditions defined in contract")]
     NoPostconditions,
 }
@@ -127,6 +134,7 @@ impl PostgresObserverConfig {
     }
 
     /// Set the hostname
+    #[must_use]
     pub fn with_host(mut self, host: impl Into<String>) -> Self {
         self.host = host.into();
         self
@@ -140,18 +148,21 @@ impl PostgresObserverConfig {
     }
 
     /// Set the user
+    #[must_use]
     pub fn with_user(mut self, user: impl Into<String>) -> Self {
         self.user = user.into();
         self
     }
 
     /// Set the password
+    #[must_use]
     pub fn with_password(mut self, password: impl Into<String>) -> Self {
         self.password = password.into();
         self
     }
 
     /// Set the database name
+    #[must_use]
     pub fn with_database(mut self, database: impl Into<String>) -> Self {
         self.database = database.into();
         self
@@ -160,12 +171,14 @@ impl PostgresObserverConfig {
     /// Set the SSL mode
     ///
     /// Valid values: "disable", "require", "verify-ca", "verify-full"
+    #[must_use]
     pub fn with_ssl_mode(mut self, mode: impl Into<String>) -> Self {
         self.ssl_mode = mode.into();
         self
     }
 
     /// Set the application name
+    #[must_use]
     pub fn with_application_name(mut self, name: impl Into<String>) -> Self {
         self.application_name = name.into();
         self
@@ -210,7 +223,7 @@ impl PostgresObserverConfig {
     }
 
     /// Create a deadpool configuration
-    fn create_deadpool_config(&self) -> Result<deadpool_postgres::Config, PostgresObserverError> {
+    fn create_deadpool_config(&self) -> deadpool_postgres::Config {
         let mut cfg = deadpool_postgres::Config::new();
         cfg.host = Some(self.host.clone());
         cfg.port = Some(self.port);
@@ -218,7 +231,7 @@ impl PostgresObserverConfig {
         cfg.password = Some(self.password.clone());
         cfg.dbname = Some(self.database.clone());
         cfg.connect_timeout = Some(std::time::Duration::from_secs(self.connect_timeout_secs));
-        Ok(cfg)
+        cfg
     }
 }
 
@@ -237,12 +250,14 @@ impl PostgresObserver {
     /// # Errors
     ///
     /// Returns an error if the connection pool cannot be created.
+    ///
+    /// The signature is `async` for parity with [`Self::from_uri`], even though
+    /// pool creation itself is synchronous.
+    #[allow(clippy::unused_async)]
     pub async fn from_config(
         config: PostgresObserverConfig,
     ) -> Result<Self, PostgresObserverError> {
-        let cfg = config
-            .create_deadpool_config()
-            .map_err(|e| PostgresObserverError::Config(e.to_string()))?;
+        let cfg = config.create_deadpool_config();
 
         let pool = cfg
             .create_pool(Some(Runtime::Tokio1), NoTls)
@@ -260,6 +275,16 @@ impl PostgresObserver {
     ///     "postgres://postgres:secret@localhost:5432/mydb",
     /// ).await;
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PostgresObserverError::Config`] when `uri` is malformed or its
+    /// user and password are not percent-encoded, and
+    /// [`PostgresObserverError::PoolCreation`] when the pool cannot be created.
+    ///
+    /// The signature is `async` for parity with [`Self::from_config`], even
+    /// though pool creation itself is synchronous.
+    #[allow(clippy::unused_async)]
     pub async fn from_uri(uri: &str) -> Result<Self, PostgresObserverError> {
         let mut cfg = deadpool_postgres::Config::new();
         // Parse the URI manually
@@ -288,9 +313,9 @@ impl PostgresObserver {
             ));
         }
 
-        let host_port: Vec<&str> = host_db[0].split(':').collect();
-        let host = host_port[0].to_string();
-        let port: u16 = host_port
+        let host_port_parts: Vec<&str> = host_db[0].split(':').collect();
+        let host = host_port_parts[0].to_string();
+        let port: u16 = host_port_parts
             .get(1)
             .and_then(|p| p.parse().ok())
             .unwrap_or(5432);
@@ -337,6 +362,11 @@ impl PostgresObserver {
     /// # Returns
     ///
     /// Returns a JSON array of objects, one per row.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PostgresObserverError::QueryError`] if a connection cannot be
+    /// acquired from the pool or the query fails to execute.
     pub async fn execute_query(
         &self,
         query: &str,
@@ -427,6 +457,9 @@ impl PostgresObserver {
     ///
     /// The query selects all columns (*) from the table named by `action_name`.
     /// This can be extended to build more sophisticated queries based on postconditions.
+    // `&self` is retained so the query builder stays a method on the observer
+    // and can consult pool/config state in future revisions.
+    #[allow(clippy::unused_self)]
     fn build_observation_query(
         &self,
         action: &Action,
@@ -462,6 +495,11 @@ impl PostgresObserver {
     }
 
     /// Check connectivity by executing a simple query
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PostgresObserverError::QueryError`] if a connection cannot be
+    /// acquired from the pool or the probe query fails.
     pub async fn health_check(&self) -> Result<(), PostgresObserverError> {
         let client = self
             .pool
@@ -536,7 +574,7 @@ mod tests {
     fn make_test_observer() -> PostgresObserver {
         let config = PostgresObserverConfig::default();
         // Create a pool that won't actually be used in build_observation_query tests
-        let cfg = config.create_deadpool_config().unwrap();
+        let cfg = config.create_deadpool_config();
         let pool = cfg.create_pool(Some(Runtime::Tokio1), NoTls).unwrap();
         PostgresObserver { pool, config }
     }

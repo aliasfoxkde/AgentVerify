@@ -2,8 +2,9 @@
 
 use agentverify_core::Predicate;
 use agentverify_engine::PredicateEngine;
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{black_box, criterion_main, Criterion, Throughput};
 
+/// Benchmark `Equals` predicate evaluation against a flat state document.
 pub fn predicate_equals_benchmark(c: &mut Criterion) {
     let engine = PredicateEngine::default();
     let state = serde_json::json!({
@@ -29,6 +30,7 @@ pub fn predicate_equals_benchmark(c: &mut Criterion) {
     });
 }
 
+/// Benchmark `Exists` predicate evaluation against a nested state document.
 pub fn predicate_exists_benchmark(c: &mut Criterion) {
     let engine = PredicateEngine::default();
     let state = serde_json::json!({
@@ -54,6 +56,7 @@ pub fn predicate_exists_benchmark(c: &mut Criterion) {
     });
 }
 
+/// Benchmark `Matches` predicate evaluation using a realistic email regex.
 pub fn predicate_regex_benchmark(c: &mut Criterion) {
     let engine = PredicateEngine::default();
     let state = serde_json::json!({
@@ -77,10 +80,22 @@ pub fn predicate_regex_benchmark(c: &mut Criterion) {
     });
 }
 
-criterion_group!(
-    benches,
-    predicate_equals_benchmark,
-    predicate_exists_benchmark,
-    predicate_regex_benchmark
-);
-criterion_main!(benches);
+// The `criterion_group!` macro expands to a `pub fn` without a doc comment,
+// which the workspace-wide `missing_docs` lint would otherwise reject. The
+// generated group is therefore isolated in a module that opts out of it.
+#[allow(missing_docs)]
+mod bench_groups {
+    use super::{
+        predicate_equals_benchmark, predicate_exists_benchmark, predicate_regex_benchmark,
+    };
+    use criterion::criterion_group;
+
+    criterion_group!(
+        benches,
+        predicate_equals_benchmark,
+        predicate_exists_benchmark,
+        predicate_regex_benchmark
+    );
+}
+
+criterion_main!(bench_groups::benches);

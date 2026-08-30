@@ -41,8 +41,19 @@ impl StdioTransport {
     /// Connect to an MCP server via stdio
     ///
     /// # Arguments
-    /// * `command` - The command to execute (e.g., "npx", "python")
-    /// * `args` - Command arguments (e.g., ["-m", "`mcp_server`"])
+    ///
+    /// * `command` - The command to execute, for example `npx` or `python`
+    /// * `args` - Command arguments passed to `command`
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError::Io` if the server process cannot be spawned,
+    /// and `TransportError::Channel` if its stdin or stdout streams are not
+    /// piped as requested.
+    ///
+    /// The signature is `async` for forward compatibility with asynchronous
+    /// process spawning, even though the body is currently synchronous.
+    #[allow(clippy::unused_async)]
     pub async fn connect(command: &str, args: &[&str]) -> Result<Self, TransportError> {
         use std::process::Stdio;
 
@@ -79,6 +90,11 @@ impl StdioTransport {
     }
 
     /// Send a JSON-RPC message as a newline-delimited JSON line
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError::NotConnected` if the transport has been
+    /// closed, and propagates serialization or write failures.
     pub async fn send(&self, msg: JsonRpcMessage) -> Result<(), TransportError> {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(TransportError::NotConnected);
@@ -94,6 +110,12 @@ impl StdioTransport {
     }
 
     /// Receive a JSON-RPC message (blocking read line)
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError::NotConnected` if the transport has been
+    /// closed or the peer sent an empty line, and propagates read or
+    /// deserialization failures.
     pub async fn recv(&self) -> Result<JsonRpcMessage, TransportError> {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(TransportError::NotConnected);
@@ -154,6 +176,12 @@ impl ChannelTransport {
     }
 
     /// Send a JSON-RPC message
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError::NotConnected` if the transport has been
+    /// closed, or `TransportError::Channel` if the receiving half has been
+    /// dropped.
     pub async fn send(&self, msg: JsonRpcMessage) -> Result<(), TransportError> {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(TransportError::NotConnected);
@@ -165,6 +193,12 @@ impl ChannelTransport {
     }
 
     /// Receive a JSON-RPC message
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransportError::NotConnected` if the transport has been
+    /// closed, or `TransportError::Channel` if the sending half has been
+    /// dropped.
     pub async fn recv(&self) -> Result<JsonRpcMessage, TransportError> {
         if !self.connected.load(Ordering::SeqCst) {
             return Err(TransportError::NotConnected);

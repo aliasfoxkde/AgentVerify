@@ -46,7 +46,7 @@ impl PredicateEngine {
     ///
     /// # Errors
     ///
-    /// Returns [`EngineError::RegexError`] when a `Matches` predicate carries a
+    /// Returns `EngineError::RegexError` when a `Matches` predicate carries a
     /// regular expression that fails to compile.
     pub fn evaluate(
         &self,
@@ -1333,12 +1333,12 @@ mod property_tests {
         fn count_is_deterministic(state_json: String, path: String, op: String, value: i64) {
             let state = parse_state(&state_json);
             let operator = match op.as_str() {
-                "eq" => CountOperator::Eq,
                 "ne" => CountOperator::Ne,
                 "gt" => CountOperator::Gt,
                 "ge" => CountOperator::Ge,
                 "lt" => CountOperator::Lt,
                 "le" => CountOperator::Le,
+                // "eq" and any unrecognised operator both fall back to Eq
                 _ => CountOperator::Eq,
             };
             let predicate = Predicate::count(&path, operator, value);

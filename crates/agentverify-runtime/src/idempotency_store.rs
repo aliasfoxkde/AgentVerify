@@ -289,6 +289,15 @@ impl RedisIdempotencyStore {
     /// # Arguments
     /// * `url` - Redis connection URL (e.g., `redis://127.0.0.1:6379`)
     /// * `ttl_secs` - Default TTL for entries in seconds
+    ///
+    /// # Errors
+    ///
+    /// Returns [`deadpool_redis::CreatePoolError`] if the connection pool
+    /// cannot be built from `url`.
+    ///
+    /// The signature is `async` for parity with [`Self::new`]'s async
+    /// counterparts on other stores; pool creation itself is synchronous.
+    #[allow(clippy::unused_async)]
     pub async fn from_url(
         url: &str,
         ttl_secs: u64,
@@ -337,7 +346,7 @@ impl IdempotencyStore for RedisIdempotencyStore {
                 .arg(&value)
                 .arg("NX")
                 .arg("EX")
-                .arg(ttl_secs as i64)
+                .arg(i64::try_from(ttl_secs).unwrap_or(i64::MAX))
                 .query_async(&mut conn)
                 .await;
 
@@ -375,7 +384,7 @@ impl IdempotencyStore for RedisIdempotencyStore {
                             .arg(&value)
                             .arg("NX")
                             .arg("EX")
-                            .arg(ttl_secs as i64)
+                            .arg(i64::try_from(ttl_secs).unwrap_or(i64::MAX))
                             .query_async(&mut conn)
                             .await;
                         match retry_result {
@@ -427,7 +436,7 @@ impl IdempotencyStore for RedisIdempotencyStore {
                 .arg(&redis_key)
                 .arg(&value)
                 .arg("EX")
-                .arg(ttl_secs as i64)
+                .arg(i64::try_from(ttl_secs).unwrap_or(i64::MAX))
                 .query_async(&mut conn)
                 .await;
         })

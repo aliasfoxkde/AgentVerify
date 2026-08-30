@@ -21,6 +21,7 @@ pub struct JsonRpcRequest {
 
 impl JsonRpcRequest {
     /// Create a new request with numeric ID
+    #[must_use]
     pub fn new(id: u64, method: impl Into<String>, params: Option<Value>) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
@@ -31,6 +32,7 @@ impl JsonRpcRequest {
     }
 
     /// Create a new request with string ID
+    #[must_use]
     pub fn with_string_id(
         id: impl Into<String>,
         method: impl Into<String>,
@@ -49,8 +51,11 @@ impl JsonRpcRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum JsonRpcMessage {
+    /// A request awaiting a response.
     Request(JsonRpcRequest),
+    /// A reply to a previously issued request.
     Response(JsonRpcResponse),
+    /// A one-way message that expects no response.
     Notification(JsonRpcNotification),
 }
 
@@ -60,14 +65,20 @@ pub enum JsonRpcMessage {
 pub enum JsonRpcResponse {
     /// Successful response with result
     Success {
+        /// The JSON-RPC version, always `"2.0"`.
         jsonrpc: String,
+        /// Echoes the `id` of the request being answered.
         id: Value,
+        /// The result payload returned by the peer.
         result: Value,
     },
     /// Error response
     Error {
+        /// The JSON-RPC version, always `"2.0"`.
         jsonrpc: String,
+        /// Echoes the `id` of the request being answered.
         id: Value,
+        /// Structured error information.
         error: JsonRpcError,
     },
 }
@@ -92,6 +103,7 @@ impl std::fmt::Display for JsonRpcError {
 
 impl JsonRpcError {
     /// Create a new error
+    #[must_use]
     pub fn new(code: i32, message: impl Into<String>) -> Self {
         Self {
             code,
@@ -101,6 +113,7 @@ impl JsonRpcError {
     }
 
     /// Create an error with data
+    #[must_use]
     pub fn with_data(code: i32, message: impl Into<String>, data: Value) -> Self {
         Self {
             code,
@@ -113,14 +126,18 @@ impl JsonRpcError {
 /// JSON-RPC 2.0 Notification (no id, no response expected)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcNotification {
+    /// The JSON-RPC version, always `"2.0"`.
     pub jsonrpc: String,
+    /// The method being notified.
     pub method: String,
+    /// Optional parameters carried by the notification.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
 }
 
 impl JsonRpcNotification {
     /// Create a new notification
+    #[must_use]
     pub fn new(method: impl Into<String>, params: Option<Value>) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
@@ -206,21 +223,24 @@ pub struct ServerCapabilities {
 /// Resources capability
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourcesCapability {
+    /// Whether the server supports subscribing to resource changes.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subscribe: Option<bool>,
+    /// Whether the server supports listing resources.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub list: Option<bool>,
 }
 
 /// Tools capability
+///
+/// An empty object indicates that the server exposes tools.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolsCapability {
-    // Empty object means tools are supported
-}
+pub struct ToolsCapability {}
 
 /// Prompts capability
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptsCapability {
+    /// Whether the server supports listing prompts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub list: Option<bool>,
 }
@@ -232,17 +252,24 @@ pub struct PromptsCapability {
 /// Initialize request parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitializeParams {
+    /// The newest MCP protocol version the client supports.
     pub protocol_version: String,
+    /// Capabilities the client declares to the server.
     pub capabilities: ClientCapabilities,
+    /// Name and version of the client implementation.
     pub client_info: Implementation,
 }
 
 /// Initialize request result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitializeResult {
+    /// The MCP protocol version the server selected.
     pub protocol_version: String,
+    /// Capabilities the server declares to the client.
     pub capabilities: ServerCapabilities,
+    /// Name and version of the server implementation.
     pub server_info: Implementation,
+    /// Optional human-readable usage instructions from the server.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
 }
@@ -250,16 +277,22 @@ pub struct InitializeResult {
 /// Implementation info (client or server)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Implementation {
+    /// The product name of the implementation.
     pub name: String,
+    /// The version string of the implementation.
     pub version: String,
 }
 
 /// Tool definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tool {
+    /// Unique name used to invoke the tool.
     pub name: String,
+    /// Human-readable description of what the tool does.
     pub description: String,
+    /// JSON Schema describing the tool's `arguments`.
     pub input_schema: Value,
+    /// Optional behavioural hints about the tool.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotations: Option<ToolAnnotations>,
 }
@@ -267,15 +300,19 @@ pub struct Tool {
 /// Tool annotations
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolAnnotations {
+    /// Hint that the tool does not modify its environment.
     #[serde(rename = "readOnlyHint")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read_only_hint: Option<bool>,
+    /// Hint that the tool may perform destructive updates.
     #[serde(rename = "destructiveHint")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destructive_hint: Option<bool>,
+    /// Hint that repeating the tool call with the same arguments is safe.
     #[serde(rename = "idempotentHint")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idempotent_hint: Option<bool>,
+    /// Free-form annotation string.
     #[serde(rename = "annotation")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub annotation: Option<String>,
@@ -284,33 +321,50 @@ pub struct ToolAnnotations {
 /// Resource definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Resource {
+    /// URI identifying the resource.
     pub uri: String,
+    /// Human-readable display name.
     pub name: String,
+    /// Optional description of the resource contents.
     pub description: Option<String>,
+    /// Optional MIME type of the resource contents.
     pub mime_type: Option<String>,
 }
 
 /// Prompt definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prompt {
+    /// Unique name used to retrieve the prompt.
     pub name: String,
+    /// Optional human-readable description.
     pub description: Option<String>,
+    /// Optional list of arguments the prompt accepts.
     pub arguments: Option<Vec<PromptArgument>>,
 }
 
 /// Prompt argument
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptArgument {
+    /// Name used to reference the argument in the prompt template.
     pub name: String,
+    /// Optional human-readable description.
     pub description: Option<String>,
+    /// Whether the argument must be supplied.
     pub required: bool,
 }
 
 /// Call tool request parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallToolParams {
+    /// Name of the tool to invoke.
     pub name: String,
+    /// Arguments passed to the tool, shaped by its input schema.
     pub arguments: Value,
+    /// Optional MCP metadata attached to the call.
+    ///
+    /// The leading underscore is part of the MCP wire format field name and
+    /// cannot be removed without breaking interoperability.
+    #[allow(clippy::pub_underscore_fields)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub _meta: Option<Value>,
 }
@@ -318,7 +372,9 @@ pub struct CallToolParams {
 /// Call tool result
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallToolResult {
+    /// Content blocks produced by the tool.
     pub content: Vec<ContentBlock>,
+    /// Whether the tool reported an error while executing.
     pub is_error: Option<bool>,
 }
 
@@ -326,20 +382,38 @@ pub struct CallToolResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
+    /// A plain text block.
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        /// The text content.
+        text: String,
+    },
+    /// A base64-encoded binary block.
     #[serde(rename = "image")]
-    Image { data: String, mime_type: String },
+    Image {
+        /// Base64-encoded image data.
+        data: String,
+        /// MIME type of the image data.
+        mime_type: String,
+    },
+    /// An embedded resource.
     #[serde(rename = "resource")]
-    Resource { resource: ResourceContents },
+    Resource {
+        /// Contents of the embedded resource.
+        resource: ResourceContents,
+    },
 }
 
 /// Resource contents
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceContents {
+    /// URI identifying the resource.
     pub uri: String,
+    /// Optional MIME type of the contents.
     pub mime_type: Option<String>,
+    /// Text payload, present when the resource is textual.
     pub text: Option<String>,
+    /// Base64-encoded payload, present when the resource is binary.
     pub blob: Option<String>,
 }
 
