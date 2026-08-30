@@ -76,14 +76,20 @@ impl MockIdempotencyStore {
         key: impl Into<String>,
         result: (ClaimResult, Option<VerificationResult>),
     ) {
-        self.results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key.into(), result);
+        self.results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key.into(), result);
     }
 
     /// Set the default result for any unconfigured key
     ///
     /// If no specific key result is configured, this default is returned.
     pub fn set_default_result(&mut self, result: (ClaimResult, Option<VerificationResult>)) {
-        *self.default_result.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+        *self
+            .default_result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
     }
 
     /// Configure whether to return `AlreadyClaimed` when the same key
@@ -91,57 +97,96 @@ impl MockIdempotencyStore {
     ///
     /// Default is `true`.
     pub fn set_return_already_claimed(&mut self, value: bool) {
-        *self.return_already_claimed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = value;
+        *self
+            .return_already_claimed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = value;
     }
 
     /// Returns the number of times `claim_or_check` was called
     #[must_use]
     pub fn claim_or_check_call_count(&self) -> usize {
-        self.claim_or_check_calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+        self.claim_or_check_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Returns the list of keys passed to `claim_or_check`
     #[must_use]
     pub fn claim_or_check_calls(&self) -> Vec<String> {
-        self.claim_or_check_calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.claim_or_check_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Returns the number of times `complete` was called
     #[must_use]
     pub fn complete_call_count(&self) -> usize {
-        self.complete_calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+        self.complete_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Returns the list of `(key, result)` pairs passed to `complete`
     #[must_use]
     pub fn complete_calls(&self) -> Vec<(String, VerificationResult)> {
-        self.complete_calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.complete_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Returns the number of times `release` was called
     #[must_use]
     pub fn release_call_count(&self) -> usize {
-        self.release_calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+        self.release_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Returns the list of keys passed to `release`
     #[must_use]
     pub fn release_calls(&self) -> Vec<String> {
-        self.release_calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.release_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Reset all call history
     pub fn reset_calls(&self) {
-        self.claim_or_check_calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
-        self.complete_calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
-        self.release_calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
+        self.claim_or_check_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.complete_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        self.release_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     /// Reset all state including configured results
     pub fn reset_all(&self) {
-        self.results.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clear();
-        *self.default_result.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-        *self.return_already_claimed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        self.results
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        *self
+            .default_result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self
+            .return_already_claimed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         self.reset_calls();
     }
 }
@@ -164,12 +209,19 @@ impl IdempotencyStore for MockIdempotencyStore {
 
         Box::pin(async move {
             // Record the call
-            claim_or_check_calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(key.to_string());
+            claim_or_check_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(key.to_string());
 
             // Check for configured result
             let result = {
-                let results_guard = results.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                let return_already = *return_already_claimed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let results_guard = results
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let return_already = *return_already_claimed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
 
                 if let Some(result) = results_guard.get(key) {
                     // If this key was already claimed and we should return AlreadyClaimed,
@@ -184,7 +236,10 @@ impl IdempotencyStore for MockIdempotencyStore {
                         return (ClaimResult::AlreadyClaimed, None);
                     }
                     result.clone()
-                } else if let Some(default) = &*default_result.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+                } else if let Some(default) = &*default_result
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                {
                     default.clone()
                 } else {
                     // No configured result: return Claimed by default
@@ -204,7 +259,10 @@ impl IdempotencyStore for MockIdempotencyStore {
         let complete_calls = Arc::clone(&self.complete_calls);
 
         Box::pin(async move {
-            complete_calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((key, result));
+            complete_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((key, result));
         })
     }
 
@@ -213,7 +271,10 @@ impl IdempotencyStore for MockIdempotencyStore {
         let key_str = key.to_string();
 
         Box::pin(async move {
-            release_calls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(key_str);
+            release_calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(key_str);
         })
     }
 }

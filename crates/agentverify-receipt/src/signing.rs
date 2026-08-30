@@ -10,15 +10,19 @@ use thiserror::Error;
 /// Errors that can occur during signing operations
 #[derive(Debug, Error)]
 pub enum SigningError {
+    /// No signing key was configured for this service.
     #[error("Signing key is missing")]
     MissingKey,
 
+    /// The signature could not be produced or the key material was invalid.
     #[error("Signing failed: {0}")]
     SigningFailed(String),
 
+    /// A signature failed verification or could not be checked.
     #[error("Verification failed: {0}")]
     VerificationFailed(String),
 
+    /// Key material could not be loaded or decoded.
     #[error("Key error: {0}")]
     KeyError(String),
 }
@@ -54,6 +58,12 @@ pub enum SigningError {
 /// ```
 pub trait SigningService: Send + Sync {
     /// Sign a receipt and return the signature bytes
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SigningError::MissingKey`] when no signing key is configured,
+    /// and [`SigningError::SigningFailed`] when the signature cannot be
+    /// produced.
     fn sign(&self, receipt: &Receipt) -> Result<Vec<u8>, SigningError>;
 
     /// Verify a receipt signature
@@ -61,6 +71,12 @@ pub trait SigningService: Send + Sync {
     /// Returns `Ok(true)` if signature is valid,
     /// `Ok(false)` if signature is invalid,
     /// `Err(...)` on error (e.g., missing signature)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SigningError::MissingKey`] when the receipt carries no
+    /// signature, and [`SigningError::VerificationFailed`] when the signature
+    /// cannot be checked against the receipt contents.
     fn verify(&self, receipt: &Receipt) -> Result<bool, SigningError>;
 
     /// Get the key identifier (fingerprint) for this signing service
@@ -111,6 +127,11 @@ impl Ed25519SigningService {
     }
 
     /// Create a signing service from a base64-encoded key
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SigningError::SigningFailed`] if `encoded` is not valid
+    /// base64 or does not decode to exactly 32 bytes.
     pub fn from_base64(encoded: &str) -> Result<Self, SigningError> {
         use base64::Engine;
         let bytes = base64::engine::general_purpose::STANDARD

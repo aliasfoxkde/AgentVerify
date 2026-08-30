@@ -51,12 +51,15 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 /// Errors that can occur in OTLP export
 #[derive(Debug, Error)]
 pub enum OtlpExporterError {
+    /// The exporter or tracing subscriber could not be initialized.
     #[error("Failed to initialize OTLP exporter: {0}")]
     Initialization(String),
 
+    /// Pending spans could not be flushed on shutdown.
     #[error("Failed to export span: {0}")]
     Export(String),
 
+    /// The configured OTLP endpoint was malformed.
     #[error("Invalid endpoint: {0}")]
     InvalidEndpoint(String),
 }
@@ -84,6 +87,7 @@ impl Default for OtlpExporterConfig {
 
 impl OtlpExporterConfig {
     /// Set the OTLP endpoint
+    #[must_use]
     pub fn with_endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.endpoint = endpoint.into();
         self
@@ -98,6 +102,7 @@ impl OtlpExporterConfig {
     }
 
     /// Set the service name
+    #[must_use]
     pub fn with_service_name(mut self, service_name: impl Into<String>) -> Self {
         self.service_name = service_name.into();
         self
@@ -116,10 +121,15 @@ pub struct OtlpExporter {
 
 impl OtlpExporter {
     /// Create a new OTLP exporter with the given configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OtlpExporterError::Initialization`] if the OTLP span exporter
+    /// cannot be built from the configured endpoint, timeout, and protocol.
     pub fn new(config: OtlpExporterConfig) -> Result<Self, OtlpExporterError> {
         let exporter = SpanExporter::builder()
             .with_tonic()
-            .with_endpoint(config.endpoint.clone())
+            .with_endpoint(config.endpoint)
             .with_timeout(std::time::Duration::from_millis(config.timeout_ms))
             .with_protocol(Protocol::Grpc)
             .build()
@@ -129,7 +139,7 @@ impl OtlpExporter {
             .with_batch_exporter(exporter)
             .with_resource(
                 Resource::builder()
-                    .with_attribute(KeyValue::new("service.name", config.service_name.clone()))
+                    .with_attribute(KeyValue::new("service.name", config.service_name))
                     .build(),
             )
             .build();
@@ -142,6 +152,11 @@ impl OtlpExporter {
     /// Flush and shut down the tracer provider, exporting any pending spans.
     ///
     /// Call this before process exit to avoid losing buffered spans.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OtlpExporterError::Export`] if the tracer provider reports a
+    /// failure while flushing or shutting down.
     pub fn shutdown(&self) -> Result<(), OtlpExporterError> {
         self.provider
             .shutdown()
@@ -215,7 +230,7 @@ impl OtlpExporter {
         // Record evidence count as attribute
         span.set_attribute(KeyValue::new(
             "observation.evidence_count",
-            observation.evidence.len() as i64,
+            i64::try_from(observation.evidence.len()).unwrap_or(i64::MAX),
         ));
 
         span.end();
@@ -341,6 +356,11 @@ impl OtlpExporter {
 ///
 /// This sets up the global tracing subscriber to export spans via OTLP.
 /// Call this once during application initialization.
+///
+/// # Errors
+///
+/// Returns [`OtlpExporterError::Initialization`] if the exporter cannot be
+/// created or a global tracing subscriber has already been installed.
 #[allow(dead_code)]
 pub fn init_tracing(config: OtlpExporterConfig) -> Result<(), OtlpExporterError> {
     let _exporter = OtlpExporter::new(config)?;

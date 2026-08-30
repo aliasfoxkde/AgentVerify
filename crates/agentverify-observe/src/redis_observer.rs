@@ -11,27 +11,35 @@ use thiserror::Error;
 /// Redis observer error types
 #[derive(Debug, Error)]
 pub enum RedisObserverError {
+    /// A connection to the Redis server could not be established.
     #[error("Redis connection failed: {0}")]
     ConnectionFailed(String),
 
+    /// A Redis command returned an error.
     #[error("Redis operation failed: {0}")]
     RedisOperation(String),
 
+    /// The observed key does not exist.
     #[error("Key not found: {0}")]
     KeyNotFound(String),
 
+    /// A key pattern was malformed.
     #[error("Invalid key pattern: {0}")]
     InvalidKeyPattern(String),
 
+    /// An observation spec was malformed or used an unknown operation.
     #[error("Invalid observation spec: {0}")]
     InvalidObservationSpec(String),
 
+    /// The connection pool returned an error.
     #[error("Pool error: {0}")]
     PoolError(#[from] deadpool_redis::PoolError),
 
+    /// The connection pool could not be created.
     #[error("Pool creation error: {0}")]
     PoolCreate(String),
 
+    /// A low-level Redis client error.
     #[error("Redis error: {0}")]
     RedisError(#[from] redis::RedisError),
 }
@@ -68,12 +76,14 @@ impl RedisObserverConfig {
     }
 
     /// Set a key prefix for namespacing
+    #[must_use]
     pub fn with_key_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.key_prefix = prefix.into();
         self
     }
 
     /// Set a default key to observe
+    #[must_use]
     pub fn with_default_key(mut self, key: impl Into<String>) -> Self {
         self.default_key = Some(key.into());
         self
@@ -126,11 +136,20 @@ pub struct RedisObserver {
 
 impl RedisObserver {
     /// Create a new Redis observer from configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RedisObserverError::PoolCreate`] if the deadpool connection
+    /// pool cannot be built from the configured Redis URL.
+    ///
+    /// The signature is `async` for parity with the other observer
+    /// constructors, even though pool creation itself is synchronous.
+    #[allow(clippy::unused_async)]
     pub async fn new(config: RedisObserverConfig) -> Result<Self, RedisObserverError> {
         let cfg = deadpool_redis::Config {
             url: Some(config.redis_url.clone()),
             pool: Some(deadpool_redis::PoolConfig {
-                max_size: config.timeout_ms as usize,
+                max_size: usize::try_from(config.timeout_ms).unwrap_or(usize::MAX),
                 ..Default::default()
             }),
             ..Default::default()
@@ -171,7 +190,7 @@ impl RedisObserver {
 
     /// Parse observation spec to determine operation and key
     ///
-    /// Returns (operation, key, [`extra_args`...])
+    /// Returns `(operation, key, extra_args)`.
     fn parse_spec(spec: &str) -> Result<(&str, &str, Vec<&str>), RedisObserverError> {
         let parts: Vec<&str> = spec.splitn(3, ':').collect();
         match parts.as_slice() {
@@ -242,6 +261,9 @@ impl RedisObserver {
     }
 
     /// Build the observation spec from contract
+    // `&self` is retained so the spec builder stays a method on the observer
+    // and can consult config state in future revisions.
+    #[allow(clippy::unused_self)]
     fn build_spec(&self, contract: &Contract) -> String {
         let action_name = &contract.action_name;
 
@@ -257,6 +279,13 @@ impl RedisObserver {
 
 #[async_trait::async_trait]
 impl agentverify_runtime::Observer for RedisObserver {
+    /// Observe system state by executing the contract's observation spec
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ExecutorError::Unknown`] if a connection cannot be acquired
+    /// from the pool, the observation spec cannot be parsed, or the Redis
+    /// command fails.
     async fn observe(
         &self,
         _action: &Action,
@@ -419,7 +448,7 @@ mod tests {
 
     /// Parse observation spec to determine operation and key
     ///
-    /// Returns (operation, key, [`extra_args`...])
+    /// Returns `(operation, key, extra_args)`.
     fn parse_spec_impl(spec: &str) -> Result<(&str, &str, Vec<&str>), RedisObserverError> {
         let parts: Vec<&str> = spec.splitn(3, ':').collect();
         match parts.as_slice() {

@@ -874,7 +874,7 @@ impl RecoveryExecutor {
     ///
     /// # Errors
     ///
-    /// Forwards the failure from [`RecoveryManager::execute`], mapping a
+    /// Forwards the failure from [`Self::execute`], mapping a
     /// `NotApplicable` outcome to [`RecoveryError::NotApplicable`] with
     /// [`VerificationResult::Unknown`].
     pub async fn execute_and_return<F, Fut>(

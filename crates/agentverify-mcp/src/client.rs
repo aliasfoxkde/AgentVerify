@@ -20,27 +20,45 @@ use crate::transport::{ChannelTransport, StdioTransport, TransportError};
 /// MCP Client error types
 #[derive(Debug, thiserror::Error)]
 pub enum McpClientError {
+    /// The underlying transport failed to send or receive a message.
     #[error("Transport error: {0}")]
     Transport(#[from] TransportError),
 
+    /// The server replied with a JSON-RPC error object.
     #[error("JSON-RPC error: {0}")]
     JsonRpc(JsonRpcError),
 
+    /// The request did not complete within the configured timeout.
     #[error("Request timeout")]
     Timeout,
 
+    /// The client has not completed the MCP initialize handshake.
     #[error("Not initialized")]
     NotInitialized,
 
+    /// The server reported an error code and message.
     #[error("Server returned error: {code} {message}")]
-    ServerError { code: i32, message: String },
+    ServerError {
+        /// The JSON-RPC error code returned by the server.
+        code: i32,
+        /// The human-readable error message returned by the server.
+        message: String,
+    },
 
+    /// The response payload did not match the expected shape.
     #[error("Invalid response: expected {expected}, got {got}")]
-    InvalidResponse { expected: String, got: String },
+    InvalidResponse {
+        /// Description of the shape that was expected.
+        expected: String,
+        /// Description (or error text) of what was actually received.
+        got: String,
+    },
 
+    /// The server does not advertise the requested capability.
     #[error("Capability not supported: {0}")]
     CapabilityNotSupported(String),
 
+    /// An in-process channel used to correlate responses failed.
     #[error("Channel error: {0}")]
     Channel(String),
 }
@@ -100,31 +118,42 @@ pub struct McpClient {
 
 impl McpClient {
     /// Connect to an MCP server via stdio
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpClientError::Transport`] if the server process cannot be
+    /// spawned or its stdio streams cannot be acquired.
     pub async fn connect(config: McpClientConfig) -> Result<Self, McpClientError> {
         let args_refs: Vec<&str> = config.args.iter().map(String::as_str).collect();
         let transport = StdioTransport::connect(&config.command, &args_refs)
             .await
             .map_err(McpClientError::Transport)?;
 
-        Self::with_transport(config, McpTransport::Stdio(transport)).await
+        Ok(Self::with_transport(config, McpTransport::Stdio(transport)))
     }
 
     /// Create client with a custom channel transport (for testing)
+    ///
+    /// # Errors
+    ///
+    /// This constructor currently always succeeds; the `Result` exists so the
+    /// signature matches the other constructors.
+    ///
+    /// The signature is `async` for parity with [`McpClient::connect`], even
+    /// though the body is currently synchronous.
+    #[allow(clippy::unused_async)]
     pub async fn with_channel_transport(config: McpClientConfig) -> Result<Self, McpClientError> {
         let transport = ChannelTransport::channel();
         let transport = McpTransport::Channel(transport.0);
-        Self::with_transport(config, transport).await
+        Ok(Self::with_transport(config, transport))
     }
 
     /// Create client with a transport enum
-    async fn with_transport(
-        config: McpClientConfig,
-        transport: McpTransport,
-    ) -> Result<Self, McpClientError> {
+    fn with_transport(config: McpClientConfig, transport: McpTransport) -> Self {
         let (notification_tx, _) = mpsc::channel(100);
         let (shutdown_tx, _) = watch::channel(false);
 
-        Ok(Self {
+        Self {
             transport,
             config,
             server_capabilities: Arc::new(RwLock::new(None)),
@@ -132,10 +161,18 @@ impl McpClient {
             pending_requests: Arc::new(RwLock::new(HashMap::new())),
             notification_tx,
             _shutdown_tx: Arc::new(shutdown_tx),
-        })
+        }
     }
 
     /// Initialize the MCP connection and negotiate capabilities
+    ///
+    /// Sends the `initialize` request, records the server's advertised
+    /// capabilities, and emits the `initialized` notification.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpClientError`] if the request fails, times out, or the
+    /// server's response cannot be decoded as an [`InitializeResult`].
     pub async fn initialize(&self) -> Result<InitializeResult, McpClientError> {
         let params = InitializeParams {
             protocol_version: MCP_PROTOCOL_VERSION.to_string(),
@@ -250,6 +287,11 @@ impl McpClient {
     // =============================================================================
 
     /// List available tools from the server
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpClientError`] if the request fails or the response cannot
+    /// be decoded as a list of [`Tool`]s.
     pub async fn list_tools(&self) -> Result<Vec<Tool>, McpClientError> {
         let result = self.request("tools/list", None).await?;
 
@@ -263,6 +305,12 @@ impl McpClient {
     }
 
     /// Call a tool on the server
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpClientError`] if the request fails, the arguments cannot
+    /// be serialized, or the response cannot be decoded as a
+    /// [`CallToolResult`].
     pub async fn call_tool(
         &self,
         name: &str,
@@ -291,6 +339,11 @@ impl McpClient {
     }
 
     /// List available resources from the server
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpClientError`] if the request fails or the response cannot
+    /// be decoded as a list of [`Resource`]s.
     pub async fn list_resources(&self) -> Result<Vec<Resource>, McpClientError> {
         let result = self.request("resources/list", None).await?;
 
@@ -304,6 +357,11 @@ impl McpClient {
     }
 
     /// List available prompts from the server
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpClientError`] if the request fails or the response cannot
+    /// be decoded as a list of [`Prompt`]s.
     pub async fn list_prompts(&self) -> Result<Vec<Prompt>, McpClientError> {
         let result = self.request("prompts/list", None).await?;
 
@@ -317,6 +375,11 @@ impl McpClient {
     }
 
     /// Get a specific prompt by name
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpClientError`] if the request fails or the response cannot
+    /// be decoded as a `GetPromptResult`.
     pub async fn get_prompt(
         &self,
         name: &str,
@@ -365,25 +428,30 @@ impl McpClient {
 /// Tools list response
 #[derive(Debug, serde::Deserialize)]
 pub struct ToolsListResponse {
+    /// The tools advertised by the server.
     pub tools: Vec<Tool>,
 }
 
 /// Resources list response
 #[derive(Debug, serde::Deserialize)]
 pub struct ResourcesListResponse {
+    /// The resources advertised by the server.
     pub resources: Vec<Resource>,
 }
 
 /// Prompts list response
 #[derive(Debug, serde::Deserialize)]
 pub struct PromptsListResponse {
+    /// The prompts advertised by the server.
     pub prompts: Vec<Prompt>,
 }
 
 /// Get prompt parameters
 #[derive(Debug, serde::Serialize)]
 pub struct GetPromptParams {
+    /// Name of the prompt to retrieve.
     pub name: String,
+    /// Arguments to substitute into the prompt template.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<HashMap<String, String>>,
 }
@@ -391,13 +459,16 @@ pub struct GetPromptParams {
 /// Get prompt result
 #[derive(Debug, serde::Deserialize)]
 pub struct GetPromptResult {
+    /// The rendered prompt messages, in order.
     pub messages: Vec<PromptMessage>,
 }
 
 /// Prompt message
 #[derive(Debug, serde::Deserialize)]
 pub struct PromptMessage {
+    /// The speaker role, such as `"user"` or `"assistant"`.
     pub role: String,
+    /// The message body.
     pub content: ContentBlock,
 }
 

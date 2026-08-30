@@ -17,11 +17,17 @@ pub const CONTRACT_SCHEMA_VERSION: &str = "1.0";
 /// Contract schema version with compatibility info
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaVersion {
+    /// Major version; must match the current major version for compatibility.
     pub major: u32,
+    /// Minor version; backwards-compatible additions increment this value.
     pub minor: u32,
 }
 
 impl SchemaVersion {
+    /// Parses a `"<major>.<minor>"` version string.
+    ///
+    /// Returns `None` when the string does not have exactly two
+    /// dot-separated components or when either component is not a `u32`.
     #[must_use]
     pub fn new(version: &str) -> Option<Self> {
         let parts: Vec<&str> = version.split('.').collect();
@@ -168,11 +174,16 @@ pub enum RecoveryAction {
     Verify,
     /// Poll for result
     Poll {
+        /// Interval between polls.
         interval: chrono::Duration,
+        /// Maximum number of polls before giving up.
         max_attempts: u32,
     },
     /// Send alert
-    Alert { severity: AlertSeverity },
+    Alert {
+        /// Severity assigned to the alert.
+        severity: AlertSeverity,
+    },
     /// Human approval required
     RequireApproval,
 }
@@ -267,6 +278,7 @@ impl Contract {
     }
 
     /// Add a precondition
+    #[must_use]
     pub fn with_precondition(
         mut self,
         predicate: Predicate,
@@ -280,6 +292,7 @@ impl Contract {
     }
 
     /// Add a postcondition
+    #[must_use]
     pub fn with_postcondition(
         mut self,
         predicate: Predicate,
@@ -317,6 +330,13 @@ impl Contract {
     /// - `Partial` is **success** when only non-mandatory postconditions fail
     /// - `Duplicate` is always a **terminal success** state (idempotent)
     /// - `Unknown` requires explicit recovery action, never treated as success or failure
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`ContractValidationError`] encountered, in the order
+    /// the rules above are listed: schema version problems first, then an empty
+    /// action name, missing postconditions, duplicate postcondition paths, and
+    /// finally invalid recovery configuration.
     pub fn validate(&self) -> Result<(), ContractValidationError> {
         // Validate schema version
         if let Some(version) = SchemaVersion::new(&self.schema_version) {
@@ -380,22 +400,18 @@ impl Contract {
 /// Extract the primary path from a predicate for duplicate checking
 fn extract_predicate_path(predicate: &Predicate) -> String {
     match predicate {
-        Predicate::Exists { path } => path.clone(),
-        Predicate::NotExists { path } => path.clone(),
-        Predicate::Equals { path, .. } => path.clone(),
-        Predicate::NotEquals { path, .. } => path.clone(),
-        Predicate::Contains { path, .. } => path.clone(),
-        Predicate::Matches { path, .. } => path.clone(),
-        Predicate::GreaterThan { path, .. } => path.clone(),
-        Predicate::LessThan { path, .. } => path.clone(),
-        Predicate::Count { path, .. } => path.clone(),
-        Predicate::IsEmpty { path } => path.clone(),
-        Predicate::IsNotEmpty { path } => path.clone(),
-        Predicate::All { predicates } => predicates
-            .first()
-            .map(extract_predicate_path)
-            .unwrap_or_default(),
-        Predicate::Any { predicates } => predicates
+        Predicate::Exists { path }
+        | Predicate::NotExists { path }
+        | Predicate::Equals { path, .. }
+        | Predicate::NotEquals { path, .. }
+        | Predicate::Contains { path, .. }
+        | Predicate::Matches { path, .. }
+        | Predicate::GreaterThan { path, .. }
+        | Predicate::LessThan { path, .. }
+        | Predicate::Count { path, .. }
+        | Predicate::IsEmpty { path }
+        | Predicate::IsNotEmpty { path } => path.clone(),
+        Predicate::All { predicates } | Predicate::Any { predicates } => predicates
             .first()
             .map(extract_predicate_path)
             .unwrap_or_default(),
@@ -407,30 +423,45 @@ fn extract_predicate_path(predicate: &Predicate) -> String {
 /// Contract validation error
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ContractValidationError {
+    /// The schema version string could not be parsed as `"<major>.<minor>"`.
     #[error("Invalid schema version: {0}")]
     InvalidSchemaVersion(String),
 
+    /// The schema version has a different major version than the current one.
     #[error("Incompatible schema version: expected {expected}, got {actual}")]
-    IncompatibleSchemaVersion { expected: String, actual: String },
+    IncompatibleSchemaVersion {
+        /// The schema version supported by this build of the library.
+        expected: String,
+        /// The schema version declared by the contract.
+        actual: String,
+    },
 
+    /// The contract's action name is empty.
     #[error("Action name cannot be empty")]
     EmptyActionName,
 
+    /// The contract declares no postconditions to verify.
     #[error("Contract must have at least one postcondition")]
     NoPostconditions,
 
+    /// Two postconditions target the same state path.
     #[error("Duplicate postcondition path: {0}")]
     DuplicatePostconditionPath(String),
 
+    /// The recovery configuration allows zero retry attempts.
     #[error("max_attempts must be greater than 0")]
     InvalidMaxAttempts,
 
+    /// The backoff configuration's maximum delay is shorter than its initial delay.
     #[error("Backoff max ({max}) must be >= initial ({initial})")]
     InvalidBackoff {
+        /// The configured initial backoff delay.
         initial: chrono::Duration,
+        /// The configured maximum backoff delay.
         max: chrono::Duration,
     },
 
+    /// The backoff multiplier is zero or negative.
     #[error("Backoff multiplier must be positive, got {0}")]
     InvalidBackoffMultiplier(f64),
 }

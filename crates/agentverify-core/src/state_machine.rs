@@ -94,7 +94,6 @@ impl State {
         match self {
             State::Proposed => vec![State::Validating],
             State::Validating => vec![State::Authorized, State::Rejected],
-            State::Rejected => vec![], // Terminal
             State::Authorized => vec![State::Executing],
             State::Executing => vec![
                 State::Executed,
@@ -102,22 +101,24 @@ impl State {
                 State::Timeout,
                 State::Unknown,
             ],
-            State::Executed => vec![State::Observing],
-            State::Failed => vec![State::Verifying],
-            State::Timeout => vec![State::Observing],
-            State::Unknown => vec![State::Observing],
-            State::Observing => vec![State::Verifying],
+            State::Executed | State::Timeout | State::Unknown => vec![State::Observing],
+            State::Failed | State::Observing | State::Recovered => vec![State::Verifying],
             State::Verifying => vec![State::Verified, State::VerificationFailed],
             State::Verified => vec![State::Committed],
             State::VerificationFailed => vec![State::Recovering],
             State::Recovering => vec![State::Recovered, State::Escalated],
-            State::Recovered => vec![State::Verifying],
-            State::Escalated => vec![], // Terminal
-            State::Committed => vec![], // Terminal
+            // Terminal
+            State::Rejected | State::Escalated | State::Committed => vec![],
         }
     }
 
     /// Try to transition to next state
+    ///
+    /// # Errors
+    ///
+    /// Returns `StateError::TerminalState` if the current state is terminal,
+    /// or `StateError::InvalidTransition` if `next` is not a permitted
+    /// successor of the current state.
     pub fn transition(&self, next: State) -> Result<State, StateError> {
         if self.is_terminal() {
             return Err(StateError::TerminalState(*self));
@@ -161,6 +162,11 @@ impl StateMachine {
     }
 
     /// Transition to next state
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from [`State::transition`] and leaves the current
+    /// state unchanged when the transition is not permitted.
     pub fn advance(&mut self, next: State) -> Result<State, StateError> {
         let next_state = self.state.transition(next)?;
         self.state = next_state;
