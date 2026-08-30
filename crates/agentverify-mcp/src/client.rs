@@ -171,7 +171,9 @@ impl McpClient {
     ///
     /// The signature is `async` for parity with [`McpClient::connect`], even
     /// though the body is currently synchronous.
-    #[allow(clippy::unused_async)]
+    // `unused_async_trait_impl` (clippy 1.98) fires on this signature in
+    // addition to `unused_async`, so both names are allowed.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
     pub async fn with_channel_transport(config: McpClientConfig) -> Result<Self, McpClientError> {
         Ok(Self::with_channel_peer(config)?.0)
     }
