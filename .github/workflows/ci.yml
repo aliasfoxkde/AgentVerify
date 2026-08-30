@@ -71,6 +71,38 @@ jobs:
     name: Test
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+
+    # Live services for the integration tests, which gate on
+    # AGENTVERIFY_TEST_POSTGRES_URL / AGENTVERIFY_TEST_REDIS_URL and skip
+    # cleanly when the variables are absent.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: agentverify
+          POSTGRES_DB: agentverify_test
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      AGENTVERIFY_TEST_POSTGRES_URL: postgres://postgres:agentverify@127.0.0.1:5433/agentverify_test
+      AGENTVERIFY_TEST_REDIS_URL: redis://127.0.0.1:6379
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
