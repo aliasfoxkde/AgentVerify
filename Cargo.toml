@@ -5,17 +5,16 @@ members = [
     "crates/agentverify-engine",
     "crates/agentverify-runtime",
     "crates/agentverify-receipt",
+    "crates/agentverify-recovery",
+    "crates/agentverify-observe",
     "crates/agentverify-http",
     "crates/agentverify-cli",
+    "crates/agentverify-testkit",
+    "crates/agentverify-otel",
+    "crates/agentverify-mcp",
+    "crates/agentverify-storage",
+    "crates/agentverify-policy",
 ]
-# Deferred placeholder crates (not yet implemented):
-# - agentverify-observe: Observation adapters
-# - agentverify-recovery: Recovery strategies
-# - agentverify-policy: Policy engine
-# - agentverify-storage: Storage adapters
-# - agentverify-mcp: MCP integration
-# - agentverify-otel: OpenTelemetry export
-# - agentverify-testkit: Testing utilities
 
 resolver = "2"
 
@@ -35,12 +34,10 @@ thiserror = "1.0"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
-
-# Async
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.0", features = ["time", "sync", "rt", "macros"] }
 
 # Web
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.12", features = ["json"] }
 axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
@@ -48,12 +45,14 @@ tower-http = { version = "0.5", features = ["cors", "trace"] }
 # Database
 sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "json"] }
 redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+deadpool = "0.12"
+deadpool-redis = "0.14"
 
 # Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 opentelemetry = "0.22"
-opentelemetry_sdk = "0.22"
+opentelemetry_sdk = { version = "0.22", features = ["rt-tokio"] }
 opentelemetry-otlp = "0.15"
 prometheus = "0.13"
 
@@ -61,12 +60,15 @@ prometheus = "0.13"
 regex = "1.0"
 jsonpath-rust = "0.6"
 cel-parser = "0.16"
+url = "2.5"
 
 # Crypto
 ed25519-dalek = { version = "2.0", features = ["rand_core"] }
 signature = "2.0"
 base64 = "0.22"
 rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
 
 # CLI
 clap = { version = "4.0", features = ["derive", "cargo"] }
@@ -77,6 +79,9 @@ proptest = "1.0"
 testcontainers = "1.0"
 mockall = "0.12"
 fuzz-utils = "0.1"
+tempfile = "3.10"
+tokio-test = "0.4"
+criterion = "0.5"
 
 [profile.release]
 opt-level = 3

@@ -4,4 +4,4 @@
 
 mod signing;
 
-pub use signing::{SigningError, SigningService};
+pub use signing::{Ed25519SigningService, SigningError, SigningService};
