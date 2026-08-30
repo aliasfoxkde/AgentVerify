@@ -68,16 +68,16 @@ crates/
 ├── agentverify-contract/   # JSON/YAML contract parsing
 ├── agentverify-engine/     # Predicate evaluation engine
 ├── agentverify-runtime/    # VerifiedExecutor implementation
-├── agentverify-observe/    # Observation adapters (placeholder)
-├── agentverify-recovery/   # Recovery strategies (placeholder)
-├── agentverify-receipt/    # Receipt signing (placeholder)
-├── agentverify-policy/     # Policy engine (placeholder)
-├── agentverify-storage/    # Storage adapters (placeholder)
-├── agentverify-mcp/        # MCP integration (placeholder)
-├── agentverify-otel/       # OpenTelemetry export (placeholder)
-├── agentverify-http/       # HTTP gateway (placeholder)
-├── agentverify-cli/        # CLI tool (placeholder)
-└── agentverify-testkit/    # Testing utilities (placeholder)
+├── agentverify-observe/    # Observation adapters (PostgreSQL, Redis)
+├── agentverify-recovery/   # Recovery strategies
+├── agentverify-receipt/    # Receipt signing (Ed25519)
+├── agentverify-policy/     # Policy engine with rate limiting
+├── agentverify-storage/    # Storage adapters
+├── agentverify-mcp/        # MCP client integration
+├── agentverify-otel/       # OpenTelemetry OTLP export
+├── agentverify-http/       # HTTP gateway and REST observer
+├── agentverify-cli/        # CLI tool
+└── agentverify-testkit/    # Testing utilities (mocks, helpers)
 ```
 
 Core types live in `agentverify-core/src/`:
