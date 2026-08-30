@@ -146,14 +146,14 @@ impl RedisObserver {
     /// constructors, even though pool creation itself is synchronous.
     #[allow(clippy::unused_async)]
     pub async fn new(config: RedisObserverConfig) -> Result<Self, RedisObserverError> {
-        let cfg = deadpool_redis::Config {
-            url: Some(config.redis_url.clone()),
-            pool: Some(deadpool_redis::PoolConfig {
-                max_size: usize::try_from(config.timeout_ms).unwrap_or(usize::MAX),
-                ..Default::default()
-            }),
+        // `Config::from_url` leaves `connection` unset. Building the struct via
+        // `..Default::default()` would populate `connection` as well, and
+        // deadpool rejects a config that specifies both `url` and `connection`.
+        let mut cfg = deadpool_redis::Config::from_url(config.redis_url.clone());
+        cfg.pool = Some(deadpool_redis::PoolConfig {
+            max_size: usize::try_from(config.timeout_ms).unwrap_or(usize::MAX),
             ..Default::default()
-        };
+        });
 
         let pool = cfg
             .create_pool(Some(deadpool_redis::Runtime::Tokio1))
@@ -315,12 +315,50 @@ impl agentverify_runtime::Observer for RedisObserver {
 mod tests {
     use super::*;
 
+    /// Live Redis URL for the gated tests in this module.
+    ///
+    /// When `AGENTVERIFY_TEST_REDIS_URL` is unset the service-dependent tests
+    /// print a one-line notice and return early so CI stays green.
+    fn live_url() -> Option<String> {
+        match std::env::var("AGENTVERIFY_TEST_REDIS_URL") {
+            Ok(url) if !url.trim().is_empty() => Some(url),
+            _ => None,
+        }
+    }
+
+    fn skip_notice() {
+        eprintln!("skipping service test: AGENTVERIFY_TEST_REDIS_URL is not set");
+    }
+
+    /// Build an observer whose pool is created lazily (no connection is made).
+    fn logic_observer(config: RedisObserverConfig) -> RedisObserver {
+        let cfg = deadpool_redis::Config::from_url(config.redis_url.clone());
+        let pool = cfg
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .expect("lazy redis pool should build");
+        RedisObserver::with_pool(pool, config)
+    }
+
+    /// Render the error from a fallible call without requiring `Debug` on the
+    /// success type (`RedisObserver` intentionally has no `Debug` impl).
+    fn error_of(result: Result<RedisObserver, RedisObserverError>) -> String {
+        match result {
+            Err(e) => e.to_string(),
+            Ok(_) => String::from("<unexpected Ok>"),
+        }
+    }
+
+    fn action_with_args(arguments: Value) -> Action {
+        Action::new("redis_action", arguments)
+    }
+
     #[test]
     fn config_default() {
         let config = RedisObserverConfig::default();
         assert_eq!(config.redis_url, "redis://127.0.0.1:6379");
         assert_eq!(config.timeout_ms, 5000);
         assert!(config.key_prefix.is_empty());
+        assert_eq!(config.default_key, None);
     }
 
     #[test]
@@ -336,31 +374,35 @@ mod tests {
         assert_eq!(config.default_key, Some("default_key".to_string()));
     }
 
+    // --- parse_spec (the real private implementation) ---
+
     #[test]
     fn parse_spec_get() {
-        let result = parse_spec_impl("get:mykey");
-        assert!(result.is_ok());
-        let (op, key, extra) = result.unwrap();
+        let (op, key, extra) = RedisObserver::parse_spec("get:mykey").unwrap();
         assert_eq!(op, "get");
         assert_eq!(key, "mykey");
         assert!(extra.is_empty());
     }
 
     #[test]
-    fn parse_spec_hget() {
-        let result = parse_spec_impl("hget:myhash:field1");
-        assert!(result.is_ok());
-        let (op, key, extra) = result.unwrap();
+    fn parse_spec_hget_single_field() {
+        let (op, key, extra) = RedisObserver::parse_spec("hget:myhash:field1").unwrap();
         assert_eq!(op, "hget");
         assert_eq!(key, "myhash");
         assert_eq!(extra, vec!["field1"]);
     }
 
     #[test]
+    fn parse_spec_hget_field_containing_colons() {
+        let (op, key, extra) = RedisObserver::parse_spec("hget:myhash:a:b:c").unwrap();
+        assert_eq!(op, "hget");
+        assert_eq!(key, "myhash");
+        assert_eq!(extra, vec!["a", "b", "c"]);
+    }
+
+    #[test]
     fn parse_spec_hgetall() {
-        let result = parse_spec_impl("hgetall:myhash");
-        assert!(result.is_ok());
-        let (op, key, extra) = result.unwrap();
+        let (op, key, extra) = RedisObserver::parse_spec("hgetall:myhash").unwrap();
         assert_eq!(op, "hgetall");
         assert_eq!(key, "myhash");
         assert!(extra.is_empty());
@@ -368,9 +410,7 @@ mod tests {
 
     #[test]
     fn parse_spec_scard() {
-        let result = parse_spec_impl("scard:myset");
-        assert!(result.is_ok());
-        let (op, key, extra) = result.unwrap();
+        let (op, key, extra) = RedisObserver::parse_spec("scard:myset").unwrap();
         assert_eq!(op, "scard");
         assert_eq!(key, "myset");
         assert!(extra.is_empty());
@@ -378,86 +418,410 @@ mod tests {
 
     #[test]
     fn parse_spec_exists() {
-        let result = parse_spec_impl("exists:mykey");
-        assert!(result.is_ok());
-        let (op, key, extra) = result.unwrap();
+        let (op, key, extra) = RedisObserver::parse_spec("exists:mykey").unwrap();
         assert_eq!(op, "exists");
         assert_eq!(key, "mykey");
         assert!(extra.is_empty());
     }
 
     #[test]
-    fn parse_spec_invalid_no_colon() {
-        let result = parse_spec_impl("invalid");
-        assert!(result.is_err());
+    fn parse_spec_rejects_spec_without_colon() {
+        let err = RedisObserver::parse_spec("invalid").unwrap_err();
+        assert!(err.to_string().contains("invalid"), "got: {err}");
     }
 
     #[test]
-    fn build_spec_default() {
-        // build_spec only uses contract.action_name, not the pool
-        // So we test the logic via parse_spec which is the same
-        let result = parse_spec_impl("mykey");
-        assert!(result.is_err()); // No colon means invalid
-    }
-
-    #[test]
-    fn build_spec_with_prefix() {
-        // Test that colon-separated specs work
-        let result = parse_spec_impl("hgetall:user:123");
-        assert!(result.is_ok());
-        let (op, key, extra) = result.unwrap();
-        assert_eq!(op, "hgetall");
-        assert_eq!(key, "user");
-        assert_eq!(extra, vec!["123"]);
-    }
-
-    #[test]
-    fn error_display_connection_failed() {
-        let err = RedisObserverError::ConnectionFailed("refused".to_string());
-        let err_str = err.to_string();
-        // thiserror formats as "ConnectionFailed: refused"
+    fn parse_spec_rejects_empty_spec() {
+        let err = RedisObserver::parse_spec("").unwrap_err();
         assert!(
-            err_str.contains("refused"),
-            "error should contain 'refused', got: {err_str}"
+            err.to_string().contains("Invalid observation spec"),
+            "got: {err}"
         );
     }
 
+    // --- build_spec ---
+
     #[test]
-    fn error_display_key_not_found() {
-        let err = RedisObserverError::KeyNotFound("mykey".to_string());
-        let err_str = err.to_string();
-        assert!(
-            err_str.contains("mykey"),
-            "error should contain 'mykey', got: {err_str}"
-        );
+    fn build_spec_defaults_to_get_when_no_colon() {
+        let observer = logic_observer(RedisObserverConfig::new("redis://127.0.0.1:6379"));
+        let contract = Contract::new("order:42");
+        assert_eq!(observer.build_spec(&contract), "order:42");
     }
 
     #[test]
-    fn error_display_invalid_spec() {
-        let err = RedisObserverError::InvalidObservationSpec("bad spec".to_string());
-        let err_str = err.to_string();
+    fn build_spec_wraps_plain_action_name_in_get() {
+        let observer = logic_observer(RedisObserverConfig::new("redis://127.0.0.1:6379"));
+        let contract = Contract::new("plain_key");
+        assert_eq!(observer.build_spec(&contract), "get:plain_key");
+    }
+
+    #[test]
+    fn build_spec_wraps_empty_action_name_in_get() {
+        let observer = logic_observer(RedisObserverConfig::new("redis://127.0.0.1:6379"));
+        let contract = Contract::new("");
+        assert_eq!(observer.build_spec(&contract), "get:");
+    }
+
+    // --- resolve_key precedence ---
+
+    #[test]
+    fn resolve_key_prefers_action_arguments() {
+        let observer = logic_observer(
+            RedisObserverConfig::new("redis://127.0.0.1:6379").with_default_key("config_key"),
+        );
+        let action = action_with_args(serde_json::json!({"key": "from_action"}));
+        let contract = Contract::new("from_contract");
+        assert_eq!(observer.resolve_key(&action, &contract), "from_action");
+    }
+
+    #[test]
+    fn resolve_key_ignores_non_string_action_key() {
+        let observer = logic_observer(RedisObserverConfig::new("redis://127.0.0.1:6379"));
+        let action = action_with_args(serde_json::json!({"key": 1234}));
+        let contract = Contract::new("from_contract");
+        assert_eq!(observer.resolve_key(&action, &contract), "from_contract");
+    }
+
+    #[test]
+    fn resolve_key_falls_back_to_contract_action_name() {
+        let observer = logic_observer(RedisObserverConfig::new("redis://127.0.0.1:6379"));
+        let action = action_with_args(serde_json::json!({}));
+        let contract = Contract::new("from_contract");
+        assert_eq!(observer.resolve_key(&action, &contract), "from_contract");
+    }
+
+    #[test]
+    fn resolve_key_falls_back_to_config_default_key() {
+        let observer = logic_observer(
+            RedisObserverConfig::new("redis://127.0.0.1:6379").with_default_key("config_key"),
+        );
+        let action = action_with_args(serde_json::json!({}));
+        let contract = Contract::new("");
+        assert_eq!(observer.resolve_key(&action, &contract), "config_key");
+    }
+
+    #[test]
+    fn resolve_key_uses_literal_default_when_nothing_else_is_set() {
+        let observer = logic_observer(RedisObserverConfig::new("redis://127.0.0.1:6379"));
+        let action = action_with_args(serde_json::json!({}));
+        let contract = Contract::new("");
+        assert_eq!(observer.resolve_key(&action, &contract), "default");
+    }
+
+    // --- construction ---
+
+    #[tokio::test]
+    async fn new_builds_pool_from_valid_url() {
+        let observer = RedisObserver::new(RedisObserverConfig::new("redis://127.0.0.1:6379"))
+            .await
+            .unwrap();
+        assert_eq!(observer.config.redis_url, "redis://127.0.0.1:6379");
+    }
+
+    #[tokio::test]
+    async fn new_rejects_malformed_url_with_pool_create_error() {
+        let rendered =
+            error_of(RedisObserver::new(RedisObserverConfig::new("not a redis url")).await);
         assert!(
-            err_str.contains("bad spec"),
-            "error should contain 'bad spec', got: {err_str}"
+            rendered.contains("Pool creation error"),
+            "expected 'Pool creation error', got: {rendered}"
         );
     }
 
-    // Note: Full integration tests with a real Redis instance would require
-    // a running Redis server. The unit tests above verify the configuration,
-    // parsing, and error handling logic.
+    // --- error Display strings for every variant ---
 
-    /// Parse observation spec to determine operation and key
-    ///
-    /// Returns `(operation, key, extra_args)`.
-    fn parse_spec_impl(spec: &str) -> Result<(&str, &str, Vec<&str>), RedisObserverError> {
-        let parts: Vec<&str> = spec.splitn(3, ':').collect();
-        match parts.as_slice() {
-            [op, key] => Ok((*op, *key, Vec::new())),
-            [op, key, extra] => {
-                let extra_parts: Vec<&str> = extra.split(':').collect();
-                Ok((*op, *key, extra_parts))
+    #[test]
+    fn error_display_covers_every_variant() {
+        let backend = deadpool_redis::PoolError::Closed;
+        let cases: Vec<(RedisObserverError, Vec<&str>)> = vec![
+            (
+                RedisObserverError::ConnectionFailed("connection refused".to_string()),
+                vec!["Redis connection failed", "connection refused"],
+            ),
+            (
+                RedisObserverError::RedisOperation("WRONGTYPE".to_string()),
+                vec!["Redis operation failed", "WRONGTYPE"],
+            ),
+            (
+                RedisObserverError::KeyNotFound("missing:1".to_string()),
+                vec!["Key not found", "missing:1"],
+            ),
+            (
+                RedisObserverError::InvalidKeyPattern("a b".to_string()),
+                vec!["Invalid key pattern", "a b"],
+            ),
+            (
+                RedisObserverError::InvalidObservationSpec("nospec".to_string()),
+                vec!["Invalid observation spec", "nospec"],
+            ),
+            (RedisObserverError::PoolError(backend), vec!["Pool error"]),
+            (
+                RedisObserverError::PoolCreate("bad url".to_string()),
+                vec!["Pool creation error", "bad url"],
+            ),
+        ];
+
+        for (err, expected) in cases {
+            let rendered = err.to_string();
+            for fragment in expected {
+                assert!(
+                    rendered.contains(fragment),
+                    "expected '{fragment}' in '{rendered}'"
+                );
             }
-            _ => Err(RedisObserverError::InvalidObservationSpec(spec.to_string())),
         }
+    }
+
+    #[test]
+    fn error_display_redis_error_variant_wraps_source() {
+        let source = redis::Client::open("definitely not a redis url").unwrap_err();
+        let err = RedisObserverError::RedisError(source);
+        assert!(err.to_string().contains("Redis error"), "got: {err}");
+        // `#[from]` keeps the source reachable for callers and logs.
+        assert!(std::error::Error::source(&err).is_some());
+    }
+
+    // --- execute_spec against a live Redis server ---
+
+    /// Observer + pool bound to the live server with the requested prefix.
+    fn live_observer(url: &str, prefix: &str) -> RedisObserver {
+        let config = RedisObserverConfig::new(url).with_key_prefix(prefix);
+        let cfg = deadpool_redis::Config::from_url(url);
+        let pool = cfg
+            .create_pool(Some(deadpool_redis::Runtime::Tokio1))
+            .expect("pool should build for a reachable redis");
+        RedisObserver::with_pool(pool, config)
+    }
+
+    #[tokio::test]
+    async fn execute_spec_get_returns_parsed_json_then_string() {
+        let Some(url) = live_url() else {
+            skip_notice();
+            return;
+        };
+        let observer = live_observer(&url, "");
+        let mut conn = observer.pool.get().await.unwrap();
+
+        let _: () = conn.del("av_obs_get").await.unwrap();
+        let _: () = conn
+            .set("av_obs_get", r#"{"amount": 250, "ok": true}"#)
+            .await
+            .unwrap();
+
+        let value = observer
+            .execute_spec(&mut conn, "get:av_obs_get")
+            .await
+            .unwrap();
+        assert_eq!(value, serde_json::json!({"amount": 250, "ok": true}));
+
+        // A value that is not JSON is returned verbatim as a string.
+        let _: () = conn.set("av_obs_get", "plain text").await.unwrap();
+        let value = observer
+            .execute_spec(&mut conn, "get:av_obs_get")
+            .await
+            .unwrap();
+        assert_eq!(value, Value::String("plain text".to_string()));
+
+        let _: () = conn.del("av_obs_get").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn execute_spec_get_missing_key_is_key_not_found() {
+        let Some(url) = live_url() else {
+            skip_notice();
+            return;
+        };
+        let observer = live_observer(&url, "");
+        let mut conn = observer.pool.get().await.unwrap();
+        let _: () = conn.del("av_obs_absent").await.unwrap();
+
+        let err = observer
+            .execute_spec(&mut conn, "get:av_obs_absent")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Key not found"), "got: {err}");
+        assert!(err.to_string().contains("av_obs_absent"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn execute_spec_exists_reflects_key_presence() {
+        let Some(url) = live_url() else {
+            skip_notice();
+            return;
+        };
+        let observer = live_observer(&url, "");
+        let mut conn = observer.pool.get().await.unwrap();
+        let _: () = conn.del("av_obs_exists").await.unwrap();
+
+        let value = observer
+            .execute_spec(&mut conn, "exists:av_obs_exists")
+            .await
+            .unwrap();
+        assert_eq!(value, Value::Bool(false));
+
+        let _: () = conn.set("av_obs_exists", "1").await.unwrap();
+        let value = observer
+            .execute_spec(&mut conn, "exists:av_obs_exists")
+            .await
+            .unwrap();
+        assert_eq!(value, Value::Bool(true));
+
+        let _: () = conn.del("av_obs_exists").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn execute_spec_scard_counts_real_set_members() {
+        let Some(url) = live_url() else {
+            skip_notice();
+            return;
+        };
+        let observer = live_observer(&url, "");
+        let mut conn = observer.pool.get().await.unwrap();
+        let _: () = conn.del("av_obs_set").await.unwrap();
+
+        let value = observer
+            .execute_spec(&mut conn, "scard:av_obs_set")
+            .await
+            .unwrap();
+        assert_eq!(value, Value::Number(0.into()));
+
+        let _: usize = conn.sadd("av_obs_set", ("a", "b", "c")).await.unwrap();
+        let value = observer
+            .execute_spec(&mut conn, "scard:av_obs_set")
+            .await
+            .unwrap();
+        assert_eq!(value, Value::Number(3.into()));
+
+        let _: () = conn.del("av_obs_set").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn execute_spec_hget_requires_a_field() {
+        let Some(url) = live_url() else {
+            skip_notice();
+            return;
+        };
+        let observer = live_observer(&url, "");
+        let mut conn = observer.pool.get().await.unwrap();
+
+        let err = observer
+            .execute_spec(&mut conn, "hget:av_obs_hash")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("hget requires a field"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_spec_hget_reads_present_and_absent_fields() {
+        let Some(url) = live_url() else {
+            skip_notice();
+            return;
+        };
+        let observer = live_observer(&url, "");
+        let mut conn = observer.pool.get().await.unwrap();
+        let _: () = conn.del("av_obs_hash").await.unwrap();
+
+        let _: () = conn
+            .hset("av_obs_hash", "present", r#"{"n": 7}"#)
+            .await
+            .unwrap();
+        let _: () = conn.hset("av_obs_hash", "textual", "hello").await.unwrap();
+
+        let value = observer
+            .execute_spec(&mut conn, "hget:av_obs_hash:present")
+            .await
+            .unwrap();
+        assert_eq!(value, serde_json::json!({"n": 7}));
+
+        let value = observer
+            .execute_spec(&mut conn, "hget:av_obs_hash:textual")
+            .await
+            .unwrap();
+        assert_eq!(value, Value::String("hello".to_string()));
+
+        // An absent field yields JSON null rather than an error.
+        let value = observer
+            .execute_spec(&mut conn, "hget:av_obs_hash:absent_field")
+            .await
+            .unwrap();
+        assert_eq!(value, Value::Null);
+
+        let _: () = conn.del("av_obs_hash").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn execute_spec_hgetall_returns_every_field() {
+        let Some(url) = live_url() else {
+            skip_notice();
+            return;
+        };
+        let observer = live_observer(&url, "");
+        let mut conn = observer.pool.get().await.unwrap();
+        let _: () = conn.del("av_obs_full").await.unwrap();
+
+        let _: () = conn
+            .hset("av_obs_full", "json_field", "[1, 2]")
+            .await
+            .unwrap();
+        let _: () = conn.hset("av_obs_full", "text_field", "raw").await.unwrap();
+
+        let value = observer
+            .execute_spec(&mut conn, "hgetall:av_obs_full")
+            .await
+            .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"json_field": [1, 2], "text_field": "raw"})
+        );
+
+        let _: () = conn.del("av_obs_full").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn execute_spec_rejects_unknown_operation() {
+        let Some(url) = live_url() else {
+            skip_notice();
+            return;
+        };
+        let observer = live_observer(&url, "");
+        let mut conn = observer.pool.get().await.unwrap();
+
+        let err = observer
+            .execute_spec(&mut conn, "zscore:av_obs_key")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown operation"), "got: {err}");
+        assert!(err.to_string().contains("zscore"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn execute_spec_applies_key_prefix() {
+        let Some(url) = live_url() else {
+            skip_notice();
+            return;
+        };
+        let observer = live_observer(&url, "av_obs_ns_");
+        let mut conn = observer.pool.get().await.unwrap();
+        let _: () = conn.del("av_obs_ns_inner").await.unwrap();
+        let _: () = conn.del("inner").await.unwrap();
+
+        // The namespaced key is written through the same live server.
+        let _: () = conn.set("av_obs_ns_inner", "prefixed").await.unwrap();
+        let value = observer.execute_spec(&mut conn, "get:inner").await.unwrap();
+        assert_eq!(value, Value::String("prefixed".to_string()));
+
+        // With the namespaced key gone, the unprefixed `inner` is not consulted.
+        let _: () = conn.set("inner", "unprefixed").await.unwrap();
+        let _: () = conn.del("av_obs_ns_inner").await.unwrap();
+        let err = observer
+            .execute_spec(&mut conn, "get:inner")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("Key not found"), "got: {err}");
+
+        let _: () = conn.del("inner").await.unwrap();
     }
 }

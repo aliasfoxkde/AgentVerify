@@ -25,4 +25,4 @@ mod transport;
 
 pub use client::{McpClient, McpClientConfig, McpClientError};
 pub use protocol::*;
-pub use transport::{ChannelTransport, StdioTransport};
+pub use transport::{ChannelTransport, StdioTransport, TransportError};

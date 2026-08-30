@@ -187,4 +187,91 @@ pub mod id {
             write!(f, "{}", self.0)
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn action_id_default_generates_unique_ids() {
+            let a = ActionId::default();
+            let b = ActionId::default();
+            assert_ne!(a, b);
+            assert_ne!(a.0, Uuid::nil());
+        }
+
+        #[test]
+        fn contract_id_default_generates_unique_ids() {
+            let a = ContractId::default();
+            let b = ContractId::default();
+            assert_ne!(a, b);
+            assert_ne!(a.0, Uuid::nil());
+        }
+
+        #[test]
+        fn receipt_id_default_generates_unique_ids() {
+            let a = ReceiptId::default();
+            let b = ReceiptId::default();
+            assert_ne!(a, b);
+            assert_ne!(a.0, Uuid::nil());
+        }
+
+        #[test]
+        fn ids_display_as_uuids() {
+            let action_id = ActionId::new();
+            assert_eq!(action_id.to_string(), action_id.0.to_string());
+
+            let contract_id = ContractId::new();
+            assert_eq!(contract_id.to_string(), contract_id.0.to_string());
+
+            let receipt_id = ReceiptId::new();
+            assert_eq!(receipt_id.to_string(), receipt_id.0.to_string());
+        }
+
+        #[test]
+        fn idempotency_key_from_action_id_is_prefixed() {
+            let action_id = ActionId::new();
+            let key = IdempotencyKey::from_action_id(action_id);
+            assert_eq!(key, IdempotencyKey(format!("av_{}", action_id.0)));
+            assert!(key.0.starts_with("av_"));
+        }
+
+        #[test]
+        fn idempotency_key_accepts_any_string() {
+            let key = IdempotencyKey::new(String::from("caller-supplied-key"));
+            assert_eq!(key, IdempotencyKey(String::from("caller-supplied-key")));
+        }
+
+        #[test]
+        fn ids_roundtrip_through_serde() {
+            let action_id = ActionId::new();
+            let json = serde_json::to_string(&action_id).unwrap();
+            let back: ActionId = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, action_id);
+
+            let contract_id = ContractId::new();
+            let json = serde_json::to_string(&contract_id).unwrap();
+            let back: ContractId = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, contract_id);
+
+            let receipt_id = ReceiptId::new();
+            let json = serde_json::to_string(&receipt_id).unwrap();
+            let back: ReceiptId = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, receipt_id);
+
+            let key = IdempotencyKey::new("k");
+            let json = serde_json::to_string(&key).unwrap();
+            let back: IdempotencyKey = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, key);
+        }
+
+        #[test]
+        fn source_id_roundtrips_through_serde() {
+            let source = SourceId(String::from("postgres"));
+            let json = serde_json::to_string(&source).unwrap();
+            assert_eq!(json, r#""postgres""#);
+            let back: SourceId = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, source);
+        }
+    }
 }
