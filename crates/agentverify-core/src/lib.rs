@@ -15,15 +15,20 @@ mod receipt;
 mod state_machine;
 mod verification_result;
 
-pub use action::{Action, ActionId, IdempotencyKey};
+pub use action::{Action, IdempotencyKey};
 pub use contract::{
-    Contract, ContractId, Postcondition, Precondition, SchemaVersion, CONTRACT_SCHEMA_VERSION,
+    BackoffConfig, BackoffType, ConsistencyMode, Contract, ContractValidationError, Postcondition,
+    Precondition, RecoveryAction, RecoveryConfig, RecoveryStrategy, SchemaVersion,
+    CONTRACT_SCHEMA_VERSION,
 };
-pub use id::ReceiptId;
-pub use observation::{Evidence, Observation, SourceId};
+pub use id::{ActionId, ContractId, ReceiptId, SourceId};
+pub use observation::{Evidence, Observation};
 pub use predicate::{CountOperator, Predicate};
-pub use receipt::PostconditionResult;
-pub use receipt::Receipt;
+#[cfg(not(target_arch = "wasm32"))]
+pub use receipt::FileReceiptStore;
+pub use receipt::{
+    InMemoryReceiptStore, PostconditionResult, Receipt, ReceiptStore, RECEIPT_SCHEMA_VERSION,
+};
 pub use state_machine::{State, StateMachine};
 pub use verification_result::VerificationResult;
 
@@ -32,11 +37,28 @@ pub mod id {
     use serde::{Deserialize, Serialize};
     use uuid::Uuid;
 
-    /// Unique action identifier
+    // Re-export SourceId from observation module for convenience
+    pub use crate::observation::SourceId;
+
+    /// Unique action identifier.
+    ///
+    /// ActionId is a type-safe wrapper around a UUID that identifies a specific
+    /// action execution. Each action created via [`crate::Action::new`] or
+    /// [`crate::Action::with_idempotency`] receives a unique ActionId.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use agentverify_core::{Action, ActionId};
+    ///
+    /// let action = Action::new("create_user", serde_json::json!({}));
+    /// assert!(matches!(action.id, ActionId(_)));
+    /// ```
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub struct ActionId(pub Uuid);
 
     impl ActionId {
+        /// Generate a new unique ActionId.
         pub fn new() -> Self {
             Self(Uuid::new_v4())
         }
@@ -54,25 +76,60 @@ pub mod id {
         }
     }
 
-    /// Idempotency key for deduplication
+    /// Idempotency key for deduplication.
+    ///
+    /// IdempotencyKey ensures that the same logical action is not executed multiple times.
+    /// When an action is created with an IdempotencyKey, the verification system can detect
+    /// duplicate attempts and return the cached result.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use agentverify_core::{Action, IdempotencyKey};
+    ///
+    /// let key = IdempotencyKey::new("create_user_user@example.com");
+    /// let action = Action::with_idempotency(
+    ///     "create_user",
+    ///     serde_json::json!({}),
+    ///     key,
+    /// );
+    /// ```
     #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub struct IdempotencyKey(pub String);
 
     impl IdempotencyKey {
+        /// Create a new idempotency key from a string.
         pub fn new(key: impl Into<String>) -> Self {
             Self(key.into())
         }
 
+        /// Create an idempotency key from an ActionId.
+        ///
+        /// The resulting key will be formatted as `av_{uuid}`.
         pub fn from_action_id(id: ActionId) -> Self {
             Self(format!("av_{}", id.0))
         }
     }
 
-    /// Unique contract identifier
+    /// Unique contract identifier.
+    ///
+    /// ContractId is a type-safe wrapper around a UUID that identifies a specific
+    /// contract definition. Contracts define the preconditions, postconditions,
+    /// and recovery strategies for verifying an action.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use agentverify_core::ContractId;
+    ///
+    /// let contract_id = ContractId::new();
+    /// println!("Contract: {}", contract_id);
+    /// ```
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub struct ContractId(pub Uuid);
 
     impl ContractId {
+        /// Generate a new unique ContractId.
         pub fn new() -> Self {
             Self(Uuid::new_v4())
         }
@@ -90,11 +147,25 @@ pub mod id {
         }
     }
 
-    /// Unique receipt identifier
+    /// Unique receipt identifier.
+    ///
+    /// ReceiptId identifies a specific verification receipt. Receipts are created
+    /// after verification completes and contain the evidence and results of the
+    /// verification process.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use agentverify_core::ReceiptId;
+    ///
+    /// let receipt_id = ReceiptId::new();
+    /// println!("Receipt: {}", receipt_id);
+    /// ```
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub struct ReceiptId(pub Uuid);
 
     impl ReceiptId {
+        /// Generate a new unique ReceiptId.
         pub fn new() -> Self {
             Self(Uuid::new_v4())
         }
@@ -111,8 +182,4 @@ pub mod id {
             write!(f, "{}", self.0)
         }
     }
-
-    /// Source identifier (e.g., "postgres", "rest", "redis")
-    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-    pub struct SourceId(pub String);
 }

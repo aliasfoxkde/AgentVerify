@@ -8,3 +8,12 @@ rust-version.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time", "sync", "rt"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio-test.workspace = true

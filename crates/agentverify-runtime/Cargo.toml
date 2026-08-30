@@ -10,8 +10,27 @@ rust-version.workspace = true
 agentverify-core = { path = "../agentverify-core" }
 agentverify-contract = { path = "../agentverify-contract" }
 agentverify-engine = { path = "../agentverify-engine" }
-tokio.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 async-trait = "0.1"
+serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+chrono.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.0", features = ["full"] }
+deadpool-redis = { version = "0.14", optional = true }
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"], optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { version = "1.0", default-features = false, features = ["sync", "rt", "time", "macros"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+default = []
+fs = []
+redis = ["dep:deadpool-redis", "dep:redis"]

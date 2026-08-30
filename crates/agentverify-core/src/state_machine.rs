@@ -28,6 +28,8 @@ pub enum State {
     Authorized,
     /// Action executing
     Executing,
+    /// Execution completed, result pending observation
+    Executed,
     /// Execution failed
     Failed,
     /// Execution timed out
@@ -60,6 +62,7 @@ impl fmt::Display for State {
             State::Rejected => write!(f, "rejected"),
             State::Authorized => write!(f, "authorized"),
             State::Executing => write!(f, "executing"),
+            State::Executed => write!(f, "executed"),
             State::Failed => write!(f, "failed"),
             State::Timeout => write!(f, "timeout"),
             State::Unknown => write!(f, "unknown"),
@@ -91,7 +94,13 @@ impl State {
             State::Validating => vec![State::Authorized, State::Rejected],
             State::Rejected => vec![], // Terminal
             State::Authorized => vec![State::Executing],
-            State::Executing => vec![State::Failed, State::Timeout, State::Unknown],
+            State::Executing => vec![
+                State::Executed,
+                State::Failed,
+                State::Timeout,
+                State::Unknown,
+            ],
+            State::Executed => vec![State::Observing],
             State::Failed => vec![State::Verifying],
             State::Timeout => vec![State::Observing],
             State::Unknown => vec![State::Observing],

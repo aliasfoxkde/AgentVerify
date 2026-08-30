@@ -4,6 +4,16 @@ use serde::{Deserialize, Serialize};
 
 /// Result of verification
 ///
+/// # State Semantics and Terminal Policy
+///
+/// | State     | Terminal? | Retry Safe? | Notes                                           |
+/// |-----------|-----------|-------------|-------------------------------------------------|
+/// | Verified  | Yes (success) | No      | Action completed successfully                   |
+/// | Duplicate | Yes (success) | No      | Idempotent - action already executed           |
+/// | Failed    | Yes (failure) | Verify first | Postconditions not met              |
+/// | Partial   | Yes (failure) | Verify first | Some postconditions met, others not   |
+/// | Unknown   | No           | No            | Cannot determine - needs recovery    |
+///
 /// # Note on UNKNOWN
 ///
 /// UNKNOWN is a first-class state. A timeout does NOT equal failure.
@@ -16,15 +26,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationResult {
-    /// All postconditions satisfied
+    /// All postconditions satisfied (terminal success)
     Verified,
-    /// Postconditions not met
+    /// Postconditions not met (terminal failure)
     Failed,
-    /// Cannot determine (timeout, partial, consistency issues)
+    /// Cannot determine (non-terminal, requires recovery action)
     Unknown,
-    /// Some postconditions met, others not
+    /// Some postconditions met, others not (terminal failure)
     Partial,
-    /// Action already executed (idempotent)
+    /// Action already executed (terminal success, idempotent)
     Duplicate,
 }
 
@@ -34,9 +44,9 @@ impl VerificationResult {
         matches!(self, Self::Verified | Self::Duplicate)
     }
 
-    /// Returns true if the result indicates failure
+    /// Returns true if the result indicates failure (terminal failure states)
     pub fn is_failure(&self) -> bool {
-        matches!(self, Self::Failed)
+        matches!(self, Self::Failed | Self::Partial)
     }
 
     /// Returns true if the result indicates uncertainty
@@ -96,5 +106,32 @@ mod tests {
         assert!(!VerificationResult::Unknown.can_retry_without_verify());
         // Verified and Duplicate don't need retry
         // Partial requires verification
+    }
+
+    #[test]
+    fn partial_is_failure() {
+        // Partial is a terminal failure state - some postconditions met, others not
+        assert!(VerificationResult::Partial.is_failure());
+        assert!(!VerificationResult::Partial.is_success());
+    }
+
+    #[test]
+    fn unknown_is_non_terminal() {
+        // Unknown is non-terminal, not a failure
+        assert!(!VerificationResult::Unknown.is_failure());
+        assert!(!VerificationResult::Unknown.is_success());
+    }
+
+    #[test]
+    fn duplicate_is_terminal_success() {
+        // Duplicate is terminal success (idempotent)
+        assert!(VerificationResult::Duplicate.is_success());
+        assert!(!VerificationResult::Duplicate.is_failure());
+    }
+
+    #[test]
+    fn partial_is_not_success() {
+        // Partial is terminal failure, not success
+        assert!(!VerificationResult::Partial.is_success());
     }
 }

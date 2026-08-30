@@ -1,0 +1,188 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v0.1.0)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Build binaries for all platforms
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Linux x86_64 GNU
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: agentverify-x86_64-unknown-linux-gnu
+          # Linux ARM64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: agentverify-aarch64-unknown-linux-gnu
+          # macOS x86_64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: agentverify-x86_64-apple-darwin
+          # macOS ARM64 (Apple Silicon)
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: agentverify-aarch64-apple-darwin
+          # Windows x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: agentverify-x86_64-pc-windows-msvc.exe
+        fail-fast: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} --package agentverify-cli
+
+      - name: Package binary
+        shell: bash
+        run: |
+          cp target/${{ matrix.target }}/release/agentverify ${{ matrix.artifact }}
+          tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
+            cp target/${{ matrix.target }}/release/agentverify.exe ${{ matrix.artifact }}.exe
+          fi
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            ${{ matrix.artifact }}.tar.gz
+
+  # Build WASM libraries for web/WASI deployment
+  build-wasm:
+    name: Build WASM
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # WASM WASI Preview 1
+          - target: wasm32-wasip1
+            artifact: agentverify-wasm32-wasip1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build WASM libraries
+        run: |
+          cargo build --release --target wasm32-wasip1 \
+            -p agentverify-core \
+            -p agentverify-engine \
+            -p agentverify-contract \
+            -p agentverify-runtime \
+            -p agentverify-http
+
+      - name: Package WASM artifacts
+        shell: bash
+        run: |
+          mkdir -p wasm-artifacts
+          # Copy WASM rlibs
+          cp target/wasm32-wasip1/release/libagentverify_core.wasm wasm-artifacts/ 2>/dev/null || true
+          cp target/wasm32-wasip1/release/libagentverify_engine.wasm wasm-artifacts/ 2>/dev/null || true
+          cp target/wasm32-wasip1/release/libagentverify_contract.wasm wasm-artifacts/ 2>/dev/null || true
+          cp target/wasm32-wasip1/release/libagentverify_runtime.wasm wasm-artifacts/ 2>/dev/null || true
+          # List what was built
+          ls -la target/wasm32-wasip1/release/*.rlib 2>/dev/null || echo "No rlibs found"
+          ls -la target/wasm32-wasip1/release/*.wasm 2>/dev/null || echo "No wasm files found"
+          # Create a tarball with the rlibs
+          tar czf ${{ matrix.artifact }}.tar.gz -C target/wasm32-wasip1/release $(ls target/wasm32-wasip1/release/*.rlib 2>/dev/null | xargs -I{} basename {}) || true
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.tar.gz
+            target/wasm32-wasip1/release/*.rlib
+
+  # Create GitHub Release
+  release:
+    name: Create Release
+    needs: [build, build-wasm]
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: ls -laR artifacts/
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/agentverify
+            artifacts/**/agentverify.exe
+            artifacts/**/lib*.rlib
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Publish to crates.io (only on tag push)
+  publish-crates:
+    name: Publish to crates.io
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Publish crates
+        run: |
+          # Publish in dependency order
+          cargo publish --package agentverify-core
+          cargo publish --package agentverify-contract
+          cargo publish --package agentverify-engine
+          cargo publish --package agentverify-receipt
+          cargo publish --package agentverify-runtime
+          cargo publish --package agentverify-http
+          cargo publish --package agentverify-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

@@ -1,0 +1,9 @@
+{
+  "action_name": "create_customer",
+  "postconditions": [
+    {
+      "predicate": {"type": "exists", "path": "customer.id"},
+      "description": "The created customer has an identifier"
+    }
+  ]
+}
