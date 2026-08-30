@@ -151,9 +151,12 @@ async fn from_config_connects_to_the_same_endpoint() {
     let (userinfo, host_db) = rest
         .split_once('@')
         .unwrap_or_else(|| panic!("uri is missing a userinfo segment: {url}"));
-    let (user, host_port_db) = match userinfo.split_once(':') {
-        Some((user, _)) => (user, host_db),
-        None => (userinfo, host_db),
+    // The password must survive the URI→config split: the config path sends
+    // the configured password verbatim, so dropping it (as earlier revisions
+    // did) only works against passwordless trust-auth servers.
+    let (user, password, host_port_db) = match userinfo.split_once(':') {
+        Some((user, password)) => (user, password, host_db),
+        None => (userinfo, "", host_db),
     };
     let (host_port, database) = host_port_db
         .split_once('/')
@@ -165,6 +168,7 @@ async fn from_config_connects_to_the_same_endpoint() {
             .with_host(host)
             .with_port(port.parse().unwrap())
             .with_user(user)
+            .with_password(password)
             .with_database(database)
             .with_application_name("agentverify-postgres-it"),
     )
