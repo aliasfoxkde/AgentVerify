@@ -28,7 +28,8 @@ pub use predicate::{CountOperator, Predicate};
 #[cfg(not(target_arch = "wasm32"))]
 pub use receipt::FileReceiptStore;
 pub use receipt::{
-    InMemoryReceiptStore, PostconditionResult, Receipt, ReceiptStore, RECEIPT_SCHEMA_VERSION,
+    InMemoryReceiptStore, PostconditionResult, Receipt, ReceiptStore, ReceiptStoreError,
+    RECEIPT_SCHEMA_VERSION,
 };
 pub use state_machine::{State, StateMachine};
 pub use verification_result::VerificationResult;
