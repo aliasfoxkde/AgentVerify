@@ -47,7 +47,7 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-apple-darwin
             use-cross: false
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             use-cross: false
           - os: windows-latest
@@ -237,20 +237,27 @@ jobs:
 
   # Publish every workspace crate to crates.io in dependency order.
   # Requires CARGO_REGISTRY_TOKEN in repository secrets; if the secret is
-  # not configured the job skips with a notice instead of failing the
-  # release. Idempotent: a re-run skips crates whose version is already
-  # published.
+  # not configured the job skips publishing with a notice instead of
+  # failing the release. The secret check lives in step-level `if`s because
+  # the `env`/`secrets` contexts are not available in a job-level `if`.
+  # Idempotent: a re-run skips crates whose version is already published.
   publish-crates:
     name: Publish to crates.io
     needs: [build, release]
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && env.agentverify_publish_token != '' }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
+      - name: Notice when the registry token is not configured
+        if: env.agentverify_publish_token == ''
+        run: echo "::notice::CARGO_REGISTRY_TOKEN is not configured; skipping crates.io publish"
+
       - name: Checkout repository
+        if: env.agentverify_publish_token != ''
         uses: actions/checkout@v5
 
       - name: Install Rust toolchain
+        if: env.agentverify_publish_token != ''
         uses: dtolnay/rust-toolchain@stable
 
       - name: Publish crates in dependency order
