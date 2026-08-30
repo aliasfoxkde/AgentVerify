@@ -39,10 +39,11 @@
 use agentverify_core::{
     Action, Contract, Observation, PostconditionResult, Receipt, State, VerificationResult,
 };
-use opentelemetry::trace::{Span, SpanKind, Status, Tracer};
+use opentelemetry::trace::{Span, SpanKind, Status, Tracer, TracerProvider};
 use opentelemetry::KeyValue;
-use opentelemetry_otlp::{ExportConfig, WithExportConfig};
-use opentelemetry_sdk::{trace, Resource};
+use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
+use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_sdk::Resource;
 use thiserror::Error;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -107,32 +108,42 @@ impl OtlpExporterConfig {
 /// Uses gRPC transport by default.
 #[derive(Clone)]
 pub struct OtlpExporter {
-    tracer: trace::Tracer,
+    tracer: opentelemetry_sdk::trace::Tracer,
+    provider: SdkTracerProvider,
 }
 
 impl OtlpExporter {
     /// Create a new OTLP exporter with the given configuration
     pub fn new(config: OtlpExporterConfig) -> Result<Self, OtlpExporterError> {
-        let export_config = ExportConfig {
-            endpoint: config.endpoint.clone(),
-            timeout: std::time::Duration::from_millis(config.timeout_ms),
-            protocol: opentelemetry_otlp::Protocol::Grpc,
-        };
-
-        let tracer = opentelemetry_otlp::new_pipeline()
-            .tracing()
-            .with_exporter(
-                opentelemetry_otlp::new_exporter()
-                    .tonic()
-                    .with_export_config(export_config),
-            )
-            .with_trace_config(trace::Config::default().with_resource(Resource::new(vec![
-                KeyValue::new("service.name", config.service_name.clone()),
-            ])))
-            .install_batch(opentelemetry_sdk::runtime::Tokio)
+        let exporter = SpanExporter::builder()
+            .with_tonic()
+            .with_endpoint(config.endpoint.clone())
+            .with_timeout(std::time::Duration::from_millis(config.timeout_ms))
+            .with_protocol(Protocol::Grpc)
+            .build()
             .map_err(|e| OtlpExporterError::Initialization(e.to_string()))?;
 
-        Ok(Self { tracer })
+        let provider = SdkTracerProvider::builder()
+            .with_batch_exporter(exporter)
+            .with_resource(
+                Resource::builder()
+                    .with_attribute(KeyValue::new("service.name", config.service_name.clone()))
+                    .build(),
+            )
+            .build();
+
+        let tracer = provider.tracer("agentverify");
+
+        Ok(Self { tracer, provider })
+    }
+
+    /// Flush and shut down the tracer provider, exporting any pending spans.
+    ///
+    /// Call this before process exit to avoid losing buffered spans.
+    pub fn shutdown(&self) -> Result<(), OtlpExporterError> {
+        self.provider
+            .shutdown()
+            .map_err(|e| OtlpExporterError::Export(e.to_string()))
     }
 
     /// Record action creation
