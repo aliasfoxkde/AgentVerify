@@ -1,7 +1,9 @@
-//! AgentVerify HTTP
+//! `AgentVerify` HTTP
 //!
 //! HTTP-based observers and clients.
 
+// Unit tests assert failure paths with `panic!`; the deny only applies to production code.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #[cfg(not(target_arch = "wasm32"))]
 mod client;
 

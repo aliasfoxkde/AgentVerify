@@ -46,6 +46,7 @@ pub struct Observation {
 
 impl Observation {
     /// Create a new observation
+    #[must_use]
     pub fn new(source: SourceId, state: Value) -> Self {
         Self {
             source,
@@ -56,12 +57,14 @@ impl Observation {
     }
 
     /// Add evidence to observation
+    #[must_use]
     pub fn with_evidence(mut self, evidence: Evidence) -> Self {
         self.evidence.push(evidence);
         self
     }
 
     /// Get value at JSON path
+    #[must_use]
     pub fn get(&self, path: &str) -> Option<&Value> {
         jsonpath_get(&self.state, path)
     }

@@ -22,7 +22,7 @@ use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::pin::Pin;
 #[cfg(not(target_arch = "wasm32"))]
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 /// Entry state persisted to disk
 #[cfg(not(target_arch = "wasm32"))]
@@ -86,7 +86,7 @@ impl PersistedEntry {
 /// - Requires filesystem that supports file locking (NFS, local FS may have issues)
 /// - No TTL: entries persist until manually cleaned up
 ///
-/// For production distributed use, implement IdempotencyStore with Redis or PostgreSQL.
+/// For production distributed use, implement `IdempotencyStore` with Redis or `PostgreSQL`.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct FileIdempotencyStore {
     base_path: std::path::PathBuf,
@@ -157,7 +157,7 @@ impl IdempotencyStore for FileIdempotencyStore {
         Box::pin(async move {
             // First check cache
             {
-                let cache = self.cache.lock().unwrap();
+                let cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Some(entry) = cache.get(key) {
                     return match &entry.state {
                         EntryState::InFlight => (ClaimResult::AlreadyClaimed, None),
@@ -169,31 +169,28 @@ impl IdempotencyStore for FileIdempotencyStore {
             }
 
             // Load from disk
-            match self.load_entry(key) {
-                Some(entry) => {
-                    let result = entry.to_result();
-                    // Update cache
-                    {
-                        let mut cache = self.cache.lock().unwrap();
-                        cache.insert(key.to_string(), entry);
-                    }
-                    match result {
-                        None => (ClaimResult::AlreadyClaimed, None),
-                        Some(r) => (ClaimResult::AlreadyClaimed, Some(r)),
-                    }
+            if let Some(entry) = self.load_entry(key) {
+                let result = entry.to_result();
+                // Update cache
+                {
+                    let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+                    cache.insert(key.to_string(), entry);
                 }
-                None => {
-                    // Key doesn't exist — claim it
-                    let entry = PersistedEntry::new_in_flight(key.to_string());
-                    if let Err(e) = self.save_entry(&entry) {
-                        eprintln!("warning: failed to persist claim: {}", e);
-                    }
-                    {
-                        let mut cache = self.cache.lock().unwrap();
-                        cache.insert(key.to_string(), entry);
-                    }
-                    (ClaimResult::Claimed, None)
+                match result {
+                    None => (ClaimResult::AlreadyClaimed, None),
+                    Some(r) => (ClaimResult::AlreadyClaimed, Some(r)),
                 }
+            } else {
+                // Key doesn't exist — claim it
+                let entry = PersistedEntry::new_in_flight(key.to_string());
+                if let Err(e) = self.save_entry(&entry) {
+                    tracing::warn!("failed to persist claim: {e}");
+                }
+                {
+                    let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+                    cache.insert(key.to_string(), entry);
+                }
+                (ClaimResult::Claimed, None)
             }
         })
     }
@@ -206,10 +203,10 @@ impl IdempotencyStore for FileIdempotencyStore {
         Box::pin(async move {
             let entry = PersistedEntry::new_completed(key.clone(), result);
             if let Err(e) = self.save_entry(&entry) {
-                eprintln!("warning: failed to persist completion: {}", e);
+                tracing::warn!("failed to persist completion: {e}");
             }
             {
-                let mut cache = self.cache.lock().unwrap();
+                let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
                 cache.insert(key, entry);
             }
         })
@@ -224,11 +221,11 @@ impl IdempotencyStore for FileIdempotencyStore {
             let path = base_path.join(format!("{}.json", Self::key_to_filename(&key_str)));
             if let Err(e) = std::fs::remove_file(path) {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    eprintln!("warning: failed to remove entry: {}", e);
+                    tracing::warn!("failed to remove entry: {e}");
                 }
             }
             // Remove from in-process cache
-            let mut cache_guard = cache.lock().unwrap();
+            let mut cache_guard = cache.lock().unwrap_or_else(PoisonError::into_inner);
             cache_guard.remove(&key_str);
         })
     }
@@ -239,7 +236,7 @@ impl std::fmt::Debug for FileIdempotencyStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileIdempotencyStore")
             .field("base_path", &self.base_path)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -282,6 +279,7 @@ impl RedisIdempotencyStore {
     /// # Arguments
     /// * `pool` - deadpool-redis connection pool
     /// * `ttl_secs` - Default TTL for entries in seconds (default: 86400 = 24 hours)
+    #[must_use]
     pub fn new(pool: deadpool_redis::Pool, ttl_secs: u64) -> Self {
         Self { pool, ttl_secs }
     }
@@ -301,7 +299,7 @@ impl RedisIdempotencyStore {
     }
 
     fn redis_key(key: &str) -> String {
-        format!("{}{}", REDIS_KEY_PREFIX, key)
+        format!("{REDIS_KEY_PREFIX}{key}")
     }
 }
 
@@ -318,7 +316,7 @@ impl IdempotencyStore for RedisIdempotencyStore {
             let mut conn = match pool.get().await {
                 Ok(conn) => conn,
                 Err(e) => {
-                    eprintln!("warning: failed to get Redis connection: {}", e);
+                    tracing::warn!("failed to get Redis connection: {e}");
                     return (ClaimResult::Claimed, None);
                 }
             };
@@ -328,7 +326,7 @@ impl IdempotencyStore for RedisIdempotencyStore {
             let value = match serde_json::to_string(&entry) {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("warning: failed to serialize entry: {}", e);
+                    tracing::warn!("failed to serialize entry: {e}");
                     return (ClaimResult::Claimed, None);
                 }
             };
@@ -356,45 +354,42 @@ impl IdempotencyStore for RedisIdempotencyStore {
                         .await
                         .ok();
 
-                    match get_result {
-                        Some(raw) => {
-                            match serde_json::from_str::<RedisEntry>(&raw) {
-                                Ok(entry) => {
-                                    let result = entry.to_result();
-                                    (ClaimResult::AlreadyClaimed, result)
-                                }
-                                Err(_) => {
-                                    // Corrupted entry - treat as already claimed
-                                    (ClaimResult::AlreadyClaimed, None)
-                                }
+                    if let Some(raw) = get_result {
+                        match serde_json::from_str::<RedisEntry>(&raw) {
+                            Ok(entry) => {
+                                let result = entry.to_result();
+                                (ClaimResult::AlreadyClaimed, result)
+                            }
+                            Err(_) => {
+                                // Corrupted entry - treat as already claimed
+                                (ClaimResult::AlreadyClaimed, None)
                             }
                         }
-                        None => {
-                            // Race condition: entry expired between SETNX and GET
-                            // Try again (recursive retry once)
-                            let entry = RedisEntry::new_in_flight(key.to_string());
-                            let value = serde_json::to_string(&entry).unwrap();
-                            let retry_result: Result<bool, _> = redis::cmd("SET")
-                                .arg(&redis_key)
-                                .arg(&value)
-                                .arg("NX")
-                                .arg("EX")
-                                .arg(ttl_secs as i64)
-                                .query_async(&mut conn)
-                                .await;
-                            match retry_result {
-                                Ok(true) => (ClaimResult::Claimed, None),
-                                Ok(false) => (ClaimResult::AlreadyClaimed, None),
-                                Err(e) => {
-                                    eprintln!("warning: Redis retry failed: {}", e);
-                                    (ClaimResult::AlreadyClaimed, None)
-                                }
+                    } else {
+                        // Race condition: entry expired between SETNX and GET
+                        // Try again (recursive retry once)
+                        let entry = RedisEntry::new_in_flight(key.to_string());
+                        let value = serde_json::to_string(&entry).unwrap_or_default();
+                        let retry_result: Result<bool, _> = redis::cmd("SET")
+                            .arg(&redis_key)
+                            .arg(&value)
+                            .arg("NX")
+                            .arg("EX")
+                            .arg(ttl_secs as i64)
+                            .query_async(&mut conn)
+                            .await;
+                        match retry_result {
+                            Ok(true) => (ClaimResult::Claimed, None),
+                            Ok(false) => (ClaimResult::AlreadyClaimed, None),
+                            Err(e) => {
+                                tracing::warn!("Redis retry failed: {e}");
+                                (ClaimResult::AlreadyClaimed, None)
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("warning: Redis SETNX failed: {}", e);
+                    tracing::warn!("Redis SETNX failed: {e}");
                     (ClaimResult::AlreadyClaimed, None)
                 }
             }
@@ -413,7 +408,7 @@ impl IdempotencyStore for RedisIdempotencyStore {
             let mut conn = match pool.get().await {
                 Ok(conn) => conn,
                 Err(e) => {
-                    eprintln!("warning: failed to get Redis connection: {}", e);
+                    tracing::warn!("failed to get Redis connection: {e}");
                     return;
                 }
             };
@@ -422,7 +417,7 @@ impl IdempotencyStore for RedisIdempotencyStore {
             let value = match serde_json::to_string(&entry) {
                 Ok(v) => v,
                 Err(e) => {
-                    eprintln!("warning: failed to serialize completion: {}", e);
+                    tracing::warn!("failed to serialize completion: {e}");
                     return;
                 }
             };
@@ -448,7 +443,7 @@ impl IdempotencyStore for RedisIdempotencyStore {
                     .query_async::<_, ()>(&mut conn)
                     .await
                 {
-                    eprintln!("warning: Redis DEL failed: {}", e);
+                    tracing::warn!("Redis DEL failed: {e}");
                 }
             }
         })
@@ -460,7 +455,7 @@ impl std::fmt::Debug for RedisIdempotencyStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RedisIdempotencyStore")
             .field("ttl_secs", &self.ttl_secs)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

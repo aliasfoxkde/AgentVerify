@@ -100,6 +100,7 @@ impl Ed25519SigningService {
     }
 
     /// Create a signing service from a raw 32-byte seed
+    #[must_use]
     pub fn from_seed(seed: &[u8; 32]) -> Self {
         let signing_key = ed25519_dalek::SigningKey::from_bytes(seed);
         let verifying_key = signing_key.verifying_key();
@@ -114,7 +115,7 @@ impl Ed25519SigningService {
         use base64::Engine;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(encoded)
-            .map_err(|e| SigningError::SigningFailed(format!("Invalid base64: {}", e)))?;
+            .map_err(|e| SigningError::SigningFailed(format!("Invalid base64: {e}")))?;
 
         if bytes.len() != 32 {
             return Err(SigningError::SigningFailed(
@@ -128,6 +129,7 @@ impl Ed25519SigningService {
     }
 
     /// Get the verifying key as base64
+    #[must_use]
     pub fn verifying_key_base64(&self) -> String {
         use base64::Engine;
         base64::engine::general_purpose::STANDARD.encode(self.verifying_key.as_bytes())

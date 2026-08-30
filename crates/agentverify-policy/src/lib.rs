@@ -1,4 +1,4 @@
-//! AgentVerify Policy Engine
+//! `AgentVerify` Policy Engine
 //!
 //! Policy engine for defining and evaluating access control, rate limiting,
 //! and contract verification policies.
@@ -35,6 +35,7 @@
 //! let result = engine.evaluate(&policy, &action, None);
 //! ```
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 mod engine;
 mod error;
 mod policy;

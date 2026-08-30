@@ -43,7 +43,9 @@ pub enum ActionPattern {
     Suffix(String),
     /// Regex match
     Regex {
+        /// The regex pattern source
         pattern: String,
+        /// Compiled pattern, built on construction and not serialized
         #[serde(skip)]
         #[serde(default)]
         regex: Option<::regex::Regex>,
@@ -67,6 +69,10 @@ impl ActionPattern {
     }
 
     /// Create a regex match pattern
+    ///
+    /// # Errors
+    ///
+    /// Returns `regex::Error` if `pattern` is not a valid regular expression.
     pub fn regex(pattern: impl Into<String>) -> Result<Self, ::regex::Error> {
         let pattern_str = pattern.into();
         let regex = Some(::regex::Regex::new(&pattern_str)?);
@@ -77,6 +83,7 @@ impl ActionPattern {
     }
 
     /// Check if this pattern matches the given action name
+    #[must_use]
     pub fn matches(&self, action_name: &str) -> bool {
         match self {
             Self::Exact(name) => action_name == name,
@@ -84,8 +91,7 @@ impl ActionPattern {
             Self::Suffix(suffix) => action_name.ends_with(suffix),
             Self::Regex { regex, .. } => regex
                 .as_ref()
-                .map(|r| r.is_match(action_name))
-                .unwrap_or(false),
+                .is_some_and(|r| r.is_match(action_name)),
         }
     }
 }
@@ -101,6 +107,7 @@ pub struct RateLimit {
 
 impl RateLimit {
     /// Create a new rate limit
+    #[must_use]
     pub fn new(max_count: u32, window: Duration) -> Self {
         Self { max_count, window }
     }
@@ -126,11 +133,13 @@ pub enum PolicyDecision {
 
 impl PolicyDecision {
     /// Returns true if the action is allowed
+    #[must_use]
     pub fn is_allowed(&self) -> bool {
         matches!(self, Self::Allowed)
     }
 
     /// Returns the violation if denied
+    #[must_use]
     pub fn violation(&self) -> Option<&PolicyViolation> {
         match self {
             Self::Allowed => None,
@@ -143,7 +152,7 @@ impl std::fmt::Display for PolicyDecision {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Allowed => write!(f, "Allowed"),
-            Self::Denied(v) => write!(f, "Denied: {}", v),
+            Self::Denied(v) => write!(f, "Denied: {v}"),
         }
     }
 }
@@ -289,7 +298,7 @@ impl IdempotencyRateLimitTracker {
     pub fn check_rate_limit(&mut self, key: &str, action_name: &str, limit: &RateLimit) -> bool {
         // For per-key limits, we use the action name as part of the key
         // so different actions with same key have separate limits
-        let effective_key = format!("{}:{}", action_name, key);
+        let effective_key = format!("{action_name}:{key}");
         let bucket = self
             .buckets
             .entry(effective_key)
@@ -367,24 +376,28 @@ impl Policy {
     }
 
     /// Add an allowed action name
+    #[must_use]
     pub fn allow_action_name(mut self, name: impl Into<String>) -> Self {
         self.allowed_actions.push(ActionPattern::Exact(name.into()));
         self
     }
 
     /// Add an allowed action pattern
+    #[must_use]
     pub fn allow_action_pattern(mut self, pattern: ActionPattern) -> Self {
         self.allowed_actions.push(pattern);
         self
     }
 
     /// Add a blocked action name
+    #[must_use]
     pub fn block_action_name(mut self, name: impl Into<String>) -> Self {
         self.blocked_actions.push(name.into());
         self
     }
 
     /// Add a rate limit for an action
+    #[must_use]
     pub fn with_rate_limit(
         mut self,
         action_name: impl Into<String>,
@@ -397,6 +410,7 @@ impl Policy {
     }
 
     /// Add a rate limit per idempotency key for an action
+    #[must_use]
     pub fn with_rate_limit_per_key(
         mut self,
         action_name: impl Into<String>,
@@ -409,6 +423,7 @@ impl Policy {
     }
 
     /// Require a contract for an action
+    #[must_use]
     pub fn require_contract_for_action(mut self, action_name: impl Into<String>) -> Self {
         self.contract_requirements.push(ContractRequirement {
             action_name: action_name.into(),
@@ -418,6 +433,7 @@ impl Policy {
     }
 
     /// Require a specific access level for an action
+    #[must_use]
     pub fn require_access_level(
         mut self,
         action_name: impl Into<String>,
@@ -428,17 +444,20 @@ impl Policy {
     }
 
     /// Set the policy description
+    #[must_use]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
         self.description = description.into();
         self
     }
 
     /// Check if the policy is enabled
+    #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
     /// Check if an action name matches any allowed pattern
+    #[must_use]
     pub fn is_action_allowed(&self, action_name: &str) -> bool {
         // Empty action name is never allowed
         if action_name.is_empty() {
@@ -462,16 +481,19 @@ impl Policy {
     }
 
     /// Get the rate limit for an action if defined
+    #[must_use]
     pub fn get_rate_limit(&self, action_name: &str) -> Option<&RateLimit> {
         self.rate_limits.get(action_name)
     }
 
     /// Get the per-key rate limit for an action if defined
+    #[must_use]
     pub fn get_rate_limit_per_key(&self, action_name: &str) -> Option<&RateLimit> {
         self.rate_limits_per_key.get(action_name)
     }
 
     /// Check if a contract is required for an action
+    #[must_use]
     pub fn is_contract_required(&self, action_name: &str) -> bool {
         self.contract_requirements
             .iter()
@@ -479,6 +501,7 @@ impl Policy {
     }
 
     /// Get the required access level for an action
+    #[must_use]
     pub fn get_required_access_level(&self, action_name: &str) -> Option<AccessLevel> {
         self.access_requirements.get(action_name).copied()
     }
@@ -561,9 +584,9 @@ mod tests {
     #[test]
     fn test_policy_decision_display() {
         let allowed = PolicyDecision::Allowed;
-        assert_eq!(format!("{}", allowed), "Allowed");
+        assert_eq!(format!("{allowed}"), "Allowed");
 
         let denied = PolicyDecision::Denied(PolicyViolation::EmptyActionName);
-        assert_eq!(format!("{}", denied), "Denied: Action name cannot be empty");
+        assert_eq!(format!("{denied}"), "Denied: Action name cannot be empty");
     }
 }

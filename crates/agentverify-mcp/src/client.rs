@@ -101,7 +101,7 @@ pub struct McpClient {
 impl McpClient {
     /// Connect to an MCP server via stdio
     pub async fn connect(config: McpClientConfig) -> Result<Self, McpClientError> {
-        let args_refs: Vec<&str> = config.args.iter().map(|s| s.as_str()).collect();
+        let args_refs: Vec<&str> = config.args.iter().map(String::as_str).collect();
         let transport = StdioTransport::connect(&config.command, &args_refs)
             .await
             .map_err(McpClientError::Transport)?;
@@ -144,7 +144,10 @@ impl McpClient {
         };
 
         let result = self
-            .request("initialize", Some(serde_json::to_value(params).unwrap()))
+            .request(
+                "initialize",
+                Some(serde_json::to_value(params).map_err(TransportError::Json)?),
+            )
             .await?;
 
         let response: InitializeResult =
@@ -216,7 +219,7 @@ impl McpClient {
 
         // Wait for response with timeout
         let timeout_result: Result<
-            Result<JsonRpcResponse, tokio::sync::oneshot::error::RecvError>,
+            Result<JsonRpcResponse, oneshot::error::RecvError>,
             tokio::time::error::Elapsed,
         > = timeout(Duration::from_secs(self.config.timeout_secs), response_rx).await;
 
@@ -272,7 +275,10 @@ impl McpClient {
         };
 
         let result = self
-            .request("tools/call", Some(serde_json::to_value(params).unwrap()))
+            .request(
+                "tools/call",
+                Some(serde_json::to_value(params).map_err(TransportError::Json)?),
+            )
             .await?;
 
         let response: CallToolResult =
@@ -322,7 +328,10 @@ impl McpClient {
         };
 
         let result = self
-            .request("prompts/get", Some(serde_json::to_value(params).unwrap()))
+            .request(
+                "prompts/get",
+                Some(serde_json::to_value(params).map_err(TransportError::Json)?),
+            )
             .await?;
 
         let response: GetPromptResult =

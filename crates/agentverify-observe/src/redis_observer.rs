@@ -61,6 +61,7 @@ impl RedisObserverConfig {
     }
 
     /// Set the timeout in milliseconds
+    #[must_use]
     pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = timeout_ms;
         self
@@ -143,6 +144,7 @@ impl RedisObserver {
     }
 
     /// Create a new Redis observer from a pre-existing pool
+    #[must_use]
     pub fn with_pool(pool: deadpool_redis::Pool, config: RedisObserverConfig) -> Self {
         Self { pool, config }
     }
@@ -169,7 +171,7 @@ impl RedisObserver {
 
     /// Parse observation spec to determine operation and key
     ///
-    /// Returns (operation, key, [extra_args...])
+    /// Returns (operation, key, [`extra_args`...])
     fn parse_spec(spec: &str) -> Result<(&str, &str, Vec<&str>), RedisObserverError> {
         let parts: Vec<&str> = spec.splitn(3, ':').collect();
         match parts.as_slice() {
@@ -234,8 +236,7 @@ impl RedisObserver {
                 Ok(Value::Object(map))
             }
             _ => Err(RedisObserverError::InvalidObservationSpec(format!(
-                "unknown operation: {}",
-                op
+                "unknown operation: {op}"
             ))),
         }
     }
@@ -249,7 +250,7 @@ impl RedisObserver {
             action_name.clone()
         } else {
             // Default to get operation
-            format!("get:{}", action_name)
+            format!("get:{action_name}")
         }
     }
 }
@@ -266,7 +267,7 @@ impl agentverify_runtime::Observer for RedisObserver {
             .pool
             .get()
             .await
-            .map_err(|e| ExecutorError::Unknown(format!("Redis pool error: {}", e)))?;
+            .map_err(|e| ExecutorError::Unknown(format!("Redis pool error: {e}")))?;
 
         // Build the observation spec
         let spec = self.build_spec(contract);
@@ -275,7 +276,7 @@ impl agentverify_runtime::Observer for RedisObserver {
         let state = self
             .execute_spec(&mut conn, &spec)
             .await
-            .map_err(|e| ExecutorError::Unknown(format!("Redis observation failed: {}", e)))?;
+            .map_err(|e| ExecutorError::Unknown(format!("Redis observation failed: {e}")))?;
 
         Ok(Observation::new(SourceId("redis".into()), state))
     }
@@ -388,8 +389,7 @@ mod tests {
         // thiserror formats as "ConnectionFailed: refused"
         assert!(
             err_str.contains("refused"),
-            "error should contain 'refused', got: {}",
-            err_str
+            "error should contain 'refused', got: {err_str}"
         );
     }
 
@@ -399,8 +399,7 @@ mod tests {
         let err_str = err.to_string();
         assert!(
             err_str.contains("mykey"),
-            "error should contain 'mykey', got: {}",
-            err_str
+            "error should contain 'mykey', got: {err_str}"
         );
     }
 
@@ -410,8 +409,7 @@ mod tests {
         let err_str = err.to_string();
         assert!(
             err_str.contains("bad spec"),
-            "error should contain 'bad spec', got: {}",
-            err_str
+            "error should contain 'bad spec', got: {err_str}"
         );
     }
 
@@ -421,7 +419,7 @@ mod tests {
 
     /// Parse observation spec to determine operation and key
     ///
-    /// Returns (operation, key, [extra_args...])
+    /// Returns (operation, key, [`extra_args`...])
     fn parse_spec_impl(spec: &str) -> Result<(&str, &str, Vec<&str>), RedisObserverError> {
         let parts: Vec<&str> = spec.splitn(3, ':').collect();
         match parts.as_slice() {

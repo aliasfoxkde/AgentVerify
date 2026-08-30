@@ -1,0 +1,91 @@
+name: Bug report
+description: Report a problem with AgentVerify that is not a wrong verification outcome.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug!
+
+        If the bug is that AgentVerify returned the **wrong verification
+        result** (a false `VERIFIED`, a false `FAILED`, or `UNKNOWN` handled
+        incorrectly), please use the [Verification bug
+        template](https://github.com/aliasfoxkde/AgentVerify/issues/new?template=verification-bug.yml)
+        instead — it captures the contract, observation, and receipt details
+        needed to diagnose it.
+
+        Security vulnerabilities must go through [private vulnerability
+        reporting](https://github.com/aliasfoxkde/AgentVerify/security/advisories/new).
+  - type: dropdown
+    id: crate
+    attributes:
+      label: Affected crate
+      options:
+        - agentverify-core
+        - agentverify-contract
+        - agentverify-engine
+        - agentverify-runtime
+        - agentverify-observe
+        - agentverify-recovery
+        - agentverify-receipt
+        - agentverify-policy
+        - agentverify-storage
+        - agentverify-mcp
+        - agentverify-otel
+        - agentverify-http
+        - agentverify-cli
+        - agentverify-testkit
+        - docs / examples
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Crate version, commit SHA, or "main".
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux (x86_64)
+        - Linux (aarch64)
+        - macOS (Intel)
+        - macOS (Apple Silicon)
+        - Windows
+        - WASM (wasm32-wasip1)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Minimal code, contract file, or CLI invocation that reproduces the issue.
+      render: rust
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / output
+      render: text
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for a duplicate
+          required: true
+        - label: This is not a security vulnerability (those go to private reporting)
+          required: true

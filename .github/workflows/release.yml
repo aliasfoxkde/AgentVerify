@@ -5,184 +5,286 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version tag (e.g., v0.1.0)'
-        required: true
-        type: string
+
+permissions:
+  contents: read
+
+# A release must never be cancelled mid-flight.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 5
+  RUSTUP_MAX_RETRIES: 5
+  # Passthrough so jobs can test for the secret's presence (secrets are not
+  # directly usable in `if:` conditions).
+  agentverify_publish_token: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
 jobs:
-  # Build binaries for all platforms
+  # Cross-platform CLI binaries. Linux aarch64/musl are built with `cross`
+  # (docker-based) so the GNU aarch64 target gets a working linker.
   build:
-    name: Build ${{ matrix.target }}
+    name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
+      fail-fast: false
       matrix:
         include:
-          # Linux x86_64 GNU
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            artifact: agentverify-x86_64-unknown-linux-gnu
-          # Linux ARM64
-          - os: ubuntu-latest
+            use-cross: false
+          - os: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
-            artifact: agentverify-aarch64-unknown-linux-gnu
-          # macOS x86_64
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact: agentverify-x86_64-apple-darwin
-          # macOS ARM64 (Apple Silicon)
-          - os: macos-latest
+            use-cross: true
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            use-cross: true
+          - os: ubuntu-latest
             target: aarch64-apple-darwin
-            artifact: agentverify-aarch64-apple-darwin
-          # Windows x86_64
+            use-cross: false
+          - os: macos-13
+            target: x86_64-apple-darwin
+            use-cross: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: agentverify-x86_64-pc-windows-msvc.exe
-        fail-fast: false
+            use-cross: false
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache cargo registry
+      - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+          save-if: 'false'
+
+      - name: Install cross
+        if: matrix.use-cross
+        uses: taiki-e/install-action@cross
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --package agentverify-cli
+        working-directory: ${{ github.workspace }}
+        run: ${{ matrix.use-cross && 'cross' || 'cargo' }} build --locked --release --target ${{ matrix.target }} -p agentverify-cli
 
-      - name: Package binary
+      - name: Package binary (unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
-          cp target/${{ matrix.target }}/release/agentverify ${{ matrix.artifact }}
-          tar czf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
-          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then
-            cp target/${{ matrix.target }}/release/agentverify.exe ${{ matrix.artifact }}.exe
-          fi
+          set -euo pipefail
+          dist="agentverify-cli-${{ matrix.target }}"
+          mkdir -p "$dist"
+          bin="target/${{ matrix.target }}/release/agentverify"
+          strip "$bin" 2>/dev/null || true
+          cp "$bin" "$dist/"
+          cp README.md LICENSE "$dist/"
+          tar czf "$dist.tar.gz" "$dist"
+          sha256sum "$dist.tar.gz" > "$dist.tar.gz.sha256"
+          rm -rf "$dist"
+
+      - name: Package binary (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dist = "agentverify-cli-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/agentverify.exe" -Destination $dist
+          Copy-Item README.md, LICENSE -Destination $dist
+          Compress-Archive -Path $dist -DestinationPath "$dist.zip"
+          Get-FileHash "$dist.zip" -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  $dist.zip" } | Out-File -Encoding ascii "$dist.zip.sha256"
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: agentverify-cli-${{ matrix.target }}
           path: |
-            ${{ matrix.artifact }}
-            ${{ matrix.artifact }}.tar.gz
+            agentverify-cli-*.tar.gz
+            agentverify-cli-*.zip
+            agentverify-cli-*.sha256
+          if-no-files-found: error
+          retention-days: 7
 
-  # Build WASM libraries for web/WASI deployment
+  # WASI libraries. These crates compile for wasm32-wasip1; the artifacts are
+  # rlibs usable by Rust consumers targeting WASI (requires the same rustc
+  # version — see artifact MANIFEST). Binary distribution of the CLI is
+  # native-only; WASM consumers link the libraries directly.
   build-wasm:
-    name: Build WASM
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          # WASM WASI Preview 1
-          - target: wasm32-wasip1
-            artifact: agentverify-wasm32-wasip1
+    name: build (wasm32-wasip1)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-wasip1
 
-      - name: Cache cargo registry
+      - name: Restore cargo cache
         uses: Swatinem/rust-cache@v2
+        with:
+          key: release-wasm
+          save-if: 'false'
 
-      - name: Build WASM libraries
+      - name: Build WASI libraries
         run: |
-          cargo build --release --target wasm32-wasip1 \
+          cargo build --locked --release --target wasm32-wasip1 \
             -p agentverify-core \
-            -p agentverify-engine \
             -p agentverify-contract \
-            -p agentverify-runtime \
-            -p agentverify-http
+            -p agentverify-engine \
+            -p agentverify-receipt \
+            -p agentverify-policy
 
-      - name: Package WASM artifacts
-        shell: bash
+      - name: Package WASI libraries
         run: |
-          mkdir -p wasm-artifacts
-          # Copy WASM rlibs
-          cp target/wasm32-wasip1/release/libagentverify_core.wasm wasm-artifacts/ 2>/dev/null || true
-          cp target/wasm32-wasip1/release/libagentverify_engine.wasm wasm-artifacts/ 2>/dev/null || true
-          cp target/wasm32-wasip1/release/libagentverify_contract.wasm wasm-artifacts/ 2>/dev/null || true
-          cp target/wasm32-wasip1/release/libagentverify_runtime.wasm wasm-artifacts/ 2>/dev/null || true
-          # List what was built
-          ls -la target/wasm32-wasip1/release/*.rlib 2>/dev/null || echo "No rlibs found"
-          ls -la target/wasm32-wasip1/release/*.wasm 2>/dev/null || echo "No wasm files found"
-          # Create a tarball with the rlibs
-          tar czf ${{ matrix.artifact }}.tar.gz -C target/wasm32-wasip1/release $(ls target/wasm32-wasip1/release/*.rlib 2>/dev/null | xargs -I{} basename {}) || true
+          set -euo pipefail
+          dist="agentverify-wasm32-wasip1"
+          mkdir -p "$dist"
+          cp target/wasm32-wasip1/release/*.rlib "$dist/"
+          cp docs/WASM_ARCHITECTURE.md "$dist/"
+          cat > "$dist/MANIFEST.md" <<'EOF'
+          # AgentVerify WASI libraries (wasm32-wasip1)
 
-      - name: Upload release artifact
+          Precompiled rlibs for `agentverify-core`, `agentverify-contract`,
+          `agentverify-engine`, `agentverify-receipt`, and `agentverify-policy`
+          targeting `wasm32-wasip1`.
+
+          ## Compatibility
+
+          rlibs can only be linked by the exact rustc version that built them
+          (recorded below by `rustc --version`). For any other toolchain — or
+          for the runtime/http/observe crates, which need a WASI-enabled tokio
+          stack — build from source:
+
+              cargo build --release --target wasm32-wasip1 \
+                -p agentverify-core -p agentverify-contract \
+                -p agentverify-engine -p agentverify-receipt \
+                -p agentverify-policy
+
+          See WASM_ARCHITECTURE.md for capabilities and limitations.
+          EOF
+          rustc --version > "$dist/rustc-version.txt"
+          tar czf "$dist.tar.gz" "$dist"
+          sha256sum "$dist.tar.gz" > "$dist.tar.gz.sha256"
+          rm -rf "$dist"
+
+      - name: Upload WASI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: agentverify-wasm32-wasip1
           path: |
-            ${{ matrix.artifact }}.tar.gz
-            target/wasm32-wasip1/release/*.rlib
+            agentverify-wasm32-wasip1.tar.gz
+            agentverify-wasm32-wasip1.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
 
-  # Create GitHub Release
+  # Attach binaries + checksums to the GitHub Release for the pushed tag.
   release:
-    name: Create Release
+    name: GitHub Release
     needs: [build, build-wasm]
-    runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: dist
+          merge-multiple: true
 
-      - name: List artifacts
-        run: ls -laR artifacts/
+      - name: Verify artifact completeness
+        run: |
+          set -euo pipefail
+          expected=(
+            agentverify-cli-x86_64-unknown-linux-gnu.tar.gz
+            agentverify-cli-aarch64-unknown-linux-gnu.tar.gz
+            agentverify-cli-x86_64-unknown-linux-musl.tar.gz
+            agentverify-cli-aarch64-apple-darwin.tar.gz
+            agentverify-cli-x86_64-apple-darwin.tar.gz
+            agentverify-cli-x86_64-pc-windows-msvc.zip
+            agentverify-wasm32-wasip1.tar.gz
+          )
+          missing=0
+          for f in "${expected[@]}"; do
+            if [ ! -f "dist/$f" ]; then
+              echo "::error::missing release artifact: dist/$f"
+              missing=1
+            fi
+          done
+          ls -la dist/
+          exit "$missing"
 
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          draft: false
-          prerelease: false
           generate_release_notes: true
           files: |
-            artifacts/**/*.tar.gz
-            artifacts/**/agentverify
-            artifacts/**/agentverify.exe
-            artifacts/**/lib*.rlib
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
 
-  # Publish to crates.io (only on tag push)
+  # Publish every workspace crate to crates.io in dependency order.
+  # Requires CARGO_REGISTRY_TOKEN in repository secrets; if the secret is
+  # not configured the job skips with a notice instead of failing the
+  # release. Idempotent: a re-run skips crates whose version is already
+  # published.
   publish-crates:
     name: Publish to crates.io
-    needs: [build]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, release]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && env.agentverify_publish_token != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Publish crates
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish crates in dependency order
         run: |
-          # Publish in dependency order
-          cargo publish --package agentverify-core
-          cargo publish --package agentverify-contract
-          cargo publish --package agentverify-engine
-          cargo publish --package agentverify-receipt
-          cargo publish --package agentverify-runtime
-          cargo publish --package agentverify-http
-          cargo publish --package agentverify-cli
+          set -euo pipefail
+          crates=(
+            agentverify-core
+            agentverify-contract
+            agentverify-engine
+            agentverify-receipt
+            agentverify-policy
+            agentverify-recovery
+            agentverify-storage
+            agentverify-otel
+            agentverify-mcp
+            agentverify-runtime
+            agentverify-observe
+            agentverify-testkit
+            agentverify-http
+            agentverify-cli
+          )
+          for crate in "${crates[@]}"; do
+            echo "::group::Publishing ${crate}"
+            if ! cargo publish --locked -p "${crate}" 2>&1 | tee "/tmp/publish-${crate}.log"; then
+              if grep -qE "is already uploaded|already exists|already published" "/tmp/publish-${crate}.log"; then
+                echo "::warning::${crate} is already published; skipping"
+              else
+                exit 1
+              fi
+            fi
+            echo "::endgroup::"
+            # Give crates.io a moment to make the crate visible to the index
+            # so the next crate's dependency resolution succeeds.
+            sleep 10
+          done
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

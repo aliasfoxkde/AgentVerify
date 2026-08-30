@@ -80,6 +80,7 @@ impl fmt::Display for State {
 
 impl State {
     /// Check if state is terminal
+    #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -88,6 +89,7 @@ impl State {
     }
 
     /// Get valid next states
+    #[must_use]
     pub fn valid_transitions(&self) -> Vec<State> {
         match self {
             State::Proposed => vec![State::Validating],
@@ -139,6 +141,7 @@ pub struct StateMachine {
 
 impl StateMachine {
     /// Create new state machine in Proposed state
+    #[must_use]
     pub fn new() -> Self {
         Self {
             state: State::Proposed,
@@ -146,11 +149,13 @@ impl StateMachine {
     }
 
     /// Create with specific initial state
+    #[must_use]
     pub fn with_state(state: State) -> Self {
         Self { state }
     }
 
     /// Get current state
+    #[must_use]
     pub fn current(&self) -> State {
         self.state
     }

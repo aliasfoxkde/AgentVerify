@@ -22,6 +22,7 @@ pub struct SchemaVersion {
 }
 
 impl SchemaVersion {
+    #[must_use]
     pub fn new(version: &str) -> Option<Self> {
         let parts: Vec<&str> = version.split('.').collect();
         if parts.len() != 2 {
@@ -33,11 +34,13 @@ impl SchemaVersion {
     }
 
     /// Returns true if this version is compatible with another version
+    #[must_use]
     pub fn is_compatible_with(&self, other: &Self) -> bool {
         self.major == other.major
     }
 
     /// Returns the version string
+    #[must_use]
     pub fn version_string(&self) -> String {
         format!("{}.{}", self.major, self.minor)
     }
@@ -291,6 +294,7 @@ impl Contract {
     }
 
     /// Add recovery configuration
+    #[must_use]
     pub fn with_recovery(mut self, recovery: RecoveryConfig) -> Self {
         self.recovery = Some(recovery);
         self
@@ -304,7 +308,7 @@ impl Contract {
     /// - Action name must not be empty
     /// - At least one postcondition is required
     /// - Postconditions should not have duplicate paths that could indicate copy-paste errors
-    /// - Recovery config: max_attempts must be > 0
+    /// - Recovery config: `max_attempts` must be > 0
     /// - Recovery config: backoff max must be >= initial
     ///
     /// # Semantic Notes

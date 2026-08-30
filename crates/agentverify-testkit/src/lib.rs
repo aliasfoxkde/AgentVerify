@@ -1,8 +1,9 @@
-//! AgentVerify testkit - testing utilities for AgentVerify crates
+//! `AgentVerify` testkit - testing utilities for `AgentVerify` crates
 //!
 //! This crate provides mock implementations, test helpers, and testing utilities
-//! for writing tests against AgentVerify components.
+//! for writing tests against `AgentVerify` components.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 use agentverify_core::VerificationResult;
 use agentverify_runtime::{ClaimResult, IdempotencyStore};
 use std::collections::HashMap;
@@ -10,7 +11,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-/// Result type for claim_or_check operations
+/// Result type for `claim_or_check` operations
 type ClaimCheckResult = (ClaimResult, Option<VerificationResult>);
 
 /// A mock implementation of [`IdempotencyStore`] for testing.
@@ -40,7 +41,7 @@ type ClaimCheckResult = (ClaimResult, Option<VerificationResult>);
 pub struct MockIdempotencyStore {
     /// Results to return for specific keys
     results: Arc<Mutex<HashMap<String, ClaimCheckResult>>>,
-    /// Call history for claim_or_check
+    /// Call history for `claim_or_check`
     claim_or_check_calls: Arc<Mutex<Vec<String>>>,
     /// Call history for complete
     complete_calls: Arc<Mutex<Vec<(String, VerificationResult)>>>,
@@ -48,12 +49,13 @@ pub struct MockIdempotencyStore {
     release_calls: Arc<Mutex<Vec<String>>>,
     /// Default result when no specific key is configured
     default_result: Arc<Mutex<Option<ClaimCheckResult>>>,
-    /// Whether to return AlreadyClaimed on second claim of same key
+    /// Whether to return `AlreadyClaimed` on second claim of same key
     return_already_claimed: Arc<Mutex<bool>>,
 }
 
 impl MockIdempotencyStore {
     /// Create a new empty mock store
+    #[must_use]
     pub fn new() -> Self {
         Self {
             results: Arc::new(Mutex::new(HashMap::new())),
@@ -93,31 +95,37 @@ impl MockIdempotencyStore {
     }
 
     /// Returns the number of times `claim_or_check` was called
+    #[must_use]
     pub fn claim_or_check_call_count(&self) -> usize {
         self.claim_or_check_calls.lock().unwrap().len()
     }
 
     /// Returns the list of keys passed to `claim_or_check`
+    #[must_use]
     pub fn claim_or_check_calls(&self) -> Vec<String> {
         self.claim_or_check_calls.lock().unwrap().clone()
     }
 
     /// Returns the number of times `complete` was called
+    #[must_use]
     pub fn complete_call_count(&self) -> usize {
         self.complete_calls.lock().unwrap().len()
     }
 
     /// Returns the list of `(key, result)` pairs passed to `complete`
+    #[must_use]
     pub fn complete_calls(&self) -> Vec<(String, VerificationResult)> {
         self.complete_calls.lock().unwrap().clone()
     }
 
     /// Returns the number of times `release` was called
+    #[must_use]
     pub fn release_call_count(&self) -> usize {
         self.release_calls.lock().unwrap().len()
     }
 
     /// Returns the list of keys passed to `release`
+    #[must_use]
     pub fn release_calls(&self) -> Vec<String> {
         self.release_calls.lock().unwrap().clone()
     }
@@ -168,7 +176,7 @@ impl IdempotencyStore for MockIdempotencyStore {
                     // check if it's a second call
                     if return_already && key.contains("_claimed") {
                         // Simulate: first call returns Claimed, second returns AlreadyClaimed
-                        let already_result = results_guard.get(&format!("{}_already", key));
+                        let already_result = results_guard.get(&format!("{key}_already"));
                         if let Some(r) = already_result {
                             return r.clone();
                         }

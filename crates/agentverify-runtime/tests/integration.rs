@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Integration tests for agentverify-runtime
 //!
 //! These tests exercise the full Executor flow with mock implementations.
