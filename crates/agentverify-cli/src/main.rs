@@ -189,28 +189,44 @@ async fn serve(port: u16) -> Result<ExitCode> {
     // Spawn signal handler task
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
     tokio::spawn(async move {
-        // Setup SIGTERM signal stream
-        let mut sigterm =
-            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                Ok(stream) => stream,
-                Err(error) => {
-                    tracing::warn!("Failed to create SIGTERM signal handler: {error}");
-                    return;
-                }
-            };
+        // SIGTERM streams are unix-only; other platforms shut down via
+        // Ctrl+C (SIGINT) and the internal shutdown channel alone.
+        #[cfg(unix)]
+        {
+            // Setup SIGTERM signal stream
+            let mut sigterm =
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        tracing::warn!("Failed to create SIGTERM signal handler: {error}");
+                        return;
+                    }
+                };
 
-        // Wait for shutdown signal (SIGINT or SIGTERM)
+            // Wait for shutdown signal (SIGINT or SIGTERM)
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    info!("Received SIGINT (Ctrl+C)");
+                }
+                _ = sigterm.recv() => {
+                    info!("Received SIGTERM");
+                }
+                _ = &mut shutdown_rx => {
+                    info!("Received internal shutdown signal");
+                }
+            }
+        }
+
+        #[cfg(not(unix))]
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                info!("Received SIGINT (Ctrl+C)");
-            }
-            _ = sigterm.recv() => {
-                info!("Received SIGTERM");
+                info!("Received Ctrl+C");
             }
             _ = &mut shutdown_rx => {
                 info!("Received internal shutdown signal");
             }
         }
+
         shutdown_flag_clone.store(true, Ordering::SeqCst);
     });
 
