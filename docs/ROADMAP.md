@@ -71,6 +71,18 @@ than silently present:
 7. **`RecoveryOutcome::NotApplicable` has no constructor site** in
    `agentverify-recovery`. 0.2: either produce it from strategy dispatch or
    remove the variant.
+8. **Git history carries ~400 MB of accidental build artifacts** — commit
+   `7bc8232` (a protective snapshot taken during a concurrent-session
+   incident) tracked `.target-msrv/`, `.target-wasm/`, and session logs;
+   they are removed from the current tree and ignored, but remain in
+   history, so clones are larger than they should be. 0.2: rewrite with
+   `git filter-repo` in a coordinated window (requires a force push and a
+   fresh clone for all contributors).
+9. **Dependency upgrade wave is open** — dependabot has 9 major-bump PRs
+   (axum 0.8, thiserror 2, redis 1.6, rand 0.10, sha2 0.11, jsonpath-rust
+   1.0, criterion 0.8, tower-http 0.6, base64 0.23) that need code changes
+   and were deliberately not merged into the 0.1.0 launch. 0.1.1/0.2: land
+   them in small batches with full test runs.
 
 ## Milestone 0.2 — dependency and API modernization
 
