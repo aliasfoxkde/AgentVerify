@@ -14,7 +14,7 @@ agentverify-core = { path = "../agentverify-core" }
 agentverify-runtime = { path = "../agentverify-runtime" }
 
 # Database
-deadpool-postgres = "0.12"
+deadpool-postgres = "0.14"
 tokio-postgres = "0.7"
 postgres-types = { version = "0.2", features = ["derive"] }
 
