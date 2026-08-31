@@ -172,12 +172,14 @@ async fn transport_reports_a_dead_peer_on_send() {
 #[tokio::test]
 async fn client_reports_a_connection_closed_mid_request() {
     // The `blank` fixture breaks the framing with an empty line before
-    // answering, so the request cannot complete.
+    // answering, so the request cannot complete. The handshake is the request
+    // that hits it: feature calls would be refused locally before reaching
+    // the transport at all.
     let client = McpClient::connect(client_config("blank", 15))
         .await
         .unwrap();
 
-    let err = error_of(client.list_tools().await).expect("request should fail");
+    let err = error_of(client.initialize().await).expect("request should fail");
     assert!(
         matches!(err, McpClientError::Transport(TransportError::NotConnected)),
         "unexpected error: {err:?}"
@@ -322,6 +324,7 @@ async fn client_times_out_against_a_silent_server() {
 #[tokio::test]
 async fn client_stops_requesting_after_shutdown() {
     let client = McpClient::connect(client_config("ok", 15)).await.unwrap();
+    client.initialize().await.unwrap();
     client.shutdown();
 
     assert!(!client.is_connected());

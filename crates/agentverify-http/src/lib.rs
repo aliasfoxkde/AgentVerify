@@ -21,7 +21,8 @@ mod wasm_storage;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use client::{
-    ControlCenterClient, ControlCenterClientConfig, ControlCenterClientError, SubmissionResponse,
+    ControlCenterClient, ControlCenterClientBuilder, ControlCenterClientConfig,
+    ControlCenterClientError, SubmissionResponse,
 };
 
 #[cfg(not(target_arch = "wasm32"))]

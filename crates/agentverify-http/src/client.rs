@@ -281,37 +281,57 @@ pub struct ControlCenterClientBuilder {
 }
 
 impl ControlCenterClientBuilder {
+    /// Create a builder with the default configuration (1 MiB receipt cap,
+    /// no bearer token, no field redaction).
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: ControlCenterClientConfig::default(),
         }
     }
 
+    /// Set the Control Center base URL submissions are posted to.
+    #[must_use]
     pub fn base_url(mut self, url: impl Into<String>) -> Self {
         self.config.base_url = url.into();
         self
     }
 
+    /// Set the bearer token sent for authentication.
+    #[must_use]
     pub fn bearer_token(mut self, token: impl Into<String>) -> Self {
         self.config.bearer_token = Some(token.into());
         self
     }
 
+    /// Set the request timeout in milliseconds.
+    #[must_use]
     pub fn timeout_ms(mut self, ms: u64) -> Self {
         self.config.timeout_ms = ms;
         self
     }
 
+    /// Set the maximum accepted receipt payload size in bytes; larger
+    /// receipts are refused locally with `accepted: false` and never sent.
+    #[must_use]
     pub fn max_receipt_size(mut self, size: usize) -> Self {
         self.config.max_receipt_size = size;
         self
     }
 
+    /// Redact a top-level receipt field from every submission.
+    #[must_use]
     pub fn redact_field(mut self, field: impl Into<String>) -> Self {
         self.config.redact_fields.push(field.into());
         self
     }
 
+    /// Build the client from the accumulated configuration
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlCenterClientError`] when the underlying HTTP client
+    /// cannot be constructed.
     pub fn build(self) -> Result<ControlCenterClient, ControlCenterClientError> {
         ControlCenterClient::new(self.config)
     }

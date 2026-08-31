@@ -41,15 +41,6 @@ pub enum McpClientError {
     #[error("Not initialized")]
     NotInitialized,
 
-    /// The server reported an error code and message.
-    #[error("Server returned error: {code} {message}")]
-    ServerError {
-        /// The JSON-RPC error code returned by the server.
-        code: i32,
-        /// The human-readable error message returned by the server.
-        message: String,
-    },
-
     /// The response payload did not match the expected shape.
     #[error("Invalid response: expected {expected}, got {got}")]
     InvalidResponse {
@@ -236,6 +227,43 @@ impl McpClient {
         Ok(response)
     }
 
+    /// The capabilities recorded by a completed handshake
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpClientError::NotInitialized`] when
+    /// [`McpClient::initialize`] has not completed successfully, so feature
+    /// methods refuse to put traffic on the wire for a session the server
+    /// never agreed to.
+    async fn require_initialized(&self) -> Result<ServerCapabilities, McpClientError> {
+        self.server_capabilities
+            .read()
+            .await
+            .clone()
+            .ok_or(McpClientError::NotInitialized)
+    }
+
+    /// Reject a feature the initialized server did not advertise
+    ///
+    /// # Errors
+    ///
+    /// Returns [`McpClientError::CapabilityNotSupported`] unless
+    /// `advertised` holds, so callers get a capability error instead of a
+    /// `METHOD_NOT_FOUND` round trip.
+    fn require_capability(feature: &str, advertised: bool) -> Result<(), McpClientError> {
+        if advertised {
+            Ok(())
+        } else {
+            Err(McpClientError::CapabilityNotSupported(feature.to_string()))
+        }
+    }
+
+    /// Whether the server advertises a capability with an optional `list`
+    /// switch (`resources`, `prompts`): present, and not explicitly off.
+    fn lists_supported<T>(capability: Option<&T>, list: impl Fn(&T) -> Option<bool>) -> bool {
+        capability.is_some_and(|c| list(c) != Some(false))
+    }
+
     /// Send a JSON-RPC message
     async fn send_message(&self, msg: JsonRpcMessage) -> Result<(), McpClientError> {
         match &self.transport {
@@ -417,9 +445,14 @@ impl McpClient {
     ///
     /// # Errors
     ///
-    /// Returns [`McpClientError`] if the request fails or the response cannot
-    /// be decoded as a list of [`Tool`]s.
+    /// Returns [`McpClientError::NotInitialized`] if the handshake has not
+    /// completed and [`McpClientError::CapabilityNotSupported`] if the server
+    /// does not advertise tools; otherwise [`McpClientError`] if the request
+    /// fails or the response cannot be decoded as a list of [`Tool`]s.
     pub async fn list_tools(&self) -> Result<Vec<Tool>, McpClientError> {
+        let capabilities = self.require_initialized().await?;
+        Self::require_capability("tools", capabilities.tools.is_some())?;
+
         let result = self.request("tools/list", None).await?;
 
         let response: ToolsListResponse =
@@ -435,14 +468,19 @@ impl McpClient {
     ///
     /// # Errors
     ///
-    /// Returns [`McpClientError`] if the request fails, the arguments cannot
-    /// be serialized, or the response cannot be decoded as a
-    /// [`CallToolResult`].
+    /// Returns [`McpClientError::NotInitialized`] if the handshake has not
+    /// completed and [`McpClientError::CapabilityNotSupported`] if the server
+    /// does not advertise tools; otherwise [`McpClientError`] if the request
+    /// fails, the arguments cannot be serialized, or the response cannot be
+    /// decoded as a [`CallToolResult`].
     pub async fn call_tool(
         &self,
         name: &str,
         arguments: serde_json::Value,
     ) -> Result<CallToolResult, McpClientError> {
+        let capabilities = self.require_initialized().await?;
+        Self::require_capability("tools", capabilities.tools.is_some())?;
+
         let params = CallToolParams {
             name: name.to_string(),
             arguments,
@@ -469,9 +507,18 @@ impl McpClient {
     ///
     /// # Errors
     ///
-    /// Returns [`McpClientError`] if the request fails or the response cannot
-    /// be decoded as a list of [`Resource`]s.
+    /// Returns [`McpClientError::NotInitialized`] if the handshake has not
+    /// completed and [`McpClientError::CapabilityNotSupported`] if the server
+    /// does not advertise resource listing; otherwise [`McpClientError`] if
+    /// the request fails or the response cannot be decoded as a list of
+    /// [`Resource`]s.
     pub async fn list_resources(&self) -> Result<Vec<Resource>, McpClientError> {
+        let capabilities = self.require_initialized().await?;
+        Self::require_capability(
+            "resources",
+            Self::lists_supported(capabilities.resources.as_ref(), |r| r.list),
+        )?;
+
         let result = self.request("resources/list", None).await?;
 
         let response: ResourcesListResponse =
@@ -487,9 +534,18 @@ impl McpClient {
     ///
     /// # Errors
     ///
-    /// Returns [`McpClientError`] if the request fails or the response cannot
-    /// be decoded as a list of [`Prompt`]s.
+    /// Returns [`McpClientError::NotInitialized`] if the handshake has not
+    /// completed and [`McpClientError::CapabilityNotSupported`] if the server
+    /// does not advertise prompt listing; otherwise [`McpClientError`] if the
+    /// request fails or the response cannot be decoded as a list of
+    /// [`Prompt`]s.
     pub async fn list_prompts(&self) -> Result<Vec<Prompt>, McpClientError> {
+        let capabilities = self.require_initialized().await?;
+        Self::require_capability(
+            "prompts",
+            Self::lists_supported(capabilities.prompts.as_ref(), |p| p.list),
+        )?;
+
         let result = self.request("prompts/list", None).await?;
 
         let response: PromptsListResponse =
@@ -505,13 +561,22 @@ impl McpClient {
     ///
     /// # Errors
     ///
-    /// Returns [`McpClientError`] if the request fails or the response cannot
-    /// be decoded as a `GetPromptResult`.
+    /// Returns [`McpClientError::NotInitialized`] if the handshake has not
+    /// completed and [`McpClientError::CapabilityNotSupported`] if the server
+    /// does not advertise prompt listing; otherwise [`McpClientError`] if the
+    /// request fails or the response cannot be decoded as a
+    /// `GetPromptResult`.
     pub async fn get_prompt(
         &self,
         name: &str,
         arguments: Option<HashMap<String, String>>,
     ) -> Result<GetPromptResult, McpClientError> {
+        let capabilities = self.require_initialized().await?;
+        Self::require_capability(
+            "prompts",
+            Self::lists_supported(capabilities.prompts.as_ref(), |p| p.list),
+        )?;
+
         let params = GetPromptParams {
             name: name.to_string(),
             arguments,
@@ -671,15 +736,6 @@ mod tests {
         assert_eq!(
             json_rpc.to_string(),
             "JSON-RPC error: JSON-RPC error -32601: no such method"
-        );
-
-        let server = McpClientError::ServerError {
-            code: -32022,
-            message: "unsupported version".to_string(),
-        };
-        assert_eq!(
-            server.to_string(),
-            "Server returned error: -32022 unsupported version"
         );
 
         let invalid = McpClientError::InvalidResponse {

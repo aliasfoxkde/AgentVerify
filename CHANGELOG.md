@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Dependency modernization wave landed** (nine major bumps, each gated by
+  the full workspace suite): `axum` 0.8, `thiserror` 2, `redis` 1.6 with
+  `deadpool-redis` 0.23, `rand` 0.10, `sha2` 0.11, `base64` 0.23,
+  `tower-http` 0.6, `criterion` 0.8, and removal of the unused
+  `jsonpath-rust` dependency. HTTP egress keeps `rustls` only, so no target
+  links a system OpenSSL.
+- `ControlCenterClientBuilder` is now re-exported from `agentverify-http`
+  (documented, `#[must_use]` setters), making the 1 MiB receipt cap and
+  redaction configurable by dependents.
+- MCP feature calls now enforce the initialize handshake: they fail with
+  `NotInitialized` before it completes and with `CapabilityNotSupported`
+  when the server does not advertise the requested feature, instead of
+  spending a round trip on `METHOD_NOT_FOUND`.
+- `OtlpExporter` docs now state that construction and export require a
+  tokio runtime (the tonic gRPC channel worker).
+
+### Fixed
+
+- `rand` 0.10 key generation in `agentverify-receipt`: seed 32 bytes from
+  the thread CSPRNG and build the Ed25519 key explicitly
+  (`ed25519-dalek` 2.x is coupled to `rand_core` 0.6).
+- Windows builds: the CLI's SIGTERM handler is `#[cfg(unix)]`-gated, so the
+  workspace compiles on MSVC.
+- Release workflow: Apple builds run on macOS runners (aarch64 on
+  `macos-latest`, x86_64 on `macos-15-intel`), and the crates.io publish job
+  no longer evaluates `env` in a job-level `if` (which failed the workflow
+  at creation) nor runs its steps without the token gate.
+
+### Removed
+
+- `McpClientError::ServerError` — a strictly poorer duplicate of
+  `McpClientError::JsonRpc`, which carries the JSON-RPC error `data`.
+- `RecoveryOutcome::NotApplicable` — it had no constructor site. "Recovery
+  not applicable" is reported as
+  `RecoveryOutcome::Failure(RecoveryError::NotApplicable { result })`,
+  which preserves the terminal verification result; pinned by test.
+
 ## [0.1.0] - 2026-08-30
 
 First open-source release of AgentVerify: outcome verification for

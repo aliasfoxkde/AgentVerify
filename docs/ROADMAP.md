@@ -58,44 +58,55 @@ than silently present:
    executor's indeterminate-verdict handling is defensive. 0.2: plumb real
    consistency-mode results (timestamp/sequencing checks) into the verdict so
    `UNKNOWN` verdicts become reachable end-to-end.
-3. **`OtlpExporter::new` requires a tokio runtime** (tonic channel worker);
-   the doc example implies otherwise. 0.2: document or make runtime-agnostic.
-4. **`OtlpExporter::shutdown` returns `Ok` when the collector is
+3. **`OtlpExporter::shutdown` returns `Ok` when the collector is
    unreachable** — span loss is only logged by the SDK. Pinned by test.
-5. **`ControlCenterClientBuilder` is not re-exported** from
-   `agentverify-http` and `max_receipt_size` has no public setter, so the
-   1 MiB receipt cap is not configurable by dependents. 0.2: API surface fix.
-6. **MCP client error variants `NotInitialized`, `ServerError`,
-   `CapabilityNotSupported` are never constructed** (no initialize guard
-   before tool calls). 0.2: enforce the initialize handshake.
-7. **`RecoveryOutcome::NotApplicable` has no constructor site** in
-   `agentverify-recovery`. 0.2: either produce it from strategy dispatch or
-   remove the variant.
-8. **Git history carries ~400 MB of accidental build artifacts** — commit
-   `7bc8232` (a protective snapshot taken during a concurrent-session
-   incident) tracked `.target-msrv/`, `.target-wasm/`, and session logs;
-   they are removed from the current tree and ignored, but remain in
-   history, so clones are larger than they should be. 0.2: rewrite with
-   `git filter-repo` in a coordinated window (requires a force push and a
-   fresh clone for all contributors).
-9. **Dependency upgrade wave is open** — dependabot has 9 major-bump PRs
-   (axum 0.8, thiserror 2, redis 1.6, rand 0.10, sha2 0.11, jsonpath-rust
-   1.0, criterion 0.8, tower-http 0.6, base64 0.23) that need code changes
-   and were deliberately not merged into the 0.1.0 launch. 0.1.1/0.2: land
-   them in small batches with full test runs.
+4. **Git history rewrite needs a coordinated force push** — the ~400 MB of
+   accidental build artifacts from commit `7bc8232` (a protective snapshot
+   taken during a concurrent-session incident) have been purged locally with
+   `git filter-repo` (history 363 MB → 21 MiB, tree verified byte-identical,
+   pre-rewrite backup at `/nas/Temp/repos/av-pre-rewrite-backup.bundle`);
+   pushing the rewritten history requires a lease-guarded force push, so it
+   waits on a coordinated window (fresh clone for all contributors).
+
+### Resolved during 0.1.x hardening
+
+Limitations from the original audit that have since been fixed:
+
+- **`OtlpExporter::new` runtime requirement undocumented** — the crate and
+  constructor docs now state that construction and export require a tokio
+  runtime (the tonic channel worker), and the example propagates the error.
+- **`ControlCenterClientBuilder` was unreachable** — it is now re-exported
+  from `agentverify-http` (documented, `#[must_use]` on every setter); the
+  `max_receipt_size` setter was already present, so the 1 MiB receipt cap is
+  configurable by dependents.
+- **MCP client enforced no initialize handshake** — feature calls
+  (`tools`, `resources`, `prompts`) now fail with `NotInitialized` before the
+  handshake and with `CapabilityNotSupported` when the server does not
+  advertise the feature. The duplicate `ServerError` variant (strictly
+  poorer than the existing `JsonRpc` variant, which carries the error `data`)
+  was removed. Pinned by channel and stdio-subprocess tests.
+- **`RecoveryOutcome::NotApplicable` had no constructor site** — removed.
+  "Recovery not applicable" is reported as
+  `RecoveryOutcome::Failure(RecoveryError::NotApplicable { result })`, which
+  preserves the terminal verification result instead of discarding it; a
+  test pins that `execute_and_return` surfaces the real result rather than
+  `Unknown`.
+- **Dependency upgrade wave** — all nine major bumps (axum 0.8, thiserror 2,
+  redis 1.6 + deadpool-redis 0.23, rand 0.10, sha2 0.11, criterion 0.8,
+  tower-http 0.6, base64 0.23, jsonpath-rust removed as unused) landed with
+  full workspace test, clippy, MSRV, and WASM-subset verification.
 
 ## Milestone 0.2 — dependency and API modernization
 
-A deliberate modernization pass, each step gated by the full test suite:
+A deliberate modernization pass, each step gated by the full test suite.
+The nine major bumps from the dependabot wave (axum 0.8, thiserror 2,
+redis 1.6, tower-http 0.6, base64 0.23, sha2 0.11, rand 0.10, criterion 0.8,
+jsonpath-rust removal) already landed during 0.1.x hardening; what remains:
 
 | Dependency | From → To | Why |
 |------------|-----------|-----|
-| `axum` | 0.7 → 0.8 | Path-parameter syntax change; current LTS line |
 | `sqlx` | 0.7 → 0.9 | Runtime/driver updates, Postgres observer |
-| `thiserror` | 1.x → 2.x | Current major across the ecosystem |
-| `redis` | 0.24 → 1.x | Stable 1.0 line for the Redis observer/idempotency store |
 | `serde_yaml` | 0.9 → `serde_norway` | `serde_yaml` is archived/unmaintained; contract YAML parsing must move off it |
-| `tower-http` | 0.5 → current | Match axum upgrade |
 
 Also in 0.2:
 

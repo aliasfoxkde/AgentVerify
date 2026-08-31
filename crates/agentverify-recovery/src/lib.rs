@@ -177,14 +177,17 @@ impl Default for Backoff {
 // ============================================================================
 
 /// Outcome of a recovery strategy execution
+///
+/// "Recovery not applicable" is reported as [`RecoveryOutcome::Failure`]
+/// carrying [`RecoveryError::NotApplicable`], which names the verification
+/// result recovery could not handle; a payload-free outcome variant would
+/// have thrown that result away.
 #[derive(Debug, Clone)]
 pub enum RecoveryOutcome {
     /// Recovery succeeded with this result
     Success(VerificationResult),
     /// Recovery failed with error
     Failure(RecoveryError),
-    /// Recovery is not applicable
-    NotApplicable,
 }
 
 /// Strategy enum that wraps all concrete strategy types
@@ -874,9 +877,9 @@ impl RecoveryExecutor {
     ///
     /// # Errors
     ///
-    /// Forwards the failure from [`Self::execute`], mapping a
-    /// `NotApplicable` outcome to [`RecoveryError::NotApplicable`] with
-    /// [`VerificationResult::Unknown`].
+    /// Forwards the failure from [`Self::execute`], including
+    /// [`RecoveryError::NotApplicable`] when the operation reached a terminal
+    /// result recovery cannot act on.
     pub async fn execute_and_return<F, Fut>(
         &self,
         op: F,
@@ -888,9 +891,6 @@ impl RecoveryExecutor {
         match self.execute(op).await {
             RecoveryOutcome::Success(result) => Ok(result),
             RecoveryOutcome::Failure(e) => Err(e),
-            RecoveryOutcome::NotApplicable => Err(RecoveryError::NotApplicable {
-                result: VerificationResult::Unknown,
-            }),
         }
     }
 }
@@ -1879,6 +1879,22 @@ mod tests {
             .execute_and_return(|| completes_after(50, VerificationResult::Unknown))
             .await;
         assert!(matches!(result, Err(RecoveryError::Timeout { .. })));
+
+        // A terminal verification failure surfaces as "recovery not
+        // applicable" carrying the result that caused it — not as an
+        // attempt-limit failure and not with the result replaced by `Unknown`.
+        let terminal = RecoveryExecutor::new(RecoveryStrategyEnum::Retry(
+            RetryStrategy::with_default_backoff(1),
+        ));
+        let result = terminal
+            .execute_and_return(|| async_ok(VerificationResult::Failed))
+            .await;
+        assert!(matches!(
+            result,
+            Err(RecoveryError::NotApplicable {
+                result: VerificationResult::Failed,
+            })
+        ));
     }
 
     // ------------------------------------------------------------------
@@ -1980,7 +1996,9 @@ mod tests {
         let outcomes = vec![
             RecoveryOutcome::Success(VerificationResult::Verified),
             RecoveryOutcome::Failure(RecoveryError::CircuitBreakerOpen),
-            RecoveryOutcome::NotApplicable,
+            RecoveryOutcome::Failure(RecoveryError::NotApplicable {
+                result: VerificationResult::Unknown,
+            }),
         ];
         let debugged = std::format!("{outcomes:?}");
         assert!(debugged.contains("Success"));

@@ -37,6 +37,11 @@ enum Behaviour {
     /// Answer with hand-written JSON using the MCP specification's
     /// lowerCamelCase keys, as an external peer emits it.
     RawJson,
+    /// Complete the handshake advertising only tools, so calls against the
+    /// other features can be rejected locally.
+    Toolless,
+    /// Corrupt only the `initialize` result payload.
+    BadInit,
 }
 
 /// The capabilities the test client advertises to the peer.
@@ -206,6 +211,22 @@ fn peer_result_for(
     if let Behaviour::RawJson = behaviour {
         return raw_result_for(method, params);
     }
+    if let Behaviour::Toolless = behaviour {
+        // The handshake advertises tools only; every other feature must be
+        // refused by the client before reaching the wire.
+        return match method {
+            "initialize" => {
+                let mut init = initialize_result();
+                init.capabilities = ServerCapabilities {
+                    resources: None,
+                    tools: Some(ToolsCapability {}),
+                    prompts: None,
+                };
+                serde_json::to_value(init).map_err(|e| e.to_string())
+            }
+            _ => result_for(method, params),
+        };
+    }
     result_for(method, params)
 }
 
@@ -241,13 +262,18 @@ async fn answer(peer: &mut ChannelTransport, request: &JsonRpcRequest, behaviour
         },
     };
 
-    // A result payload the client can never decode.
+    // A result payload the client can never decode. Under `WrongShape` the
+    // handshake itself must still succeed, or the client would refuse later
+    // calls as `NotInitialized` before their payloads could be decoded;
+    // `BadInit` corrupts the handshake alone.
+    let corrupt = |id: &Value| JsonRpcResponse::Success {
+        jsonrpc: "2.0".to_string(),
+        id: id.clone(),
+        result: json!({"unexpected": true}),
+    };
     let payload = match behaviour {
-        Behaviour::WrongShape => JsonRpcResponse::Success {
-            jsonrpc: "2.0".to_string(),
-            id: request.id.clone(),
-            result: json!({"unexpected": true}),
-        },
+        Behaviour::WrongShape if request.method != "initialize" => corrupt(&request.id),
+        Behaviour::BadInit => corrupt(&request.id),
         _ => payload,
     };
 
@@ -508,13 +534,24 @@ async fn client_surfaces_json_rpc_errors_from_the_peer() {
 }
 
 #[tokio::test]
-async fn client_reports_result_payloads_it_cannot_decode() {
-    let (client, handle, _) = connect_with(Behaviour::WrongShape, 15);
+async fn client_reports_an_initialize_payload_it_cannot_decode() {
+    let (client, handle, _) = connect_with(Behaviour::BadInit, 15);
 
     assert!(matches!(
         client.initialize().await.unwrap_err(),
         McpClientError::InvalidResponse { ref expected, .. } if expected == "InitializeResult"
     ));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn client_reports_result_payloads_it_cannot_decode() {
+    // The handshake succeeds here (`WrongShape` only corrupts feature
+    // payloads), so each assertion below reaches its own response decode.
+    let (client, handle, _) = connect_with(Behaviour::WrongShape, 15);
+    client.initialize().await.unwrap();
+
     assert!(matches!(
         client.list_tools().await.unwrap_err(),
         McpClientError::InvalidResponse { ref expected, .. } if expected == "ToolsListResponse"
@@ -544,6 +581,7 @@ async fn client_reports_result_payloads_it_cannot_decode() {
 #[tokio::test]
 async fn client_ignores_responses_for_requests_it_never_sent() {
     let (client, handle, _) = connect_with(Behaviour::ForeignId, 15);
+    client.initialize().await.unwrap();
 
     let tools = client.list_tools().await.unwrap();
     // The stale replies are dropped and the real answer still arrives.
@@ -601,13 +639,15 @@ async fn client_stops_requesting_after_shutdown() {
 #[tokio::test]
 async fn with_channel_transport_cannot_be_answered() {
     // The peer half of this constructor's channel is discarded, so a request
-    // fails on the transport instead of hanging until the timeout.
+    // fails on the transport instead of hanging until the timeout. The
+    // handshake itself is sent (it needs no prior session), so the transport
+    // failure — not the initialize guard — is what surfaces.
     let client = McpClient::with_channel_transport(client_config(1))
         .await
         .unwrap();
     assert!(client.is_connected());
 
-    let err = client.list_tools().await.unwrap_err();
+    let err = client.initialize().await.unwrap_err();
     assert!(
         matches!(
             &err,
@@ -616,4 +656,77 @@ async fn with_channel_transport_cannot_be_answered() {
         ),
         "unexpected error: {err:?}"
     );
+}
+
+#[tokio::test]
+async fn client_requires_initialize_before_feature_calls() {
+    let (client, handle, _) = connect_with(Behaviour::Standard, 15);
+
+    // Every feature call is refused locally; nothing reaches the peer.
+    assert!(matches!(
+        client.list_tools().await.unwrap_err(),
+        McpClientError::NotInitialized
+    ));
+    assert!(matches!(
+        client
+            .call_tool("close_ticket", json!({"ticket_id": "T-9"}))
+            .await
+            .unwrap_err(),
+        McpClientError::NotInitialized
+    ));
+    assert!(matches!(
+        client.list_resources().await.unwrap_err(),
+        McpClientError::NotInitialized
+    ));
+    assert!(matches!(
+        client.list_prompts().await.unwrap_err(),
+        McpClientError::NotInitialized
+    ));
+    assert!(matches!(
+        client
+            .get_prompt("explain_failure", None)
+            .await
+            .unwrap_err(),
+        McpClientError::NotInitialized
+    ));
+    assert!(client.get_server_capabilities().await.is_none());
+
+    // Once the handshake completes, the same calls go through.
+    client.initialize().await.unwrap();
+    assert_eq!(client.list_tools().await.unwrap().len(), 1);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn client_rejects_features_the_server_does_not_advertise() {
+    let (client, handle, _) = connect_with(Behaviour::Toolless, 15);
+    client.initialize().await.unwrap();
+
+    // Tools are advertised and work.
+    assert_eq!(client.list_tools().await.unwrap().len(), 1);
+
+    // Resources and prompts were not advertised, so the client refuses them
+    // instead of spending a round trip on `METHOD_NOT_FOUND`.
+    let resources = client.list_resources().await.unwrap_err();
+    assert!(
+        matches!(&resources, McpClientError::CapabilityNotSupported(feature)
+            if feature == "resources"),
+        "unexpected error: {resources:?}"
+    );
+    let prompts = client.list_prompts().await.unwrap_err();
+    assert!(
+        matches!(&prompts, McpClientError::CapabilityNotSupported(feature)
+            if feature == "prompts"),
+        "unexpected error: {prompts:?}"
+    );
+    assert!(matches!(
+        client
+            .get_prompt("explain_failure", None)
+            .await
+            .unwrap_err(),
+        McpClientError::CapabilityNotSupported(_)
+    ));
+
+    handle.abort();
 }

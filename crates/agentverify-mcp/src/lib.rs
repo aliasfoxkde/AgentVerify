@@ -10,10 +10,16 @@
 //!
 //! # Example
 //!
+//! The initialize handshake must complete before feature calls; the client
+//! rejects them with [`McpClientError::NotInitialized`] otherwise, and with
+//! [`McpClientError::CapabilityNotSupported`] when the server does not
+//! advertise the requested feature.
+//!
 //! ```ignore
 //! use agentverify_mcp::McpClient;
 //!
 //! let client = McpClient::connect("path/to/mcp-server").await?;
+//! client.initialize().await?;
 //! let tools = client.list_tools().await?;
 //! let result = client.call_tool("my_tool", serde_json::json!({"arg": "value"})).await?;
 //! ```

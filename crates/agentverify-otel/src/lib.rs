@@ -16,10 +16,12 @@
 //! ```rust,ignore
 //! use agentverify_otel::{OtlpExporter, OtlpExporterConfig};
 //!
-//! // Create exporter with OTLP endpoint
+//! // Create exporter with OTLP endpoint. `OtlpExporter::new` (and any
+//! // subsequent export) must run inside a tokio runtime: the tonic gRPC
+//! // channel spawns a background worker.
 //! let config = OtlpExporterConfig::default()
 //!     .with_endpoint("http://localhost:4317");
-//! let exporter = OtlpExporter::new(config);
+//! let exporter = OtlpExporter::new(config)?;
 //! ```
 //!
 //! # Span Hierarchy
@@ -113,6 +115,9 @@ impl OtlpExporterConfig {
 ///
 /// Exports verification lifecycle as OpenTelemetry spans using OTLP.
 /// Uses gRPC transport by default.
+///
+/// Construction and export require a tokio runtime: the tonic gRPC channel
+/// behind [`OtlpExporter::new`] spawns a background worker task.
 #[derive(Clone)]
 pub struct OtlpExporter {
     tracer: opentelemetry_sdk::trace::Tracer,
@@ -121,6 +126,9 @@ pub struct OtlpExporter {
 
 impl OtlpExporter {
     /// Create a new OTLP exporter with the given configuration
+    ///
+    /// Must be called from within a tokio runtime: the tonic gRPC channel
+    /// spawned for the collector connection requires one.
     ///
     /// # Errors
     ///
