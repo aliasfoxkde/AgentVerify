@@ -20,7 +20,7 @@ postgres-types = { version = "0.2", features = ["derive"] }
 
 # Redis
 deadpool-redis = { version = "0.14", features = ["serde"] }
-redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+redis = { version = "1.6", features = ["tokio-comp", "connection-manager"] }
 
 # Async runtime
 tokio = { workspace = true }
