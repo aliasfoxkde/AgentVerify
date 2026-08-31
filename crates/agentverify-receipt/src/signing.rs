@@ -5,6 +5,7 @@
 
 use agentverify_core::Receipt;
 use ed25519_dalek::Signer;
+use rand::RngExt;
 use thiserror::Error;
 
 /// Errors that can occur during signing operations
@@ -106,8 +107,15 @@ pub struct Ed25519SigningService {
 
 impl Ed25519SigningService {
     /// Create a new signing service with a randomly generated key
+    #[must_use]
     pub fn new() -> Self {
-        let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
+        // Seed from the thread CSPRNG (OS entropy, ChaCha12) and build the
+        // key explicitly: ed25519-dalek 2.x is coupled to rand_core 0.6, so
+        // the rand 0.10 generators do not satisfy
+        // `SigningKey::generate`'s bound.
+        let mut seed = [0u8; 32];
+        rand::rng().fill(&mut seed);
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
         let verifying_key = signing_key.verifying_key();
         Self {
             signing_key,

@@ -14,7 +14,6 @@ agentverify-core = { path = "../agentverify-core" }
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
-jsonpath-rust.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

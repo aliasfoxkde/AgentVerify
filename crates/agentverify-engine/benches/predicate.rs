@@ -2,7 +2,7 @@
 
 use agentverify_core::Predicate;
 use agentverify_engine::PredicateEngine;
-use criterion::{black_box, criterion_main, Criterion, Throughput};
+use criterion::{criterion_main, Criterion, Throughput};
 
 /// Benchmark `Equals` predicate evaluation against a flat state document.
 pub fn predicate_equals_benchmark(c: &mut Criterion) {
@@ -22,9 +22,9 @@ pub fn predicate_equals_benchmark(c: &mut Criterion) {
     group.bench_function("equals_matching", |b| {
         b.iter(|| {
             engine.evaluate(
-                black_box(&predicate),
-                black_box(&state),
-                black_box(&serde_json::json!({})),
+                std::hint::black_box(&predicate),
+                std::hint::black_box(&state),
+                std::hint::black_box(&serde_json::json!({})),
             )
         });
     });
@@ -48,9 +48,9 @@ pub fn predicate_exists_benchmark(c: &mut Criterion) {
     group.bench_function("exists_found", |b| {
         b.iter(|| {
             engine.evaluate(
-                black_box(&predicate),
-                black_box(&state),
-                black_box(&serde_json::json!({})),
+                std::hint::black_box(&predicate),
+                std::hint::black_box(&state),
+                std::hint::black_box(&serde_json::json!({})),
             )
         });
     });
@@ -72,9 +72,9 @@ pub fn predicate_regex_benchmark(c: &mut Criterion) {
     group.bench_function("regex_matching", |b| {
         b.iter(|| {
             engine.evaluate(
-                black_box(&predicate),
-                black_box(&state),
-                black_box(&serde_json::json!({})),
+                std::hint::black_box(&predicate),
+                std::hint::black_box(&state),
+                std::hint::black_box(&serde_json::json!({})),
             )
         });
     });

@@ -443,7 +443,7 @@ impl IdempotencyStore for RedisIdempotencyStore {
             if let Ok(mut conn) = pool.get().await {
                 if let Err(e) = redis::cmd("DEL")
                     .arg(&redis_key)
-                    .query_async::<_, ()>(&mut conn)
+                    .query_async::<()>(&mut conn)
                     .await
                 {
                     tracing::warn!("Redis DEL failed: {e}");
@@ -1035,7 +1035,7 @@ mod tests {
             redis::cmd("SET")
                 .arg(RedisIdempotencyStore::redis_key(&key))
                 .arg("not-a-valid-entry")
-                .query_async::<_, ()>(&mut conn)
+                .query_async::<()>(&mut conn)
                 .await
                 .expect("SET succeeds");
             drop(conn);
@@ -1063,7 +1063,7 @@ mod tests {
                 .arg("not")
                 .arg("an")
                 .arg("entry")
-                .query_async::<_, ()>(&mut conn)
+                .query_async::<()>(&mut conn)
                 .await
                 .expect("RPUSH succeeds");
             drop(conn);
