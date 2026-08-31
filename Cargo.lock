@@ -28,17 +28,14 @@ name = "agentverify-contract"
 version = "0.1.0"
 dependencies = [
  "agentverify-core",
- "serde",
  "serde_json",
  "serde_yaml",
- "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "agentverify-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "hex",
  "proptest",
@@ -46,9 +43,8 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror",
  "tokio",
- "tracing",
  "uuid",
 ]
 
@@ -60,9 +56,8 @@ dependencies = [
  "criterion",
  "proptest",
  "regex",
- "serde",
  "serde_json",
- "thiserror 2.0.20",
+ "thiserror",
 ]
 
 [[package]]
@@ -76,7 +71,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
+ "thiserror",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -88,11 +83,9 @@ dependencies = [
 name = "agentverify-mcp"
 version = "0.1.0"
 dependencies = [
- "agentverify-core",
- "anyhow",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
+ "thiserror",
  "tokio",
  "tokio-test",
 ]
@@ -103,16 +96,13 @@ version = "0.1.0"
 dependencies = [
  "agentverify-core",
  "agentverify-runtime",
- "anyhow",
  "async-trait",
  "deadpool-postgres",
  "deadpool-redis",
  "mockall",
- "postgres-types",
  "redis",
- "serde",
  "serde_json",
- "thiserror 2.0.20",
+ "thiserror",
  "tokio",
  "tokio-postgres",
  "urlencoding",
@@ -123,12 +113,11 @@ name = "agentverify-otel"
 version = "0.1.0"
 dependencies = [
  "agentverify-core",
- "anyhow",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "serde_json",
- "thiserror 2.0.20",
+ "thiserror",
  "tokio",
  "tokio-test",
  "tracing",
@@ -140,11 +129,10 @@ name = "agentverify-policy"
 version = "0.1.0"
 dependencies = [
  "agentverify-core",
- "chrono",
  "regex",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror",
 ]
 
 [[package]]
@@ -157,7 +145,7 @@ dependencies = [
  "hex",
  "rand 0.10.2",
  "serde_json",
- "thiserror 2.0.20",
+ "thiserror",
 ]
 
 [[package]]
@@ -168,7 +156,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
+ "thiserror",
  "tokio",
  "tokio-test",
  "tracing",
@@ -181,7 +169,6 @@ dependencies = [
  "agentverify-contract",
  "agentverify-core",
  "agentverify-engine",
- "anyhow",
  "async-trait",
  "chrono",
  "deadpool-redis",
@@ -191,7 +178,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror",
  "tokio",
  "tracing",
 ]
@@ -201,10 +188,9 @@ name = "agentverify-storage"
 version = "0.1.0"
 dependencies = [
  "agentverify-core",
- "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror",
  "tokio",
  "uuid",
 ]
@@ -1753,7 +1739,7 @@ dependencies = [
  "futures-sink",
  "js-sys",
  "pin-project-lite",
- "thiserror 2.0.20",
+ "thiserror",
  "tracing",
 ]
 
@@ -1783,7 +1769,7 @@ dependencies = [
  "opentelemetry_sdk",
  "prost",
  "reqwest 0.13.4",
- "thiserror 2.0.20",
+ "thiserror",
  "tokio",
  "tonic",
  "tonic-types",
@@ -1815,7 +1801,7 @@ dependencies = [
  "percent-encoding",
  "portable-atomic",
  "rand 0.9.5",
- "thiserror 2.0.20",
+ "thiserror",
 ]
 
 [[package]]
@@ -1953,18 +1939,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
-name = "postgres-derive"
-version = "0.4.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d9d9089bb0ce62f4b5d52a0be0f4acfb35738b979380670d3dea85fe38d6ddd"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "postgres-protocol"
 version = "0.6.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1990,7 +1964,6 @@ checksum = "851ca9db4932932d69f3ea811b1abe63087a0f740a47692619dd40d4899b68be"
 dependencies = [
  "bytes",
  "fallible-iterator",
- "postgres-derive",
  "postgres-protocol",
 ]
 
@@ -2118,7 +2091,7 @@ dependencies = [
  "rustc-hash",
  "rustls",
  "socket2",
- "thiserror 2.0.20",
+ "thiserror",
  "tokio",
  "tracing",
  "web-time",
@@ -2140,7 +2113,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "slab",
- "thiserror 2.0.20",
+ "thiserror",
  "tinyvec",
  "tracing",
  "web-time",
@@ -2799,31 +2772,11 @@ checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
 
 [[package]]
 name = "thiserror"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
-dependencies = [
- "thiserror-impl 1.0.69",
-]
-
-[[package]]
-name = "thiserror"
 version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
 dependencies = [
- "thiserror-impl 2.0.20",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "1.0.69"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
+ "thiserror-impl",
 ]
 
 [[package]]

@@ -16,7 +16,6 @@ agentverify-runtime = { path = "../agentverify-runtime" }
 # Database
 deadpool-postgres = "0.12"
 tokio-postgres = "0.7"
-postgres-types = { version = "0.2", features = ["derive"] }
 
 # Redis
 deadpool-redis = { version = "0.23", features = ["serde"] }
@@ -26,12 +25,10 @@ redis = { version = "1.6", features = ["tokio-comp"] }
 tokio = { workspace = true }
 
 # Serialization
-serde = { workspace = true }
 serde_json = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 
 # Async trait
 async-trait = "0.1"

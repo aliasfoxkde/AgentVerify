@@ -11,10 +11,8 @@ license.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
-serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
-thiserror.workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

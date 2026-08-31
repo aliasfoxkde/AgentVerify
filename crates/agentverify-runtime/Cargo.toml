@@ -15,7 +15,6 @@ agentverify-contract = { path = "../agentverify-contract" }
 agentverify-engine = { path = "../agentverify-engine" }
 thiserror.workspace = true
 tracing.workspace = true
-anyhow.workspace = true
 async-trait = "0.1"
 serde.workspace = true
 serde_json.workspace = true

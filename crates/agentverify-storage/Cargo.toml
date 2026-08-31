@@ -11,7 +11,6 @@ license.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
-serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

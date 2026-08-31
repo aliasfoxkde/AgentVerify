@@ -71,9 +71,7 @@ tower = "0.4"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # Database
-sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "json"] }
 redis = { version = "1.6", features = ["tokio-comp"] }
-deadpool = "0.12"
 deadpool-redis = "0.23"
 
 # Observability
@@ -82,16 +80,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 opentelemetry = "0.32"
 opentelemetry_sdk = "0.32"
 opentelemetry-otlp = "0.32"
-prometheus = "0.13"
 
 # Validation
 regex = "1.0"
-cel-parser = "0.16"
 url = "2.5"
 
 # Crypto
 ed25519-dalek = { version = "2.0", features = ["rand_core"] }
-signature = "2.0"
 base64 = "0.23"
 rand = "0.10"
 sha2 = "0.11"
@@ -99,13 +94,9 @@ hex = "0.4"
 
 # CLI
 clap = { version = "4.0", features = ["derive", "cargo"] }
- inquire = "0.6"
 
 # Testing
 proptest = "1.0"
-testcontainers = "1.0"
-mockall = "0.12"
-fuzz-utils = "0.1"
 tempfile = "3.10"
 tokio-test = "0.4"
 criterion = "0.8"

@@ -11,11 +11,10 @@ license.workspace = true
 
 [dependencies]
 agentverify-core = { path = "../agentverify-core" }
-thiserror = "1"
-serde = { version = "1", features = ["derive"] }
+thiserror.workspace = true
+serde.workspace = true
 serde_json = "1"
 regex = "1"
-chrono = { version = "0.4", features = ["serde"] }
 
 [package.metadata.docs.rs]
 all-features = true
