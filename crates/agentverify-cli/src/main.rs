@@ -21,11 +21,14 @@ use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::oneshot;
+use std::time::Duration;
 use tower::ServiceBuilder;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use url::Url;
+
+/// How often the graceful-shutdown watcher polls the shutdown flag.
+const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Shared state for the HTTP server
 #[derive(Clone)]
@@ -153,6 +156,11 @@ fn run() -> Result<ExitCode> {
 }
 
 /// Start the HTTP server with graceful shutdown support
+///
+/// Shutdown sources are the `/shutdown` endpoint and SIGINT/SIGTERM; both set
+/// the shared flag, which the graceful-shutdown watcher polls so axum stops
+/// accepting connections and drains in-flight requests before the process
+/// exits.
 async fn serve(port: u16) -> Result<ExitCode> {
     // Initialize tracing subscriber
     tracing_subscriber::fmt()
@@ -163,7 +171,6 @@ async fn serve(port: u16) -> Result<ExitCode> {
         .init();
 
     let shutdown_flag = Arc::new(AtomicBool::new(false));
-    let shutdown_flag_clone = shutdown_flag.clone();
 
     // Build the router
     let state = ServeState {
@@ -187,24 +194,26 @@ async fn serve(port: u16) -> Result<ExitCode> {
 
     info!("AgentVerify server listening on {}", addr);
 
-    // Spawn signal handler task
-    let (shutdown_tx, mut shutdown_rx) = oneshot::channel::<()>();
+    // Signal handler task: routes SIGINT/SIGTERM into the same shared flag
+    // the /shutdown endpoint uses.
+    let signal_flag = shutdown_flag.clone();
     tokio::spawn(async move {
         // SIGTERM streams are unix-only; other platforms shut down via
-        // Ctrl+C (SIGINT) and the internal shutdown channel alone.
+        // Ctrl+C (SIGINT) alone.
         #[cfg(unix)]
         {
-            // Setup SIGTERM signal stream
             let mut sigterm =
                 match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
                     Ok(stream) => stream,
                     Err(error) => {
                         tracing::warn!("Failed to create SIGTERM signal handler: {error}");
+                        let _ = tokio::signal::ctrl_c().await;
+                        info!("Received SIGINT (Ctrl+C)");
+                        signal_flag.store(true, Ordering::SeqCst);
                         return;
                     }
                 };
 
-            // Wait for shutdown signal (SIGINT or SIGTERM)
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
                     info!("Received SIGINT (Ctrl+C)");
@@ -212,54 +221,39 @@ async fn serve(port: u16) -> Result<ExitCode> {
                 _ = sigterm.recv() => {
                     info!("Received SIGTERM");
                 }
-                _ = &mut shutdown_rx => {
-                    info!("Received internal shutdown signal");
-                }
             }
         }
 
         #[cfg(not(unix))]
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                info!("Received Ctrl+C");
-            }
-            _ = &mut shutdown_rx => {
-                info!("Received internal shutdown signal");
-            }
+        {
+            let _ = tokio::signal::ctrl_c().await;
+            info!("Received Ctrl+C");
         }
 
-        shutdown_flag_clone.store(true, Ordering::SeqCst);
+        signal_flag.store(true, Ordering::SeqCst);
     });
 
-    // Start the server
-    let server_handle = tokio::spawn(async move { axum::serve(listener, app).await });
+    // Serve until the flag is set; axum then drains in-flight requests.
+    let graceful_flag = shutdown_flag.clone();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                while !graceful_flag.load(Ordering::SeqCst) {
+                    tokio::time::sleep(SHUTDOWN_POLL_INTERVAL).await;
+                }
+                info!("Initiating graceful shutdown...");
+            })
+            .await
+    });
 
-    // Wait for either the server to stop or shutdown signal
-    tokio::select! {
-        outcome = server_handle => {
-            match outcome {
-                Ok(Ok(())) => info!("Server task completed"),
-                Ok(Err(error)) => return Err(anyhow::anyhow!("Server error: {error}")),
-                Err(error) => return Err(anyhow::anyhow!("Server task failed: {error}")),
-            }
+    match server_handle.await {
+        Ok(Ok(())) => {
+            info!("Graceful shutdown complete");
+            Ok(ExitCode::SUCCESS)
         }
-        () = tokio::time::sleep(std::time::Duration::from_secs(u64::MAX)) => {
-            // This branch should never be taken, but prevents the select from completing
-        }
+        Ok(Err(error)) => Err(anyhow::anyhow!("Server error: {error}")),
+        Err(error) => Err(anyhow::anyhow!("Server task failed: {error}")),
     }
-
-    // If we get here due to signal, wait for graceful shutdown
-    if shutdown_flag.load(Ordering::SeqCst) {
-        info!("Initiating graceful shutdown...");
-        // Give time for in-flight requests to complete
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        info!("Graceful shutdown complete");
-    }
-
-    // Send shutdown signal to signal handler
-    let _ = shutdown_tx.send(());
-
-    Ok(ExitCode::SUCCESS)
 }
 
 fn validate_contract_cmd(file: &str, json: bool) -> Result<ExitCode> {

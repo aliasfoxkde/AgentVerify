@@ -350,6 +350,15 @@ mod tests {
         }
     }
 
+    /// `error_of` renders a sentinel for a successfully built observer rather
+    /// than an empty string, so an assertion that fires on the wrong arm
+    /// identifies itself — and a well-formed URL still builds a pool.
+    #[tokio::test]
+    async fn error_of_renders_a_sentinel_for_a_successfully_built_observer() {
+        let observer = RedisObserver::new(RedisObserverConfig::new("redis://127.0.0.1:6379")).await;
+        assert_eq!(error_of(observer), "<unexpected Ok>");
+    }
+
     fn action_with_args(arguments: Value) -> Action {
         Action::new("redis_action", arguments)
     }

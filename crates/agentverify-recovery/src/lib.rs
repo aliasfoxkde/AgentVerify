@@ -330,16 +330,15 @@ impl RecoveryStrategy for RetryStrategy {
                 }
             }
 
-            // If we encountered a terminal failure (Failed/Partial), return NotApplicable
-            // Otherwise, return MaxAttemptsExceeded (we ran out of retries on non-terminal state)
+            // If we encountered a terminal failure (Failed/Partial), surface
+            // its recorded error; a terminal failure always records
+            // `last_error` alongside the flag, so exhaustion with a failure
+            // but no error cannot occur. Otherwise report attempt
+            // exhaustion on the non-terminal state.
             if has_failure {
-                if let Some(e) = last_error {
-                    RecoveryOutcome::Failure(e)
-                } else {
-                    RecoveryOutcome::Failure(RecoveryError::MaxAttemptsExceeded {
-                        attempts: max_attempts,
-                    })
-                }
+                RecoveryOutcome::Failure(last_error.unwrap_or(RecoveryError::MaxAttemptsExceeded {
+                    attempts: max_attempts,
+                }))
             } else {
                 RecoveryOutcome::Failure(RecoveryError::MaxAttemptsExceeded {
                     attempts: max_attempts,

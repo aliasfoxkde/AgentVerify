@@ -169,15 +169,6 @@ pub enum ContractError {
         /// Contract context (action name, contract id) for the error.
         context: Option<ContractContext>,
     },
-    /// The contract schema version does not match the supported version.
-    SchemaVersionMismatch {
-        /// Schema version expected by this build.
-        expected: String,
-        /// Schema version declared by the contract.
-        actual: String,
-        /// Contract context (action name, contract id) for the error.
-        context: Option<ContractContext>,
-    },
     /// The contract file has an extension this parser does not handle.
     UnknownFileExtension {
         /// The unrecognized extension.
@@ -240,17 +231,6 @@ impl std::fmt::Display for ContractError {
                     }
                 }
                 write!(f, " {path}: {reason}")
-            }
-            ContractError::SchemaVersionMismatch {
-                expected,
-                actual,
-                context,
-            } => {
-                write!(
-                    f,
-                    "Schema version mismatch: expected {expected}, got {actual}"
-                )?;
-                fmt_ctx(f, None, context.as_ref())
             }
             ContractError::UnknownFileExtension {
                 extension,
@@ -369,15 +349,6 @@ impl ContractError {
                 location,
                 context: Some(context),
             },
-            ContractError::SchemaVersionMismatch {
-                expected,
-                actual,
-                context: None,
-            } => ContractError::SchemaVersionMismatch {
-                expected,
-                actual,
-                context: Some(context),
-            },
             ContractError::InvalidPredicate {
                 reason,
                 path,
@@ -408,7 +379,6 @@ impl ContractError {
             | ContractError::YamlError { context, .. }
             | ContractError::IoError { context, .. }
             | ContractError::InvalidContract { context, .. }
-            | ContractError::SchemaVersionMismatch { context, .. }
             | ContractError::InvalidPredicate { context, .. }
             | ContractError::UnknownFileExtension { context, .. } => {
                 context.as_ref().and_then(|c| c.contract_id.as_ref())
@@ -424,7 +394,6 @@ impl ContractError {
             | ContractError::YamlError { context, .. }
             | ContractError::IoError { context, .. }
             | ContractError::InvalidContract { context, .. }
-            | ContractError::SchemaVersionMismatch { context, .. }
             | ContractError::InvalidPredicate { context, .. }
             | ContractError::UnknownFileExtension { context, .. } => {
                 context.as_ref().and_then(|c| c.action_name.as_deref())

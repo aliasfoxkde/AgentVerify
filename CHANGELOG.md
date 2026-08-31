@@ -24,14 +24,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   spending a round trip on `METHOD_NOT_FOUND`.
 - `OtlpExporter` docs now state that construction and export require a
   tokio runtime (the tonic gRPC channel worker).
+- `agentverify-contract` re-exports its public diagnostics
+  (`ContractError`, `SourceLocation`, `ContractContext`, `PredicatePath`)
+  from the crate root instead of hiding them behind the `contract` module.
+- Coverage raised from ~95% to 98.4% of lines workspace-wide (42 suites,
+  live Postgres/Redis in CI): end-to-end CLI tests for every command,
+  outcome, and output mode; observer and OTLP error paths over real
+  sockets; Redis write-failure paths via an OOM-capped server; Ed25519
+  signing error paths; and the contract diagnostics API. Every remaining
+  uncovered line is audited and documented in `docs/ROADMAP.md`
+  ("Coverage accounting").
 
 ### Fixed
 
+- **CLI `serve` ignored every shutdown signal**: `/shutdown`, SIGINT, and
+  SIGTERM only set a flag nothing ever read, while the installed signal
+  handlers suppressed the default terminating behaviour — the gateway ran
+  until `SIGKILL`. It now shuts down gracefully via
+  `axum::serve(...).with_graceful_shutdown(...)`, draining in-flight
+  requests; pinned by endpoint, SIGINT, and SIGTERM subprocess tests.
 - `rand` 0.10 key generation in `agentverify-receipt`: seed 32 bytes from
   the thread CSPRNG and build the Ed25519 key explicitly
   (`ed25519-dalek` 2.x is coupled to `rand_core` 0.6).
-- Windows builds: the CLI's SIGTERM handler is `#[cfg(unix)]`-gated, so the
-  workspace compiles on MSVC.
+- Windows builds: the CLI's signal handlers are `#[cfg(unix)]`-gated, so
+  the workspace compiles on MSVC.
 - Release workflow: Apple builds run on macOS runners (aarch64 on
   `macos-latest`, x86_64 on `macos-15-intel`), and the crates.io publish job
   no longer evaluates `env` in a job-level `if` (which failed the workflow
@@ -45,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not applicable" is reported as
   `RecoveryOutcome::Failure(RecoveryError::NotApplicable { result })`,
   which preserves the terminal verification result; pinned by test.
+- `ContractError::SchemaVersionMismatch` — no constructor site; schema
+  versions are validated on the contract itself
+  (`Contract::validate` in `agentverify-core`, which reports
+  `ContractValidationError::IncompatibleSchemaVersion` /
+  `InvalidSchemaVersion`).
 
 ## [0.1.0] - 2026-08-30
 

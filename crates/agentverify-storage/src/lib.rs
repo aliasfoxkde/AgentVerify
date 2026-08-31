@@ -446,7 +446,7 @@ mod tests {
 
         let result = storage.delete(&ReceiptId::new()).await;
         assert!(result.is_err());
-        matches!(result.unwrap_err(), StorageError::NotFound(_));
+        assert!(matches!(result.unwrap_err(), StorageError::NotFound(_)));
     }
 
     #[tokio::test]
@@ -512,7 +512,10 @@ mod tests {
         let result = storage.store(&receipt).await;
 
         assert!(result.is_err());
-        matches!(result.unwrap_err(), StorageError::AlreadyExists(_));
+        assert!(matches!(
+            result.unwrap_err(),
+            StorageError::AlreadyExists(_)
+        ));
     }
 
     #[tokio::test]

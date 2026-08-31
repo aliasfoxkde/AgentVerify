@@ -37,7 +37,7 @@ deferred (see [Non-goals](#non-goals)).
 | Item | Status | Notes |
 |------|--------|-------|
 | Clippy `pedantic` clean, `-D warnings` in CI | ✅ | 439 warnings cleared workspace-wide (default + all-features) |
-| Coverage baseline → 90%+ per crate | ✅ | Workspace ~97% line coverage; live Postgres/Redis in CI service containers |
+| Coverage baseline → 90%+ per crate | ✅ | Workspace ~98% line coverage (98.4% measured); every remaining uncovered line is accounted for — see [Coverage accounting](#coverage-accounting) |
 | Docs build with `-D warnings` | ✅ | `missing_docs` enforced; 100% public-item doc coverage |
 | Failure-injection tests (timeouts, partial failures, duplicates) | 🚧 | Duplicate/timeout/partial paths covered in runtime suite; fault-injection harness remains |
 | `cargo-deny` advisories/bans/licenses/sources in CI | ✅ | `deny.toml` |
@@ -68,6 +68,34 @@ than silently present:
    pushing the rewritten history requires a lease-guarded force push, so it
    waits on a coordinated window (fresh clone for all contributors).
 
+### Coverage accounting
+
+Line coverage is measured with `cargo llvm-cov --workspace --all-features`
+against live Postgres/Redis service containers (the same services CI uses).
+At 98.4% (221 of 14,130 lines missed), the remainder is not "untested code"
+— each uncovered line falls into one of three audited buckets:
+
+1. **Unreachable by construction (~68 lines, mostly
+   `agentverify-runtime/executor.rs`)** — the executor's `Unknown`/`Partial`
+   verdict branches and their error arms cannot execute until
+   `PredicateEngine::evaluate` can return an indeterminate verdict, which is
+   known limitation 2 below. Deleted rather than faked where the branch was
+   provably dead (e.g. the recovery executor's `has_failure`-without-error
+   path).
+2. **Environment-gated test plumbing (~62 lines in `agentverify-observe`,
+   `agentverify-runtime` idempotency stores)** — the `live_url() => None`
+   skip arms that let integration tests degrade cleanly when no service is
+   configured. CI's canonical configuration always sets the service
+   variables, so the live paths are what CI exercises.
+3. **Defensive/infallible closures (~91 lines)** — `map_err` arms on
+   serialization that cannot fail, state-machine invariant guards,
+   signal-registration fallbacks, and `assert!` false-arm expansions inside
+   passing tests.
+
+Reaching a literal 100% would mean deleting defensive handling or
+restructuring the skip arms so tests can no longer run without services —
+both would make the codebase worse to satisfy the metric.
+
 ### Resolved during 0.1.x hardening
 
 Limitations from the original audit that have since been fixed:
@@ -95,6 +123,19 @@ Limitations from the original audit that have since been fixed:
   redis 1.6 + deadpool-redis 0.23, rand 0.10, sha2 0.11, criterion 0.8,
   tower-http 0.6, base64 0.23, jsonpath-rust removed as unused) landed with
   full workspace test, clippy, MSRV, and WASM-subset verification.
+- **CLI `serve` ignored every shutdown signal** — `/shutdown`, SIGINT, and
+  SIGTERM only set a flag nothing ever read, and the installed signal
+  handlers suppressed the default terminating behaviour, so the gateway ran
+  until `SIGKILL`. It now shuts down gracefully via
+  `axum::serve::with_graceful_shutdown`, draining in-flight requests;
+  pinned by endpoint, SIGINT, and SIGTERM subprocess tests.
+- **Dead public error and outcome variants removed** —
+  `ContractError::SchemaVersionMismatch` had no constructor site (schema
+  versioning is validated on the contract itself, in
+  `agentverify-core`), matching the earlier removals of
+  `McpClientError::ServerError` and `RecoveryOutcome::NotApplicable`.
+  `ContractError`, `SourceLocation`, `ContractContext`, and `PredicatePath`
+  are now re-exported from the crate root.
 
 ## Milestone 0.2 — dependency and API modernization
 

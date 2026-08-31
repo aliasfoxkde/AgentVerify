@@ -391,7 +391,7 @@ pub fn init_tracing(config: OtlpExporterConfig) -> Result<(), OtlpExporterError>
 mod tests {
     use super::*;
     use agentverify_core::{ContractId, Evidence, IdempotencyKey, Predicate, SourceId};
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::Arc;
     use std::sync::Mutex;
@@ -809,6 +809,116 @@ mod tests {
                 .with_timeout_ms(200),
         )
         .expect("a fresh tracing subscriber must install successfully");
+    }
+
+    /// `wait_for` must keep polling while the payload is still in flight
+    /// instead of handing back an empty snapshot from the first look.
+    #[test]
+    fn wait_for_polls_until_the_payload_lands() {
+        let sink = SpanSink::spawn();
+        let received = Arc::clone(&sink.received);
+
+        // Nothing is written yet, so the first look at the buffer cannot find
+        // the needle: this exercises the wait-and-retry arm of `wait_for`.
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            received
+                .lock()
+                .expect("sink buffer lock")
+                .extend_from_slice(b"late.arriving_attribute");
+        });
+
+        let wire = sink.wait_for("late.arriving_attribute");
+        assert_on_wire(&wire, "late.arriving_attribute");
+    }
+
+    /// A peer that aborts the connection (a reset rather than a clean FIN) ends
+    /// the sink's read loop through the hard-error arm. A graceful close would
+    /// only surface as EOF, which is the `Ok(0)` arm.
+    #[test]
+    fn sink_read_loop_stops_when_the_peer_resets_the_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("read local address");
+
+        let mut client = TcpStream::connect(addr).expect("connect to the sink");
+        let (mut server_side, _) = listener.accept().expect("accept the connection");
+        let mut sink_writer = server_side.try_clone().expect("clone the accepted stream");
+
+        let received: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&received);
+
+        let reader = std::thread::Builder::new()
+            .name("otlp-reset-sink".to_string())
+            .spawn(move || {
+                serve_otlp(
+                    &mut server_side,
+                    &captured,
+                    Instant::now() + Duration::from_secs(10),
+                );
+            })
+            .expect("spawn sink thread");
+
+        client
+            .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+            .expect("write the HTTP/2 client preface");
+
+        // Wait until the sink has actually consumed the preface, so the reset
+        // below can never discard the bytes this test asserts on.
+        let seen = Instant::now() + Duration::from_secs(10);
+        while !contains(
+            &received.lock().expect("sink buffer lock"),
+            "PRI * HTTP/2.0",
+        ) {
+            assert!(Instant::now() < seen, "the sink never captured the preface");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // Bytes the client never reads: closing a socket that still holds
+        // unread data makes the kernel abort the connection with a reset
+        // instead of a FIN.
+        sink_writer
+            .write_all(&[0u8])
+            .expect("prime the client buffer");
+        std::thread::sleep(Duration::from_millis(100));
+        drop(client);
+
+        let started = Instant::now();
+        reader.join().expect("the sink thread must not panic");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the read loop ended on the deadline rather than on the reset"
+        );
+        assert_on_wire(
+            &received.lock().expect("sink buffer lock"),
+            "PRI * HTTP/2.0",
+        );
+    }
+
+    /// A failed `assert_on_wire` must name the missing marker *and* show what
+    /// did arrive: that message is the only diagnostic the OTLP tests get.
+    #[test]
+    fn assert_on_wire_failure_reports_the_missing_marker_and_the_wire() {
+        let wire: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+        let payload = std::panic::catch_unwind(|| assert_on_wire(wire, "never-exported-marker"))
+            .expect_err("a marker that never left the process must fail the assertion");
+        // `assert!(cond, "…{…}")` always formats its message into a `String`.
+        let message = payload
+            .downcast_ref::<String>()
+            .expect("an assert! message is formatted into a String payload");
+
+        assert!(
+            message.contains("never-exported-marker"),
+            "the missing marker must be named: {message}"
+        );
+        assert!(
+            message.contains("received 24 bytes"),
+            "the byte count of the wire must be reported: {message}"
+        );
+        assert!(
+            message.contains("PRI * HTTP/2.0"),
+            "the received payload must be quoted: {message}"
+        );
     }
 
     #[test]

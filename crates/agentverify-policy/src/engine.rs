@@ -734,6 +734,34 @@ mod tests {
     }
 
     #[test]
+    fn per_key_limit_denial_reports_the_action_and_configured_window() {
+        let engine = create_test_engine();
+        let policy = Policy::new("keyed")
+            .allow_action_name("submit")
+            .with_rate_limit_per_key("submit", 1, Duration::from_secs(45));
+
+        let key = agentverify_core::IdempotencyKey::new("payload-check");
+        let action = Action::with_idempotency("submit", json!({}), key);
+
+        assert!(matches!(
+            engine.evaluate(&policy, &action, None),
+            PolicyDecision::Allowed
+        ));
+
+        // The per-key denial names the action and echoes the configured budget
+        // and window, so callers can render a meaningful retry hint.
+        assert!(matches!(
+            engine.evaluate(&policy, &action, None),
+            PolicyDecision::Denied(PolicyViolation::RateLimitExceeded {
+                ref action_name,
+                limit,
+                window_secs,
+                ..
+            }) if action_name == "submit" && limit == 1 && window_secs == 45
+        ));
+    }
+
+    #[test]
     fn contract_requirement_is_checked_against_the_contract_itself() {
         let engine = create_test_engine();
         let policy = Policy::new("contracted")

@@ -15,6 +15,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tower 0.4.13",
  "tower-http",
@@ -30,6 +31,7 @@ dependencies = [
  "agentverify-core",
  "serde_json",
  "serde_yaml",
+ "tempfile",
 ]
 
 [[package]]

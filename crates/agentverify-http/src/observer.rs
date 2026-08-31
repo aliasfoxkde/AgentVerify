@@ -237,6 +237,114 @@ impl agentverify_runtime::Observer for RestObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agentverify_runtime::Observer;
+    use std::io::{ErrorKind, Read, Write};
+    use std::net::{SocketAddr, TcpListener, TcpStream};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    /// How long the stub server keeps serving before shutting itself down.
+    const STUB_LIFETIME: Duration = Duration::from_secs(30);
+
+    /// A minimal HTTP/1.1 server that answers every request with one canned
+    /// response and records what it was asked for.
+    ///
+    /// `wiremock` is not a unit-test dependency of this crate, and the observer
+    /// only speaks plain HTTP, so a raw listener keeps the tests honest about
+    /// the bytes that actually travel.
+    struct StubApi {
+        addr: SocketAddr,
+        requests: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl StubApi {
+        /// Serve `status_line` / `content_type` / `body` for a bounded lifetime.
+        fn start(status_line: &str, content_type: &str, body: &str) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            let addr = listener.local_addr().expect("read local address");
+            listener
+                .set_nonblocking(true)
+                .expect("set listener nonblocking");
+
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let seen = Arc::clone(&requests);
+            let response = format!(
+                "{status_line}\r\nContent-Type: {content_type}\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let deadline = Instant::now() + STUB_LIFETIME;
+
+            std::thread::Builder::new()
+                .name("rest-stub".to_string())
+                .spawn(move || {
+                    while Instant::now() < deadline {
+                        match listener.accept() {
+                            Ok((mut stream, _)) => {
+                                let request = read_request(&mut stream);
+                                seen.lock().expect("request log lock").push(request);
+                                let _ = stream.write_all(response.as_bytes());
+                                let _ = stream.flush();
+                            }
+                            Err(ref err) if err.kind() == ErrorKind::WouldBlock => {
+                                std::thread::sleep(Duration::from_millis(2));
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                })
+                .expect("spawn rest stub thread");
+
+            Self { addr, requests }
+        }
+
+        /// Base URL for an observer pointed at this stub.
+        fn base_url(&self) -> String {
+            format!("http://{}", self.addr)
+        }
+
+        /// The single request the stub is expected to have received.
+        fn only_request(&self) -> String {
+            let requests = self.requests.lock().expect("request log lock");
+            assert_eq!(
+                requests.len(),
+                1,
+                "the observer must issue exactly one request, saw {requests:?}"
+            );
+            requests[0].clone()
+        }
+    }
+
+    /// Read one HTTP request (request line plus headers) from `stream`.
+    ///
+    /// The observer sends a complete request and leaves the connection open for
+    /// reuse, so the read stops at the end of the headers rather than at EOF.
+    fn read_request(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set read timeout");
+
+        let mut raw = Vec::new();
+        let mut scratch = [0u8; 1024];
+        let header_end = b"\r\n\r\n";
+        while !raw.windows(header_end.len()).any(|w| w == header_end) {
+            match stream.read(&mut scratch) {
+                // The peer hung up or the read failed before the request was
+                // complete: serve whatever made it through.
+                Ok(0) | Err(_) => break,
+                Ok(n) => raw.extend_from_slice(&scratch[..n]),
+            }
+        }
+        String::from_utf8_lossy(&raw).into_owned()
+    }
+
+    /// An abandoned loopback port: nothing is listening there any more.
+    fn abandoned_port() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().expect("read local address").port();
+        drop(listener);
+        port
+    }
 
     #[test]
     fn config_default() {
@@ -418,6 +526,216 @@ mod tests {
 
         let result = observer.truncate(state.clone());
         assert_eq!(result, state);
+    }
+
+    // ============ OBSERVATION OVER A REAL HTTP EXCHANGE ============
+
+    fn contract(name: &str) -> Contract {
+        Contract::new(name)
+    }
+
+    fn action() -> Action {
+        Action::new("observation", serde_json::json!({}))
+    }
+
+    #[tokio::test]
+    async fn observe_applies_redaction_to_the_state_it_returns() {
+        let stub = StubApi::start(
+            "HTTP/1.1 200 OK",
+            "application/json",
+            r#"{"status": "completed", "password": "hunter2", "rows": [{"id": 7}]}"#,
+        );
+
+        let observer = RestObserver::new(
+            RestObserverConfig::new(stub.base_url())
+                .with_redact_path("/password")
+                .with_timeout(5_000),
+        )
+        .unwrap();
+
+        let observation = observer
+            .observe(&action(), &contract("deployments"))
+            .await
+            .expect("a well-formed response must observe cleanly");
+
+        assert_eq!(observation.source, SourceId("rest".into()));
+        assert_eq!(observation.state["status"], "completed");
+        assert_eq!(observation.state["password"], "[REDACTED]");
+        assert_eq!(observation.state["rows"][0]["id"], 7);
+
+        let request = stub.only_request();
+        assert!(
+            request.starts_with("GET /deployments/"),
+            "unexpected request line: {request}"
+        );
+        assert!(
+            request.contains("HTTP/1.1"),
+            "unexpected request line: {request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn observe_sends_the_configured_headers() {
+        let stub = StubApi::start("HTTP/1.1 200 OK", "application/json", r#"{"ok": true}"#);
+
+        let observer = RestObserver::new(
+            RestObserverConfig::new(stub.base_url())
+                .with_header("Authorization", "Bearer observer-token")
+                .with_header("X-Tenant", "acme"),
+        )
+        .unwrap();
+
+        observer
+            .observe(&action(), &contract("deployments"))
+            .await
+            .expect("the stub answers");
+
+        let request = stub.only_request().to_ascii_lowercase();
+        assert!(
+            request.contains("authorization: bearer observer-token"),
+            "the auth header must reach the wire: {request}"
+        );
+        assert!(
+            request.contains("x-tenant: acme"),
+            "every configured header must reach the wire: {request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn observe_truncates_evidence_that_exceeds_the_cap() {
+        let stub = StubApi::start(
+            "HTTP/1.1 200 OK",
+            "application/json",
+            r#"{"blob": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+        );
+
+        let observer =
+            RestObserver::new(RestObserverConfig::new(stub.base_url()).with_max_evidence_size(32))
+                .unwrap();
+
+        let observation = observer
+            .observe(&action(), &contract("deployments"))
+            .await
+            .expect("oversized evidence is truncated, not rejected");
+
+        let Value::String(evidence) = &observation.state else {
+            panic!("expected truncated evidence, got {:?}", observation.state);
+        };
+        assert!(
+            evidence.starts_with("[TRUNCATED: "),
+            "unexpected evidence: {evidence}"
+        );
+        assert!(
+            evidence.ends_with(" > 32 bytes]"),
+            "the cap must be named: {evidence}"
+        );
+    }
+
+    #[tokio::test]
+    async fn observe_maps_an_http_error_status_to_a_fetch_failure() {
+        let stub = StubApi::start("HTTP/1.1 503 Service Unavailable", "text/plain", "busy");
+
+        let observer =
+            RestObserver::new(RestObserverConfig::new(stub.base_url()).with_timeout(5_000))
+                .unwrap();
+
+        let error = observer
+            .observe(&action(), &contract("deployments"))
+            .await
+            .expect_err("a 503 is not an observation");
+
+        match error {
+            ExecutorError::Unknown(message) => {
+                assert!(
+                    message.contains("Failed to fetch") && message.contains("503"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn observe_maps_a_refused_connection_to_a_fetch_failure() {
+        let port = abandoned_port();
+        let observer =
+            RestObserver::new(RestObserverConfig::new(format!("http://127.0.0.1:{port}"))).unwrap();
+
+        let error = observer
+            .observe(&action(), &contract("deployments"))
+            .await
+            .expect_err("nothing is listening on that port");
+
+        match error {
+            ExecutorError::Unknown(message) => {
+                assert!(
+                    message.contains("Failed to fetch"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn observe_rejects_a_url_that_carries_a_redacted_path_without_calling_the_api() {
+        // Nothing is listening: if the guard ever lets the request through, the
+        // failure message names the transport instead of the redaction.
+        let port = abandoned_port();
+        let observer = RestObserver::new(
+            RestObserverConfig::new(format!("http://127.0.0.1:{port}"))
+                .with_redact_path("deployments"),
+        )
+        .unwrap();
+
+        let error = observer
+            .observe(&action(), &contract("deployments"))
+            .await
+            .expect_err("a redacted path in the URL must be refused");
+
+        match error {
+            ExecutorError::Unknown(message) => {
+                assert!(
+                    message.contains("Redacted path in URL: deployments"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected Unknown, got {other:?}"),
+        }
+    }
+
+    // ============ URL CONSTRUCTION ============
+
+    #[test]
+    fn build_url_accepts_a_base_url_without_a_scheme() {
+        let observer = RestObserver::new(RestObserverConfig::new("127.0.0.1:8080")).unwrap();
+        let deploy = action();
+
+        let url = observer
+            .build_url(&deploy, &contract("deployments"))
+            .expect("a scheme-less base URL is still assembled");
+
+        assert_eq!(
+            url,
+            format!("127.0.0.1:8080/deployments/{}", deploy.id),
+            "the traversal guard must not depend on a scheme being present"
+        );
+    }
+
+    #[test]
+    fn build_url_ignores_a_trailing_slash_on_the_base_url() {
+        let observer =
+            RestObserver::new(RestObserverConfig::new("http://api.example.com/")).unwrap();
+        let deploy = action();
+
+        let url = observer
+            .build_url(&deploy, &contract("deployments"))
+            .expect("a trailing slash must not produce an empty path segment");
+
+        assert_eq!(
+            url,
+            format!("http://api.example.com/deployments/{}", deploy.id)
+        );
     }
 }
 

@@ -634,6 +634,7 @@ impl agentverify_runtime::Observer for PostgresObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     /// Helper to create a `PostgresObserver` for testing query building
     /// The pool is not actually used in `build_observation_query` tests
@@ -826,6 +827,41 @@ mod tests {
             Err(e) => e.to_string(),
             Ok(_) => String::from("<unexpected Ok>"),
         }
+    }
+
+    /// `parsed` carries the assertion message of every accepted-shape test, so
+    /// a rejection has to name both the URI and the reason it was rejected.
+    #[test]
+    fn parsed_panics_with_the_uri_and_the_reason_for_a_rejected_uri() {
+        // `ParsedUri` has no `Debug` impl, so the panic payload is bound with
+        // `let ... else` rather than unwrapped through `expect_err`.
+        let Err(payload) =
+            std::panic::catch_unwind(|| parsed("postgres://127.0.0.1:5433/no_userinfo"))
+        else {
+            panic!("a URI without a userinfo segment must be rejected");
+        };
+        let message = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .expect("the panic payload is a formatted message");
+
+        assert!(
+            message.contains("postgres://127.0.0.1:5433/no_userinfo"),
+            "the rejected URI must be named: {message}"
+        );
+        assert!(
+            message.contains("Invalid URI format"),
+            "the rejection reason must be named: {message}"
+        );
+    }
+
+    /// `error_of` marks the `Ok` side with a sentinel rather than an empty
+    /// string, so an assertion that fires on the wrong arm identifies itself.
+    #[test]
+    fn error_of_marks_an_ok_result_with_a_sentinel() {
+        let ok: Result<(), PostgresObserverError> = Ok(());
+        assert_eq!(error_of(ok), "<unexpected Ok>");
     }
 
     #[tokio::test]
@@ -1307,5 +1343,44 @@ mod tests {
                 row.columns()[idx].name()
             );
         }
+    }
+
+    /// A backend the server terminates must stop answering, and the background
+    /// connection task `connect` spawns must end instead of hanging: that task
+    /// is what keeps the client's socket serviced.
+    #[tokio::test]
+    async fn a_backend_terminated_by_the_server_fails_its_client() {
+        let Some(url) = live_url() else {
+            skip_notice();
+            return;
+        };
+        let victim = connect(&url).await;
+        let executioner = connect(&url).await;
+
+        let pid: i32 = victim
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .unwrap()
+            .get(0);
+        executioner
+            .execute("SELECT pg_terminate_backend($1)", &[&pid])
+            .await
+            .unwrap();
+
+        // The server closes the terminated backend's socket, so the client
+        // reports a connection error rather than answering `SELECT 1`.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut still_serving = true;
+        while Instant::now() < deadline {
+            if victim.query_one("SELECT 1", &[]).await.is_err() {
+                still_serving = false;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !still_serving,
+            "the terminated backend kept serving queries"
+        );
     }
 }
