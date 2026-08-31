@@ -1,7 +1,7 @@
 # AgentVerify execution handoff
 
 **Last updated:** 2026-08-31
-**Evidence boundary:** branch `main`, HEAD `7cb923085152156d78a4d651962dda7b4511473c`, clean worktree.
+**Evidence boundary (central audit):** branch `main`, HEAD `8eaf936d48bda722bb26ae229429a2a26938712e`, 0 dirty status entries.
 **Status:** Source and deterministic verification layers are evidenced; authenticated cross-process integration and production promotion remain open.
 
 This is the canonical repository-local handoff for Platform-Architecture work.
