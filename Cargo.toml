@@ -93,7 +93,7 @@ url = "2.5"
 # Crypto
 ed25519-dalek = { version = "2.0", features = ["rand_core"] }
 signature = "2.0"
-base64 = "0.22"
+base64 = "0.23"
 rand = "0.8"
 sha2 = "0.10"
 hex = "0.4"
