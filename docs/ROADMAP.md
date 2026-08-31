@@ -133,7 +133,7 @@ Also in 0.2:
 
 Current (this repo):
 
-1. `CHANGELOG.md` updated under `## [Unreleased]`
+1. `.github/CHANGELOG.md` updated under `## [Unreleased]`
 2. PRs squash-merged to `main`; CI must be green
 3. Tag `vX.Y.Z` on `main` → the Release workflow builds all six platform
    binaries, attaches them + SHA-256 checksums to a GitHub Release, and
