@@ -104,7 +104,7 @@ test(engine): add property tests for compound predicates
 - Keep PRs focused; split unrelated changes into separate PRs
 - Fill out the pull request template
 - Update documentation (`README.md`, `docs/`) when behavior changes
-- Add a `CHANGELOG.md` entry under `## [Unreleased]` for user-visible changes
+- Add a `.github/CHANGELOG.md` entry under `## [Unreleased]` for user-visible changes
 - Squash merges are used; branch names follow `<type>/<short-description>`
 
 ## Reporting Issues
