@@ -1,7 +1,12 @@
 # AgentVerify execution handoff
 
 **Last updated:** 2026-08-31
-**Evidence boundary (central audit):** branch `main`, HEAD `8eaf936d48bda722bb26ae229429a2a26938712e`, 0 dirty status entries.
+**Evidence boundary (central audit):** branch `main`, HEAD `3c2d29c25536450edb3a38eeeac7683e4b376dc5`, 0 dirty status entries.
+**Rating:** 3/5 — deterministic verification source is qualified; production integration is open.
+
+This handoff is registered against the Platform audit in
+`docs/planning/HANDOFF_AUDIT_2026-08-13.md` and the execution packets in
+`docs/planning/CODEX_CLI_EXECUTION_PACKETS_2026-08-13.md`.
 **Status:** Source and deterministic verification layers are evidenced; authenticated cross-process integration and production promotion remain open.
 
 This is the canonical repository-local handoff for Platform-Architecture work.
