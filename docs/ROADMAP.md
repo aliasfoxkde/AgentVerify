@@ -117,6 +117,10 @@ Also in 0.2:
 - Conformance test suite for adapters (`agentverify-testkit`), so third-party
   observers/stores can be validated against the contract in `PLANNING.md`
   Phase 23
+- Tooling: `cargo-semver-checks` in CI against the last release tag (drift
+  detection for the public API), `cargo-fuzz` targets for the contract
+  parser and predicate wire formats, and a `-Z minimal-versions` job to
+  catch under-declared dependency floors
 
 ## Milestone 0.3 — operations and integrations
 
