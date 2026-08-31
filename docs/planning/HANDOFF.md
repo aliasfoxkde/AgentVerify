@@ -1,5 +1,9 @@
 # AgentVerify execution handoff
 
+**Last updated:** 2026-08-31
+**Evidence boundary:** branch `main`, HEAD `7cb923085152156d78a4d651962dda7b4511473c`, clean worktree.
+**Status:** Source and deterministic verification layers are evidenced; authenticated cross-process integration and production promotion remain open.
+
 This is the canonical repository-local handoff for Platform-Architecture work.
 The longer historical evidence record remains in `docs/internal/HANDOFF.md`.
 
@@ -26,16 +30,19 @@ separate boundaries.
 
 ## Next implementation packet
 
-1. Refresh the evidence boundary to the exact clean commit.
-2. Define and version the authenticated receipt-ingestion contract, including
+1. Define and version the authenticated receipt-ingestion contract, including
    project, task, job, agent, commit, verifier, replay, and ownership identity.
-3. Wire durable persistence and restart/replay tests across processes.
-4. Replace the convenience simulated dispatch path with an explicitly named
+2. Wire durable persistence and restart/replay tests across processes.
+3. Replace the convenience simulated dispatch path with an explicitly named
    real adapter, or keep it clearly demo-only.
-5. Add Control Center fixtures that reject orphan, stale, tampered,
+4. Add Control Center fixtures that reject orphan, stale, tampered,
    unauthorized, cross-project, and replayed receipts.
-6. Run strict formatting, Clippy, tests, coverage, Aegis, and the GitForge
+5. Run strict formatting, Clippy, tests, coverage, Aegis, and the GitForge
    pipeline; retain a redacted receipt and rollback path.
+
+The exact boundary above is documentation-only advancement from the previously
+recorded source state. It does not assert that the open integration packets
+have been implemented or that the clean checkout is production-ready.
 
 Do not add placeholder adapters or claim promotion until these gates have
 authoritative evidence. The owner must approve any production observer scope
