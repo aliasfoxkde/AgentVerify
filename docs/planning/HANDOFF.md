@@ -1,7 +1,7 @@
 # AgentVerify execution handoff
 
-**Last updated:** 2026-08-31
-**Evidence boundary (central audit):** branch `main`, HEAD `3c2d29c25536450edb3a38eeeac7683e4b376dc5`, 0 dirty status entries.
+**Last updated:** 2026-09-01
+**Evidence boundary (central audit):** branch `docs/platform-handoff-provenance-20260901`, HEAD `55aa90c2e28fe123ed6bb0d79ac98beb097315d2`, 0 dirty status entries.
 **Rating:** 3/5 — deterministic verification source is qualified; production integration is open.
 
 This handoff is registered against the Platform audit in
