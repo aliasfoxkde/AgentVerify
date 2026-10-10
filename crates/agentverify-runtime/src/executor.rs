@@ -2,7 +2,7 @@
 //!
 //! Orchestrates action execution with verification using verify-before-retry semantics.
 
-use crate::action_executor::{ActionExecutor, DispatchOutcome};
+use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
 use crate::receipt_store::ReceiptStore;
 use agentverify_contract::Contract;
 use agentverify_core::{
@@ -312,6 +312,26 @@ impl Executor {
         }
     }
 
+    /// Resolve the idempotency claim when a run aborts with an error.
+    ///
+    /// `unknown_effect` marks paths where an external dispatch may already
+    /// have happened (adapter errors with unknown delivery, or any failure
+    /// after dispatch): the key is completed with
+    /// [`VerificationResult::Unknown`] so later callers observe a verdict and
+    /// cannot silently re-dispatch. Otherwise the claim is released so a
+    /// subsequent request may retry the action.
+    async fn resolve_claim_on_error(&self, action: &Action, unknown_effect: bool) {
+        if let Some(key) = &action.idempotency_key {
+            if unknown_effect {
+                self.idempotency
+                    .complete(key.0.clone(), VerificationResult::Unknown)
+                    .await;
+            } else {
+                self.idempotency.release(&key.0).await;
+            }
+        }
+    }
+
     /// Calculate the next backoff delay in milliseconds
     ///
     /// Uses the recovery config's backoff settings if available,
@@ -499,8 +519,15 @@ impl Executor {
             let observation = if let Some(ref obs) = observer {
                 match tokio_timeout(timeout_duration, obs.observe(&action, &contract)).await {
                     Ok(Ok(obs)) => obs,
-                    Ok(Err(e)) => return Err(e),
+                    Ok(Err(e)) => {
+                        // No external dispatch happens on this simulated path,
+                        // but a failed run must not leave the key in-flight
+                        // either: release it so a later request can retry.
+                        self.resolve_claim_on_error(&action, false).await;
+                        return Err(e);
+                    }
                     Err(_) => {
+                        self.resolve_claim_on_error(&action, false).await;
                         return Err(ExecutorError::Timeout(format!(
                             "Observation timed out after {}ms",
                             self.config.verification_timeout_ms
@@ -785,7 +812,11 @@ impl Executor {
     ///
     /// Timeouts are treated as UNKNOWN, not failure. The caller must observe
     /// state before retrying. On transport error, the claim is released so
-    /// a subsequent request may retry.
+    /// a subsequent request may retry. Adapter errors that cannot have
+    /// dispatched (unsupported action, pre-dispatch timeout, rejection) also
+    /// release the claim; errors with unknown external effect, and
+    /// observation failures after dispatch, consume the key as Unknown so
+    /// the action is never silently re-dispatched.
     ///
     /// # Errors
     ///
@@ -901,10 +932,26 @@ impl Executor {
                 .advance(State::Executing)
                 .map_err(|e| ExecutorError::ExecutionFailed(e.to_string()))?;
 
-            let dispatch_result = action_executor
-                .execute(&action)
-                .await
-                .map_err(|e| ExecutorError::ActionExecutor(e.to_string()))?;
+            let dispatch_result = match action_executor.execute(&action).await {
+                Ok(outcome) => outcome,
+                Err(e) => {
+                    // The adapter failed before producing an outcome. Retry
+                    // safety depends on whether the dispatch could have
+                    // reached the target: pre-dispatch timeouts, unsupported
+                    // actions, and explicit rejections mean nothing was sent,
+                    // so the claim is released; any other error leaves the
+                    // external effect unknown, so the key is consumed with
+                    // Unknown to keep later callers from re-dispatching.
+                    let unknown_effect = matches!(
+                        e,
+                        DispatchError::TransportError(_)
+                            | DispatchError::TimeoutAfterDispatch
+                            | DispatchError::Ambiguous(_)
+                    );
+                    self.resolve_claim_on_error(&action, unknown_effect).await;
+                    return Err(ExecutorError::ActionExecutor(e.to_string()));
+                }
+            };
 
             // Handle dispatch outcome
             match dispatch_result {
@@ -954,8 +1001,15 @@ impl Executor {
                             final_result = Some(VerificationResult::Unknown);
                             break;
                         }
-                        Ok(Err(e)) => return Err(e),
+                        Ok(Err(e)) => {
+                            // Dispatch already happened, so the external
+                            // effect is unknown: consume the key with Unknown
+                            // instead of leaving it in-flight or re-dispatching.
+                            self.resolve_claim_on_error(&action, true).await;
+                            return Err(e);
+                        }
                         Err(_) => {
+                            self.resolve_claim_on_error(&action, true).await;
                             return Err(ExecutorError::Timeout(format!(
                                 "Observation timed out after {}ms",
                                 self.config.verification_timeout_ms
@@ -1602,6 +1656,249 @@ mod tests {
         let (verification_result, _receipt) = result.unwrap();
         // TransportError is terminal — Failed immediately, not retried
         assert_eq!(verification_result, VerificationResult::Failed);
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_adapter_error_releases_claim_for_retry() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use agentverify_core::IdempotencyKey;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct FailOnceExecutor {
+            calls: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for FailOnceExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+                if call == 1 {
+                    // An adapter-local rejection: nothing reached the target.
+                    Err(DispatchError::ActionNotSupported(
+                        "stage unavailable".to_string(),
+                    ))
+                } else {
+                    Ok(DispatchOutcome::Completed)
+                }
+            }
+        }
+
+        let executor = Executor::new();
+        let adapter = Arc::new(FailOnceExecutor {
+            calls: AtomicUsize::new(0),
+        });
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("adapter-error-release-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let first = executor
+            .execute_with_executor(action.clone(), contract.clone(), adapter.clone(), None)
+            .await;
+        assert!(
+            first.is_err(),
+            "an adapter error must surface as Err, got {first:?}"
+        );
+
+        // The claim was released: the key is claimable again, with no verdict.
+        let (claim, observed) = executor
+            .idempotency
+            .claim_or_check("adapter-error-release-key")
+            .await;
+        assert_eq!(claim, ClaimResult::Claimed);
+        assert_eq!(observed, None);
+        executor
+            .idempotency
+            .release("adapter-error-release-key")
+            .await;
+
+        // A retry reaches the adapter again instead of being poisoned as
+        // a false Duplicate.
+        let second = executor
+            .execute_with_executor(action, contract, adapter.clone(), None)
+            .await;
+        assert!(second.is_ok());
+        let (verification_result, _receipt) = second.unwrap();
+        // The retried dispatch completes, but with no observer the
+        // postcondition never verifies: Failed after bounded retries.
+        assert_eq!(verification_result, VerificationResult::Failed);
+        assert!(
+            adapter.calls.load(Ordering::SeqCst) > 1,
+            "the retry must reach the adapter again"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_unknown_effect_adapter_error_consumes_claim() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use agentverify_core::IdempotencyKey;
+
+        struct AmbiguousAdapter;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for AmbiguousAdapter {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                // A transport drop mid-flight: the action may or may not have
+                // taken effect, so the adapter reports Ambiguous as an error.
+                Err(DispatchError::Ambiguous(
+                    "connection dropped mid-flight".to_string(),
+                ))
+            }
+        }
+
+        let executor = Executor::new();
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("ambiguous-adapter-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let first = executor
+            .execute_with_executor(action, contract, Arc::new(AmbiguousAdapter), None)
+            .await;
+        assert!(first.is_err(), "the adapter error must surface as Err");
+
+        // Unknown external effect: the key is consumed with Unknown, never
+        // released for a blind re-dispatch.
+        let (claim, observed) = executor
+            .idempotency
+            .claim_or_check("ambiguous-adapter-key")
+            .await;
+        assert_eq!(claim, ClaimResult::AlreadyClaimed);
+        assert_eq!(observed, Some(VerificationResult::Unknown));
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_observer_timeout_consumes_claim_as_unknown() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use agentverify_core::IdempotencyKey;
+
+        struct CompletedExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for CompletedExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(DispatchOutcome::Completed)
+            }
+        }
+
+        struct SlowObserver;
+
+        #[async_trait::async_trait]
+        impl Observer for SlowObserver {
+            async fn observe(
+                &self,
+                _action: &Action,
+                _contract: &Contract,
+            ) -> Result<Observation, ExecutorError> {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                Ok(Observation::new(
+                    SourceId("slow".into()),
+                    serde_json::json!({}),
+                ))
+            }
+        }
+
+        let config = ExecutorConfig {
+            verification_timeout_ms: 50,
+            max_retries: 3,
+            verify_before_retry: true,
+        };
+        let executor = Executor::with_config(config);
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("observer-timeout-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let result = executor
+            .execute_with_executor(
+                action,
+                contract,
+                Arc::new(CompletedExecutor),
+                Some(Arc::new(SlowObserver)),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(ExecutorError::Timeout(_))),
+            "expected an observation timeout, got {result:?}"
+        );
+
+        // Dispatch already happened, so the key is consumed with Unknown.
+        let (claim, observed) = executor
+            .idempotency
+            .claim_or_check("observer-timeout-key")
+            .await;
+        assert_eq!(claim, ClaimResult::AlreadyClaimed);
+        assert_eq!(observed, Some(VerificationResult::Unknown));
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_observer_error_consumes_claim_as_unknown() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use agentverify_core::IdempotencyKey;
+
+        struct CompletedExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for CompletedExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(DispatchOutcome::Completed)
+            }
+        }
+
+        struct BrokenObserver;
+
+        #[async_trait::async_trait]
+        impl Observer for BrokenObserver {
+            async fn observe(
+                &self,
+                _action: &Action,
+                _contract: &Contract,
+            ) -> Result<Observation, ExecutorError> {
+                // A non-Unknown observer failure (e.g. a hard collector error).
+                Err(ExecutorError::ActionExecutor(
+                    "collector returned 500".to_string(),
+                ))
+            }
+        }
+
+        let executor = Executor::new();
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("observer-error-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let result = executor
+            .execute_with_executor(
+                action,
+                contract,
+                Arc::new(CompletedExecutor),
+                Some(Arc::new(BrokenObserver)),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(ExecutorError::ActionExecutor(_))),
+            "expected the observer error to propagate, got {result:?}"
+        );
+
+        // Dispatch already happened, so the key is consumed with Unknown.
+        let (claim, observed) = executor
+            .idempotency
+            .claim_or_check("observer-error-key")
+            .await;
+        assert_eq!(claim, ClaimResult::AlreadyClaimed);
+        assert_eq!(observed, Some(VerificationResult::Unknown));
     }
 
     #[tokio::test]
