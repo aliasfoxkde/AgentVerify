@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Runtime** (`agentverify-runtime`): the executor no longer leaks the
+  idempotency claim when a run aborts with an error. Previously an adapter
+  error, a non-`UNKNOWN` observer error, or an observation timeout left the
+  key in-flight forever, so every later call with that key returned a false
+  `Duplicate`. Claims are now released when dispatch could not have started
+  (unsupported action, pre-dispatch timeout, explicit rejection) and consumed
+  as `UNKNOWN` when the external effect is unknown (transport drop after
+  dispatch, ambiguous adapter errors, post-dispatch observation failures), so
+  an action is never silently re-dispatched.
+- **HTTP** (`agentverify-http`): corrected the `ControlCenterClient::
+  submit_receipt` doc comment, which claimed timeout-to-UNKNOWN conversion
+  that only `submit_receipt_with_unknown_on_timeout` performs.
+
 ## [0.1.0] - 2026-08-30
 
 First open-source release of AgentVerify: outcome verification for
