@@ -148,11 +148,11 @@ impl ControlCenterClient {
     /// Submit a receipt to Control Center
     ///
     /// Returns `Ok(SubmissionResponse)` on success (including rejection by server).
-    /// Returns `Err` only on network/transport failures.
+    /// Returns `Err` on network/transport failures, including timeouts.
     ///
-    /// This method implements timeout-to-UNKNOWN semantics: timeouts return
-    /// a successful response with `accepted: false` rather than propagating
-    /// an error.
+    /// Unlike [`Self::submit_receipt_with_unknown_on_timeout`], this method
+    /// propagates timeouts as [`ControlCenterClientError::Timeout`]; use the
+    /// wrapper when a non-accepted response is preferred over an error.
     ///
     /// # Errors
     /// Returns [`ControlCenterClientError::HttpError`] on transport failure,
