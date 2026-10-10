@@ -1796,7 +1796,7 @@ mod tests {
                 _action: &Action,
                 _contract: &Contract,
             ) -> Result<Observation, ExecutorError> {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
                 Ok(Observation::new(
                     SourceId("slow".into()),
                     serde_json::json!({}),
