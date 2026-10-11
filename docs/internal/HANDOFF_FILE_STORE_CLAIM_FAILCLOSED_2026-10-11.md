@@ -101,4 +101,7 @@ New/changed coverage:
   was dispatched and no claim is held, so a later successful claim is safe.
 - Workspace-wide sweeps were not run locally (AGENTS.md routes expensive
   validation through GitForge); the evidence here is the focused
-  runtime-package run above plus hosted CI.
+  runtime-package run above. CI triggers only for pushes/PRs targeting
+  `main`, so this stacked draft carries no GitHub Actions check until the
+  base (`codex/agentverify-idempotency-unknown-20261011`) merges; the
+  broad gate runs then.
