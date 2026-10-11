@@ -2825,6 +2825,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_store_persistence_failure_never_dispatches() {
+        // A real file store whose backing directory disappeared cannot
+        // persist the claim, so it cannot prove one. The executor must
+        // reject the action before dispatch instead of running it without
+        // idempotency protection.
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileIdempotencyStore::new(dir.path()).unwrap();
+        drop(dir);
+
+        let (dispatch, dispatches) = CountingDispatch::new();
+        let executor = Executor::with_config_and_store(ExecutorConfig::default(), Arc::new(store));
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("unpersisted-claim-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let error = executor
+            .execute_with_executor(action, contract, dispatch, None)
+            .await
+            .expect_err("a claim that cannot be persisted must not reach dispatch");
+
+        assert!(
+            matches!(error, ExecutorError::IdempotencyUnavailable(ref message)
+                if message.contains("unpersisted-claim-key")),
+            "the error must name the key, got {error:?}"
+        );
+        assert_eq!(
+            dispatches.load(Ordering::SeqCst),
+            0,
+            "nothing may be dispatched without a durable idempotency claim"
+        );
+    }
+
+    #[tokio::test]
     async fn execute_with_executor_partial_verification_is_terminal() {
         let executor = observing_executor(1_000);
 

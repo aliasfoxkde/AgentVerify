@@ -176,10 +176,15 @@ impl IdempotencyStore for FileIdempotencyStore {
                     Some(r) => (ClaimResult::AlreadyClaimed, Some(r)),
                 }
             } else {
-                // Key doesn't exist — claim it
+                // Key doesn't exist — claim it. The claim only counts once it
+                // is durable: a failed save proves nothing about the key, so
+                // report Unavailable and leave the cache untouched rather
+                // than hand the caller a Claimed it could dispatch on
+                // without any persisted idempotency protection.
                 let entry = PersistedEntry::new_in_flight(key.to_string());
                 if let Err(e) = self.save_entry(&entry) {
-                    tracing::warn!("failed to persist claim: {e}");
+                    tracing::warn!("failed to persist claim, reporting it unavailable: {e}");
+                    return (ClaimResult::Unavailable, None);
                 }
                 cache.insert(key.to_string(), entry);
                 (ClaimResult::Claimed, None)
@@ -792,32 +797,33 @@ mod tests {
     }
 
     #[test]
-    fn file_idempotency_store_warns_when_claims_cannot_be_persisted() {
+    fn file_idempotency_store_claim_fails_closed_when_persistence_fails() {
         let dir = tempfile::tempdir().unwrap();
         let key = next_key("file-unwritable");
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         // The store is constructed while the directory exists, then the
-        // directory is removed: persistence fails, but claiming and completing
-        // must still succeed in-process so the caller is not stranded.
+        // directory is removed: the claim cannot be persisted, so the store
+        // cannot prove it. It must answer Unavailable — a fabricated Claimed
+        // would let the caller dispatch with no durable idempotency claim.
         let store = FileIdempotencyStore::new(dir.path()).unwrap();
         let orphaned_path = dir.path().to_path_buf();
         drop(dir);
 
         let (claim, observed) = rt.block_on(store.claim_or_check(&key));
-        assert_eq!(claim, ClaimResult::Claimed);
+        assert_eq!(claim, ClaimResult::Unavailable);
         assert_eq!(observed, None);
         assert!(
             !orphaned_path.exists(),
             "precondition: backing directory must be gone"
         );
 
-        rt.block_on(store.complete(key.clone(), VerificationResult::Verified));
-
-        // The in-process cache still answers authoritatively.
+        // The unpersisted claim must not live on in the cache: while
+        // persistence stays broken, every attempt answers Unavailable rather
+        // than a phantom AlreadyClaimed.
         let (claim, observed) = rt.block_on(store.claim_or_check(&key));
-        assert_eq!(claim, ClaimResult::AlreadyClaimed);
-        assert_eq!(observed, Some(VerificationResult::Verified));
+        assert_eq!(claim, ClaimResult::Unavailable);
+        assert_eq!(observed, None);
     }
 
     #[test]
@@ -879,9 +885,9 @@ mod tests {
         let mut already_claimed = 0;
         for handle in handles {
             let (claim, _) = rt.block_on(handle).unwrap();
-            // The file store never reports an unavailable claim: anything
-            // that is not Claimed is counted as a lost race, and the
-            // exact-one-winner assertions below fail if that mapping is wrong.
+            // Persistence succeeds here (the directory exists), so anything
+            // that is not Claimed is a lost race, and the exact-one-winner
+            // assertions below fail if that mapping is wrong.
             if matches!(claim, ClaimResult::Claimed) {
                 claimed += 1;
             } else {
