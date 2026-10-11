@@ -31,7 +31,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -46,7 +46,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "uuid",
@@ -63,7 +63,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -78,7 +78,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -94,7 +94,7 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-test",
 ]
@@ -114,7 +114,7 @@ dependencies = [
  "redis",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-postgres",
  "urlencoding",
@@ -130,7 +130,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-test",
  "tracing",
@@ -146,7 +146,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -159,7 +159,7 @@ dependencies = [
  "hex",
  "rand 0.8.7",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -170,7 +170,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-test",
  "tracing",
@@ -193,7 +193,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
 ]
@@ -206,7 +206,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "uuid",
 ]
