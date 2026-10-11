@@ -359,7 +359,7 @@ mod tests {
         let config = RedisObserverConfig::default();
         assert_eq!(config.redis_url, "redis://127.0.0.1:6379");
         assert_eq!(config.timeout_ms, 5000);
-        assert!(config.key_prefix.is_empty());
+        assert_eq!(config.key_prefix, "");
         assert_eq!(config.default_key, None);
     }
 
@@ -383,7 +383,7 @@ mod tests {
         let (op, key, extra) = RedisObserver::parse_spec("get:mykey").unwrap();
         assert_eq!(op, "get");
         assert_eq!(key, "mykey");
-        assert!(extra.is_empty());
+        assert_eq!(extra, [] as [&str; 0]);
     }
 
     #[test]
@@ -407,7 +407,7 @@ mod tests {
         let (op, key, extra) = RedisObserver::parse_spec("hgetall:myhash").unwrap();
         assert_eq!(op, "hgetall");
         assert_eq!(key, "myhash");
-        assert!(extra.is_empty());
+        assert_eq!(extra, [] as [&str; 0]);
     }
 
     #[test]
@@ -415,7 +415,7 @@ mod tests {
         let (op, key, extra) = RedisObserver::parse_spec("scard:myset").unwrap();
         assert_eq!(op, "scard");
         assert_eq!(key, "myset");
-        assert!(extra.is_empty());
+        assert_eq!(extra, [] as [&str; 0]);
     }
 
     #[test]
@@ -423,7 +423,7 @@ mod tests {
         let (op, key, extra) = RedisObserver::parse_spec("exists:mykey").unwrap();
         assert_eq!(op, "exists");
         assert_eq!(key, "mykey");
-        assert!(extra.is_empty());
+        assert_eq!(extra, [] as [&str; 0]);
     }
 
     #[test]

@@ -713,13 +713,13 @@ mod tests {
         // Serde defaults: enabled, permissive pattern list, no limits.
         assert!(policy.enabled);
         assert!(policy.is_enabled());
-        assert!(policy.description.is_empty());
-        assert!(policy.allowed_actions.is_empty());
-        assert!(policy.blocked_actions.is_empty());
-        assert!(policy.rate_limits.is_empty());
-        assert!(policy.rate_limits_per_key.is_empty());
-        assert!(policy.contract_requirements.is_empty());
-        assert!(policy.access_requirements.is_empty());
+        assert_eq!(policy.description, "");
+        assert_eq!(policy.allowed_actions.len(), 0);
+        assert_eq!(policy.blocked_actions, [] as [String; 0]);
+        assert_eq!(policy.rate_limits.len(), 0);
+        assert_eq!(policy.rate_limits_per_key.len(), 0);
+        assert_eq!(policy.contract_requirements.len(), 0);
+        assert_eq!(policy.access_requirements.len(), 0);
         // With no allow list the policy defaults to allowing any action.
         assert!(policy.is_action_allowed("anything"));
     }

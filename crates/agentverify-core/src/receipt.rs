@@ -580,7 +580,7 @@ mod tests {
             VerificationResult::Verified,
             1,
         );
-        assert!(!receipt.digest.is_empty());
+        assert_ne!(receipt.digest, "");
         assert_eq!(receipt.digest.len(), 64); // SHA-256 hex = 64 chars
     }
 
