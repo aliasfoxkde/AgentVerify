@@ -270,8 +270,9 @@ const REDIS_KEY_PREFIX: &str = "idempotency:";
 ///   caller must not dispatch; reporting `Claimed` here would strip
 ///   idempotency protection exactly when the store is failing.
 ///
-/// See [`RedisIdempotencyStore::claim_with_connection`] for the exact
-/// command semantics this mapping is derived from.
+/// These outcomes are produced by the public
+/// [`IdempotencyStore::claim_or_check`] implementation for this store,
+/// from the exact Redis command sequence described in each arm above.
 ///
 /// # TTL
 /// Default TTL is 24 hours. Entries are automatically expired to prevent
