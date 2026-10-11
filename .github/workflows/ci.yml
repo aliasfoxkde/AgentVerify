@@ -120,6 +120,15 @@ jobs:
         env:
           RUSTFLAGS: -D warnings
 
+      # The default-feature run above never compiles the non-default
+      # feature code (Redis idempotency store, file observers, …). This
+      # run compiles and executes it against the services provisioned for
+      # this job, so feature-gated tests cannot silently rot.
+      - name: Run tests with all features
+        run: cargo test --locked --workspace --all-features
+        env:
+          RUSTFLAGS: -D warnings
+
       - name: Validate contract examples
         run: bash scripts/validate-contract-examples.sh
 

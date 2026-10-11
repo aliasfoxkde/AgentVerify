@@ -254,16 +254,24 @@ const REDIS_KEY_PREFIX: &str = "idempotency:";
 /// - `complete` uses SET to update with result
 /// - `release` uses DEL to remove entry
 ///
-/// # Degradation Policy
-/// When Redis cannot answer a claim, the store degrades exactly one way:
-/// to [`ClaimResult::Claimed`], so the caller dispatches and reconciles
-/// afterwards. This is the policy pinned by
-/// `redis_idempotency_store_claims_when_redis_is_unreachable` and applies
-/// to pool exhaustion, serialization failures, and command errors alike.
-/// The one exception is a `WRONGTYPE` (`TypeError`) answer: that is a
-/// definitive statement that the key namespace is occupied by foreign
-/// content, so the key is reported as
-/// [`ClaimResult::AlreadyClaimed`] with no readable outcome.
+/// # Claim Outcomes
+/// The store answers a claim with one of three outcomes and never guesses:
+///
+/// - [`ClaimResult::Claimed`] — Redis answered `OK` to
+///   `SET idempotency:{key} <entry> NX EX <ttl>`; this caller owns the claim.
+/// - [`ClaimResult::AlreadyClaimed`] — the key is *provably* occupied: SET
+///   answered nil and a readable entry (or a corrupted but present entry)
+///   was read back, or the single expiry-race re-claim lost the key to
+///   another caller.
+/// - [`ClaimResult::Unavailable`] — Redis could not prove the claim state:
+///   the pool had no connection, the entry could not be serialized, or the
+///   `SET ... NX` command itself failed. This includes `WRONGTYPE`, which
+///   means the shared namespace holds foreign content at that key. The
+///   caller must not dispatch; reporting `Claimed` here would strip
+///   idempotency protection exactly when the store is failing.
+///
+/// See [`RedisIdempotencyStore::claim_with_connection`] for the exact
+/// command semantics this mapping is derived from.
 ///
 /// # TTL
 /// Default TTL is 24 hours. Entries are automatically expired to prevent
@@ -316,19 +324,101 @@ impl RedisIdempotencyStore {
         format!("{REDIS_KEY_PREFIX}{key}")
     }
 
-    /// Classify a failed SETNX attempt per the degradation policy.
+    /// Issue the atomic claim command over an established connection.
     ///
-    /// A `TypeError` (e.g. `WRONGTYPE`) is a definitive answer about this
-    /// key: the namespace is occupied by foreign content, so the key is
-    /// taken and no outcome can be read from it. Every other error means
-    /// the store could not answer at all — the same condition as an
-    /// unreachable pool — so the caller is told it claimed the key and
-    /// reconciles afterwards.
-    fn claim_on_setnx_error(kind: redis::ErrorKind) -> ClaimResult {
-        if matches!(kind, redis::ErrorKind::TypeError) {
-            ClaimResult::AlreadyClaimed
-        } else {
-            ClaimResult::Claimed
+    /// `SET key value NX EX ttl` answers `OK` when the key did not exist
+    /// (and is now written with `value`), `nil` when the key already exists
+    /// (the value is left untouched), or an error. `WRONGTYPE` is raised
+    /// instead of `nil` when the key holds a non-string value written by
+    /// something else in the shared namespace.
+    async fn set_nx_claim<C: redis::aio::ConnectionLike>(
+        conn: &mut C,
+        redis_key: &str,
+        value: &str,
+        ttl_secs: u64,
+    ) -> redis::RedisResult<bool> {
+        redis::cmd("SET")
+            .arg(redis_key)
+            .arg(value)
+            .arg("NX")
+            .arg("EX")
+            .arg(i64::try_from(ttl_secs).unwrap_or(i64::MAX))
+            .query_async(conn)
+            .await
+    }
+
+    /// Run the claim decision over an established connection.
+    ///
+    /// # Redis command semantics
+    /// - `SET key value NX EX ttl` errors (connection drop, cluster
+    ///   redirection, `WRONGTYPE` on foreign content, …) say nothing
+    ///   readable about the key's claim state →
+    ///   `(Unavailable, None)`. No dispatch.
+    /// - `SET ... NX` answers nil: the key exists and holds a string. A
+    ///   follow-up `GET` therefore cannot fail with `WRONGTYPE`; it returns
+    ///   the entry, nil, or a store-level error.
+    ///   - entry read back → `(AlreadyClaimed, result)`; a present but
+    ///     corrupted entry is occupied with an unreadable outcome →
+    ///     `(AlreadyClaimed, None)`.
+    ///   - `GET` returns nil: the entry expired or was released between the
+    ///     two commands, so the key is provably unclaimed. The claim is
+    ///     retried exactly once; if that retry errors, the outcome is
+    ///     `(Unavailable, None)`, never a fabricated claim.
+    ///   - `GET` errors: the key was *proven* occupied by the nil answer,
+    ///     so the outcome is `(AlreadyClaimed, None)` — occupied, outcome
+    ///     unreadable. The claim is never retried: a retry that succeeded
+    ///     would hand this caller a key another request may still own.
+    async fn claim_with_connection<C: redis::aio::ConnectionLike>(
+        conn: &mut C,
+        redis_key: &str,
+        value: &str,
+        ttl_secs: u64,
+    ) -> (ClaimResult, Option<VerificationResult>) {
+        match Self::set_nx_claim(conn, redis_key, value, ttl_secs).await {
+            Ok(true) => (ClaimResult::Claimed, None),
+            Ok(false) => {
+                // Key already exists — check its state
+                let get_result: redis::RedisResult<Option<String>> =
+                    redis::cmd("GET").arg(redis_key).query_async(conn).await;
+                match get_result {
+                    Ok(Some(raw)) => match serde_json::from_str::<RedisEntry>(&raw) {
+                        Ok(entry) => (ClaimResult::AlreadyClaimed, entry.to_result()),
+                        Err(_) => {
+                            // Corrupted entry - occupied, but no readable result
+                            (ClaimResult::AlreadyClaimed, None)
+                        }
+                    },
+                    Ok(None) => {
+                        // The entry expired or was released between the two
+                        // commands, so the key is provably unclaimed: retry
+                        // the claim exactly once.
+                        match Self::set_nx_claim(conn, redis_key, value, ttl_secs).await {
+                            Ok(true) => (ClaimResult::Claimed, None),
+                            Ok(false) => (ClaimResult::AlreadyClaimed, None),
+                            Err(e) => {
+                                tracing::warn!("Redis claim retry failed: {e}");
+                                (ClaimResult::Unavailable, None)
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // SET NX proved the key occupied; the outcome is
+                        // unreadable. Never retry the claim — a successful
+                        // retry could grant a key another request still owns.
+                        tracing::warn!(
+                            "Redis GET after occupied claim failed, reporting \
+                             the key occupied with no outcome: {e}"
+                        );
+                        (ClaimResult::AlreadyClaimed, None)
+                    }
+                }
+            }
+            Err(e) => {
+                // An unanswered SET NX proves nothing about the key: the
+                // claim state is unknown and the caller must not dispatch.
+                tracing::warn!("Redis SETNX failed, claim unavailable: {e}");
+                (ClaimResult::Unavailable, None)
+            }
         }
     }
 }
@@ -347,7 +437,7 @@ impl IdempotencyStore for RedisIdempotencyStore {
                 Ok(conn) => conn,
                 Err(e) => {
                     tracing::warn!("failed to get Redis connection: {e}");
-                    return (ClaimResult::Claimed, None);
+                    return (ClaimResult::Unavailable, None);
                 }
             };
 
@@ -357,79 +447,11 @@ impl IdempotencyStore for RedisIdempotencyStore {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!("failed to serialize entry: {e}");
-                    return (ClaimResult::Claimed, None);
+                    return (ClaimResult::Unavailable, None);
                 }
             };
 
-            // SETNX with TTL - atomic claim operation
-            let setnx_result: Result<bool, _> = redis::cmd("SET")
-                .arg(&redis_key)
-                .arg(&value)
-                .arg("NX")
-                .arg("EX")
-                .arg(i64::try_from(ttl_secs).unwrap_or(i64::MAX))
-                .query_async(&mut conn)
-                .await;
-
-            match setnx_result {
-                Ok(true) => {
-                    // We successfully claimed the key
-                    (ClaimResult::Claimed, None)
-                }
-                Ok(false) => {
-                    // Key already exists - check its state
-                    let get_result: Option<String> = redis::cmd("GET")
-                        .arg(&redis_key)
-                        .query_async(&mut conn)
-                        .await
-                        .ok();
-
-                    if let Some(raw) = get_result {
-                        match serde_json::from_str::<RedisEntry>(&raw) {
-                            Ok(entry) => {
-                                let result = entry.to_result();
-                                (ClaimResult::AlreadyClaimed, result)
-                            }
-                            Err(_) => {
-                                // Corrupted entry - treat as already claimed
-                                (ClaimResult::AlreadyClaimed, None)
-                            }
-                        }
-                    } else {
-                        // Race condition: entry expired between SETNX and GET
-                        // Try again (recursive retry once)
-                        let entry = RedisEntry::new_in_flight(key.to_string());
-                        let value = serde_json::to_string(&entry).unwrap_or_default();
-                        let retry_result: Result<bool, _> = redis::cmd("SET")
-                            .arg(&redis_key)
-                            .arg(&value)
-                            .arg("NX")
-                            .arg("EX")
-                            .arg(i64::try_from(ttl_secs).unwrap_or(i64::MAX))
-                            .query_async(&mut conn)
-                            .await;
-                        match retry_result {
-                            Ok(true) => (ClaimResult::Claimed, None),
-                            Ok(false) => (ClaimResult::AlreadyClaimed, None),
-                            Err(e) => {
-                                let claim = Self::claim_on_setnx_error(e.kind());
-                                tracing::warn!(
-                                    "Redis retry SETNX failed, degrading to {claim:?}: {e}"
-                                );
-                                (claim, None)
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    // An unanswered SETNX is store unavailability, not a
-                    // competing claim: degrade per the recorded policy. The
-                    // WRONGTYPE exception is a definitive "key is taken".
-                    let claim = Self::claim_on_setnx_error(e.kind());
-                    tracing::warn!("Redis SETNX failed, degrading to {claim:?}: {e}");
-                    (claim, None)
-                }
-            }
+            Self::claim_with_connection(&mut conn, &redis_key, &value, ttl_secs).await
         })
     }
 
@@ -856,9 +878,13 @@ mod tests {
         let mut already_claimed = 0;
         for handle in handles {
             let (claim, _) = rt.block_on(handle).unwrap();
-            match claim {
-                ClaimResult::Claimed => claimed += 1,
-                ClaimResult::AlreadyClaimed => already_claimed += 1,
+            // The file store never reports an unavailable claim: anything
+            // that is not Claimed is counted as a lost race, and the
+            // exact-one-winner assertions below fail if that mapping is wrong.
+            if matches!(claim, ClaimResult::Claimed) {
+                claimed += 1;
+            } else {
+                already_claimed += 1;
             }
         }
 
@@ -1082,15 +1108,19 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn redis_idempotency_store_survives_a_key_holding_the_wrong_redis_type() {
+        async fn redis_idempotency_store_does_not_claim_a_key_holding_the_wrong_redis_type() {
             let Some(url) = redis_url() else { return };
             let store = redis_store(&url, 300).await;
             let key = next_key("redis-wrong-type");
 
             // The idempotency namespace is shared with whatever else uses this
-            // Redis. A key that holds a list instead of an entry makes SETNX report
-            // the key as taken and makes the follow-up GET fail with WRONGTYPE, so
-            // the store falls into its retry path.
+            // Redis. A key holding a list instead of an entry cannot be claimed
+            // or read, and the exact reply shape is server-dependent: Redis
+            // before 8.0 answers the claim with a WRONGTYPE error, Redis 8.0
+            // answers nil (the NX condition is simply unmet) and the follow-up
+            // GET fails with WRONGTYPE instead. Both shapes mean the key is
+            // occupied by foreign content with no readable outcome, so the
+            // store must never answer Claimed for it.
             let mut conn = store.pool.get().await.expect("redis connection available");
             redis::cmd("RPUSH")
                 .arg(RedisIdempotencyStore::redis_key(&key))
@@ -1102,26 +1132,35 @@ mod tests {
                 .expect("RPUSH succeeds");
             drop(conn);
 
-            // Both the retried SET NX and the fallback agree: the key is taken and
-            // no outcome can be read from it.
             let (claim, observed) = store.claim_or_check(&key).await;
-            assert_eq!(claim, ClaimResult::AlreadyClaimed);
+            assert_ne!(
+                claim,
+                ClaimResult::Claimed,
+                "a foreign key must never be claimable, got {claim:?}"
+            );
             assert_eq!(observed, None, "a foreign key must not yield a result");
 
+            // Release only deletes the key, so it repairs the namespace.
             store.release(&key).await;
 
-            // After release the key is gone and can be claimed normally.
             let (claim, observed) = store.claim_or_check(&key).await;
-            assert_eq!(claim, ClaimResult::Claimed);
+            assert_eq!(
+                claim,
+                ClaimResult::Claimed,
+                "after release the key must be claimable"
+            );
             assert_eq!(observed, None);
             store.release(&key).await;
         }
 
         #[tokio::test]
-        async fn redis_idempotency_store_claims_when_redis_is_unreachable() {
+        async fn redis_idempotency_store_does_not_claim_when_redis_is_unreachable() {
             // A pool pointed at a closed port: no connection can be established
-            // within the configured window, so every operation must fail closed
-            // without panicking or blocking indefinitely.
+            // within the configured window. The claim state cannot be proven,
+            // so the store must report Unavailable — answering Claimed would
+            // send the caller to dispatch without idempotency protection
+            // precisely while the store is failing, and answering
+            // AlreadyClaimed would hide real work behind a duplicate verdict.
             let mut config = deadpool_redis::Config::from_url("redis://127.0.0.1:1/");
             config.pool = Some(deadpool_redis::PoolConfig {
                 timeouts: deadpool_redis::Timeouts {
@@ -1137,53 +1176,231 @@ mod tests {
             let store = RedisIdempotencyStore::new(pool, 300);
             let key = next_key("redis-unreachable");
 
-            // Fail-closed: the caller is told it claimed the key so it will attempt
-            // dispatch and reconcile afterwards.
             let (claim, observed) = store.claim_or_check(&key).await;
-            assert_eq!(claim, ClaimResult::Claimed);
+            assert_eq!(claim, ClaimResult::Unavailable);
             assert_eq!(observed, None);
-
-            store
-                .complete(key.clone(), VerificationResult::Failed)
-                .await;
-            store.release(&key).await;
         }
 
-        #[test]
-        fn setnx_type_error_is_a_definitive_occupied_key_answer() {
-            // WRONGTYPE surfaces as ErrorKind::TypeError: the idempotency
-            // namespace holds foreign content at this key, so the key is
-            // taken even though no outcome can be read from it. This is the
-            // classification the wrong-Redis-type integration test observes
-            // end to end.
-            assert_eq!(
-                RedisIdempotencyStore::claim_on_setnx_error(redis::ErrorKind::TypeError),
-                ClaimResult::AlreadyClaimed
-            );
+        // =========================================================================
+        // Deterministic claim-path coverage over a scripted connection. These
+        // exercise the two real command-error paths of `claim_or_check` — the
+        // `SET key value NX EX ttl` command failing, and the follow-up `GET`
+        // failing after an occupied answer — without a live server, so they
+        // run in every build that enables the feature.
+        // =========================================================================
+
+        use std::collections::VecDeque;
+
+        /// A scripted connection serving one prepared reply per command and
+        /// recording the name of every command it was asked to run.
+        struct ScriptedConnection {
+            replies: VecDeque<Result<redis::Value, redis::RedisError>>,
+            sent: Vec<String>,
         }
 
-        #[test]
-        fn setnx_store_unavailability_degrades_to_claimed() {
-            // Errors that say nothing about the key itself — refused
-            // commands, dropped connections, cluster redirections — are the
-            // same condition as an unreachable pool: the caller is told it
-            // claimed the key so it will dispatch and reconcile afterwards.
-            // Reporting AlreadyClaimed here would fabricate a Duplicate
-            // receipt for an action that never dispatched.
-            for kind in [
-                redis::ErrorKind::ResponseError,
-                redis::ErrorKind::IoError,
-                redis::ErrorKind::Moved,
-                redis::ErrorKind::TryAgain,
-                redis::ErrorKind::ClusterDown,
-                redis::ErrorKind::ClientError,
+        impl ScriptedConnection {
+            fn new(replies: Vec<Result<redis::Value, redis::RedisError>>) -> Self {
+                Self {
+                    replies: VecDeque::from(replies),
+                    sent: Vec::new(),
+                }
+            }
+
+            /// The error a Redis server raises for commands against a key
+            /// holding a non-string value (reported by the crate as
+            /// `ErrorKind::TypeError`).
+            fn wrongtype() -> redis::RedisError {
+                redis::RedisError::from((
+                    redis::ErrorKind::TypeError,
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
+                ))
+            }
+
+            fn connection_dropped() -> redis::RedisError {
+                redis::RedisError::from((redis::ErrorKind::IoError, "connection dropped"))
+            }
+        }
+
+        impl redis::aio::ConnectionLike for ScriptedConnection {
+            fn req_packed_command<'a>(
+                &'a mut self,
+                cmd: &'a redis::Cmd,
+            ) -> redis::RedisFuture<'a, redis::Value> {
+                let name = match cmd.args_iter().next() {
+                    Some(redis::Arg::Simple(bytes)) => String::from_utf8_lossy(bytes).into_owned(),
+                    _ => String::new(),
+                };
+                self.sent.push(name);
+                let reply = self
+                    .replies
+                    .pop_front()
+                    .expect("scripted connection ran out of replies");
+                Box::pin(async move { reply })
+            }
+
+            fn req_packed_commands<'a>(
+                &'a mut self,
+                _cmd: &'a redis::Pipeline,
+                _offset: usize,
+                _count: usize,
+            ) -> redis::RedisFuture<'a, Vec<redis::Value>> {
+                Box::pin(async move {
+                    Err(redis::RedisError::from((
+                        redis::ErrorKind::ClientError,
+                        "pipelining is not scripted",
+                    )))
+                })
+            }
+
+            fn get_db(&self) -> i64 {
+                0
+            }
+        }
+
+        /// The payload the store serializes for a fresh claim.
+        fn in_flight_value() -> String {
+            serde_json::to_string(&RedisEntry::new_in_flight("scripted".to_string()))
+                .expect("in-flight entry serializes")
+        }
+
+        #[tokio::test]
+        async fn claim_command_error_is_unavailable_and_sends_nothing_else() {
+            // The claim command itself failed: it proved nothing about the
+            // key, so the answer is Unavailable for every error family —
+            // WRONGTYPE (foreign content) and transport failures alike — and
+            // no follow-up command may run.
+            for error in [
+                ScriptedConnection::wrongtype(),
+                ScriptedConnection::connection_dropped(),
             ] {
+                let mut conn = ScriptedConnection::new(vec![Err(error)]);
+                let (claim, observed) = RedisIdempotencyStore::claim_with_connection(
+                    &mut conn,
+                    "idempotency:scripted",
+                    &in_flight_value(),
+                    300,
+                )
+                .await;
+                assert_eq!(claim, ClaimResult::Unavailable);
+                assert_eq!(observed, None);
+                assert_eq!(conn.sent, vec!["SET"], "no other command may follow");
+            }
+        }
+
+        #[tokio::test]
+        async fn get_error_after_occupied_answer_reports_claimed_without_a_retry() {
+            // SET NX answered nil: the key is provably occupied. A failing
+            // GET leaves the outcome unreadable — WRONGTYPE is the shape a
+            // foreign key produces on Redis 8.0 — so the answer is
+            // (AlreadyClaimed, None) and the claim is never retried: a
+            // retry that succeeded could grant a key another request
+            // still owns.
+            for error in [
+                ScriptedConnection::wrongtype(),
+                ScriptedConnection::connection_dropped(),
+            ] {
+                let mut conn = ScriptedConnection::new(vec![Ok(redis::Value::Nil), Err(error)]);
+                let (claim, observed) = RedisIdempotencyStore::claim_with_connection(
+                    &mut conn,
+                    "idempotency:scripted",
+                    &in_flight_value(),
+                    300,
+                )
+                .await;
+                assert_eq!(claim, ClaimResult::AlreadyClaimed);
+                assert_eq!(observed, None, "an unreadable outcome must not be guessed");
                 assert_eq!(
-                    RedisIdempotencyStore::claim_on_setnx_error(kind),
-                    ClaimResult::Claimed,
-                    "kind {kind:?} must degrade to Claimed"
+                    conn.sent,
+                    vec!["SET", "GET"],
+                    "the claim must not be retried after an occupied answer"
                 );
             }
+        }
+
+        #[tokio::test]
+        async fn expired_entry_reclaims_exactly_once() {
+            // The GET returned nil: the entry expired or was released between
+            // the two commands, so the key is provably unclaimed and a single
+            // re-claim is correct.
+            let mut conn = ScriptedConnection::new(vec![
+                Ok(redis::Value::Nil),
+                Ok(redis::Value::Nil),
+                Ok(redis::Value::Okay),
+            ]);
+            let (claim, observed) = RedisIdempotencyStore::claim_with_connection(
+                &mut conn,
+                "idempotency:scripted",
+                &in_flight_value(),
+                300,
+            )
+            .await;
+            assert_eq!(claim, ClaimResult::Claimed);
+            assert_eq!(observed, None);
+            assert_eq!(conn.sent, vec!["SET", "GET", "SET"]);
+        }
+
+        #[tokio::test]
+        async fn lost_reclaim_race_reports_already_claimed() {
+            // The re-claim answered nil: the key exists again, so it is
+            // occupied and nobody may dispatch against it.
+            let mut conn = ScriptedConnection::new(vec![
+                Ok(redis::Value::Nil),
+                Ok(redis::Value::Nil),
+                Ok(redis::Value::Nil),
+            ]);
+            let (claim, observed) = RedisIdempotencyStore::claim_with_connection(
+                &mut conn,
+                "idempotency:scripted",
+                &in_flight_value(),
+                300,
+            )
+            .await;
+            assert_eq!(claim, ClaimResult::AlreadyClaimed);
+            assert_eq!(observed, None);
+            assert_eq!(conn.sent, vec!["SET", "GET", "SET"]);
+        }
+
+        #[tokio::test]
+        async fn failed_reclaim_is_unavailable_not_claimed() {
+            // The expiry-race re-claim errored: the claim state is unknown
+            // again, so the answer must be Unavailable rather than a
+            // fabricated Claimed.
+            let mut conn = ScriptedConnection::new(vec![
+                Ok(redis::Value::Nil),
+                Ok(redis::Value::Nil),
+                Err(ScriptedConnection::connection_dropped()),
+            ]);
+            let (claim, observed) = RedisIdempotencyStore::claim_with_connection(
+                &mut conn,
+                "idempotency:scripted",
+                &in_flight_value(),
+                300,
+            )
+            .await;
+            assert_eq!(claim, ClaimResult::Unavailable);
+            assert_eq!(observed, None);
+            assert_eq!(conn.sent, vec!["SET", "GET", "SET"]);
+        }
+
+        #[tokio::test]
+        async fn completed_sibling_entry_is_read_back_after_occupied_answer() {
+            let entry =
+                RedisEntry::new_completed("scripted".to_string(), VerificationResult::Verified);
+            let raw = serde_json::to_string(&entry).expect("completed entry serializes");
+            let mut conn = ScriptedConnection::new(vec![
+                Ok(redis::Value::Nil),
+                Ok(redis::Value::Data(raw.into_bytes())),
+            ]);
+            let (claim, observed) = RedisIdempotencyStore::claim_with_connection(
+                &mut conn,
+                "idempotency:scripted",
+                &in_flight_value(),
+                300,
+            )
+            .await;
+            assert_eq!(claim, ClaimResult::AlreadyClaimed);
+            assert_eq!(observed, Some(VerificationResult::Verified));
+            assert_eq!(conn.sent, vec!["SET", "GET"]);
         }
 
         #[test]
