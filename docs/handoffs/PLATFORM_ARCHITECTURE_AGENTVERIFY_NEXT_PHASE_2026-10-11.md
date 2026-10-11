@@ -6,6 +6,16 @@ fail-closed behavior, and test strategy at the current `main` boundary;
 accounting for the open PR stack #27 → #29 without modifying or duplicating
 them; ranked next-phase tasks with acceptance gates. **No source code is
 changed by this handoff.**
+**Revision 2 (2026-10-11, this commit):** same evidence boundary as Rev. 1 —
+this branch still changes only this document. Adds §1.1 (independently
+verified spec finding: the shipped executor cannot dispatch, and Rev. 1
+scheduled no task for it), re-ranks §5 around an executable utility proof
+chain (real sandboxed dispatch adapter → honest simulation-vs-real benchmark
+→ Platform-Architecture lifecycle/receipt integration → live multi-turn
+end-to-end acceptance), demotes idempotency polish behind that proof, and
+pins every owner decision to an owner role, a bounded date, and a fallback
+(§6). §3's audit findings are unchanged except citation corrections recorded
+in §7.
 **Evidence boundary:** branch `main` @ `f55e17149b47c04eb53faa21c8b56b6de50a53d9`
 (origin/main, fast-forwarded local clone, working tree clean except this
 document). This boundary already contains PR #26 (post-claim error-exit claim
@@ -43,6 +53,40 @@ since that boundary **[confirmed]**:
 Nothing in this document duplicates #27/#29 scope. Section 4 states exactly
 what each covers; sections 3 and 5 cover what remains **after** both land.
 
+### 1.1 Driver for this revision: independently verified spec finding
+
+An independent verification pass over Rev. 1 of this handoff found a spec
+gap that Rev. 1 documented but never scheduled work for. Both halves are
+verified at the same boundary (`f55e171`):
+
+1. **The shipped executor cannot dispatch.** The only shipped
+   `ActionExecutor` implementation is `SimulatedActionExecutor`
+   (`crates/agentverify-runtime/src/action_executor.rs:104-127`), whose
+   `execute` returns `Ok(DispatchOutcome::Completed)` unconditionally, before
+   any external system is contacted — its own doc comment states this
+   ("immediately completes actions successfully without actually
+   dispatching"). The CLI `verify` command wires it
+   (`crates/agentverify-cli/src/main.rs:386-388`). This is §3.1 finding 1,
+   unchanged since Rev. 1. **[confirmed]**
+2. **Rev. 1's task list never scheduled a dispatch/outcome task.** All nine
+   of its P0–P2 items govern idempotency claims, store persistence, WASM
+   taxonomies, CI, and dependency sequencing. A real dispatch adapter existed
+   only as open question Q4 and as the prior handoff's unstarted packet
+   P-DIS-01 (`docs/handoffs/PLATFORM_ARCHITECTURE_AGENTVERIFY_2026-10-10.md`
+   §7; ledger row in `docs/internal/TASKS.md`, "Handoff packets 2026-10-10").
+   Platform-Architecture integration likewise appeared only as open
+   questions, not as executable tasks. **[confirmed]**
+
+Consequence: Rev. 1 optimized correctness of the *claim/persistence layer*
+while the library's headline capability — proving an external action reached
+its required final state — remained simulation-only, with no scheduled,
+gated path to executable proof. This revision re-ranks §5 to close that gap
+first: the P1 chain (P1-3 … P1-6) is a dependency-ordered utility proof —
+real sandboxed dispatch → honest benchmark → platform contract integration →
+live multi-turn acceptance — and the idempotency-polish items move behind it
+(P2), with the justification stated at each item. The P2 items are demoted,
+not dropped: they still land before any promotion claim.
+
 ## 2. Boundary snapshot
 
 - `main` @ `f55e171`; 13 crates; static inventory of `#[test]`/`#[tokio::test]`
@@ -63,11 +107,15 @@ what each covers; sections 3 and 5 cover what remains **after** both land.
 ### 3.1 Dispatch
 
 - The only shipped action adapter is `SimulatedActionExecutor`
-  (`crates/agentverify-runtime/src/action_executor.rs:104-128`): it returns
-  `Ok(DispatchOutcome::Completed)` unconditionally. The CLI `verify` command
-  wires it (`crates/agentverify-cli/src/main.rs:386-388`) — the `verify`
+  (`crates/agentverify-runtime/src/action_executor.rs:104-127`): its
+  `execute` returns `Ok(DispatchOutcome::Completed)` unconditionally, before
+  any external system is contacted — its own doc comment states this
+  ("immediately completes actions successfully without actually
+  dispatching"). The CLI `verify` command wires it
+  (`crates/agentverify-cli/src/main.rs:386-388`) — the `verify`
   command still verifies nothing that was externally dispatched, exactly as
-  `AGENTS.md` warns. **[confirmed]**
+  `AGENTS.md` warns. **[confirmed]** §1.1 records this as the driver for
+  Rev. 2's replan; the P1 chain in §5 schedules the executable proof.
 - Retry discipline is sound: `DispatchOutcome::should_retry` is true only for
   the two timeout variants (`action_executor.rs:85-91`), i.e. re-dispatch is
   advised only where the external state must be observed first
@@ -77,9 +125,12 @@ what each covers; sections 3 and 5 cover what remains **after** both land.
 - `RecoveryStrategy` retries on `UNKNOWN` and treats `DUPLICATE` as a
   successful stop (`crates/agentverify-recovery/src/lib.rs:999-1023`,
   `1485-1493`) — consistent with UNKNOWN-is-not-FAILED. **[confirmed]**
-- `McpClient::dispatch` exists (`crates/agentverify-mcp/src/client.rs:380-412`)
-  but is an MCP tool-call client, not a production outcome-bearing dispatch
-  adapter. **[confirmed]**
+- `McpClient` exposes an outbound tool-call surface (`call_tool`,
+  `crates/agentverify-mcp/src/client.rs:441-466`), but no `ActionExecutor`
+  adapter implements it, and the type's private `dispatch` method
+  (`client.rs:352-373`) is JSON-RPC message routing, not action dispatch —
+  neither is an outcome-bearing dispatch adapter. **[confirmed]** (Rev. 1
+  cited this bullet as `client.rs:380-412`; corrected in Rev. 2.)
 
 ### 3.2 Idempotency persistence
 
@@ -130,7 +181,7 @@ Residual fail-closed gaps **not** covered by #27/#29 (source-verified on
 - **Redis completion writes are silently discarded on error.**
   `RedisIdempotencyStore::complete` ignores the `SET` result entirely
   (`idempotency_store.rs:428-435`: `let _: Result<(), _> = ...`); unlike
-  `release` (which warns at `:449`) a failed completion write is not even
+  `release` (which warns at `:450`) a failed completion write is not even
   logged. A lost completion leaves the key `InFlight` until TTL, so later
   callers get `(AlreadyClaimed, None)` — the unresolved-claim shape that reads
   as a false `Duplicate` downstream. **[inferred from the store state
@@ -171,8 +222,13 @@ an owner question — §6 Q1]**
   cross-process — still open). Tier B seams present on `main`: timeout before
   and after dispatch, transport error, ambiguity, retry exhaustion, stale
   read, cancellation, observer error, idempotency double-dispatch
-  (`executor.rs` test module; e.g. `:1461`, `:1499`, `:1536`, `:1572`,
-  `:1607`, `:1654`, `:1714`, `:1856`) **[confirmed]**. Property tests
+  (`executor.rs` test module — seam paired with test line: timeout before
+  dispatch `:1461`, transport error → Unknown `:1499`, ambiguity terminal
+  `Unknown` `:1536`, retry exhaustion `:1572`, observer error → Unknown
+  `:1607`, stale read `:1654`, cancellation → Unknown `:1714`, transport
+  error consumes claim `:1856`, idempotency double-dispatch prevention
+  `:2353`) **[confirmed — pairings re-verified in Rev. 2; Rev. 1 paired four
+  of these lines with the wrong seam names]**. Property tests
   (proptest) exist in core predicates and the engine **[confirmed]**.
 - **CI never executes the feature-gated store tests.** The `Test` job runs
   `cargo test --locked --workspace` with default features
@@ -218,13 +274,29 @@ reimplements them.
   silent Redis completion loss, file-store completion divergence, the
   `complete`/`release` non-fatal policy, the WASM claim taxonomy and its CI
   blind spot, and the UNKNOWN/TTL interaction. These are the subjects of the
-  ranked tasks below; none of them re-open decided scope in #27/#29.
+  ranked tasks below; none of them re-open decided scope in #27/#29. Rev. 2
+  ranks the executable utility proof (P1-3 … P1-6) ahead of them: the
+  idempotency items are now P2-7 … P2-9 (WASM taxonomy/CI items P2-11/P2-12)
+  — demoted behind utility proof, not dropped (§5 legend).
 
 ## 5. Ranked next-phase tasks
 
-Priority legend: **P0** = blocks correct landing of in-flight work;
-**P1** = correctness/observability debt that should land before any
-integration promotion; **P2** = readiness/quality debt.
+Priority legend (Rev. 2): **P0** = blocks correct landing of in-flight work;
+**P1** = the executable utility proof chain — real dispatch, honest
+measurement, platform contract integration, live end-to-end acceptance —
+which unblocks Platform-Architecture integration; **P2** = idempotency
+persistence polish and readiness debt, deliberately ranked behind the
+utility proof.
+
+**Why the Rev. 1 idempotency items are demoted (justified, not dropped):**
+once P0-1 lands, every store error is refused (`Unavailable`) instead of
+answered with a fabricated claim, so the P2 items are robustness and
+observability polish on already fail-closed stores — none of them gates
+executable utility. The P1 chain also avoids the high-contention
+`idempotency_store.rs` surface entirely, so it proceeds without rebasing
+against #27/#29. Real dispatch raises the stakes of the polish items (real
+external effects make a lost completion write consequential), which is why
+they remain ranked ahead of promotion and carry owner decisions in §6.
 
 ### P0-1 · Land the claim fail-closed stack in order
 
@@ -256,11 +328,149 @@ integration promotion; **P2** = readiness/quality debt.
 - **CI/GitForge relevance:** pure GitHub Actions change; keep runtime
   `RUSTFLAGS: -D warnings`.
 
-### P1-3 · Make Redis completion-write failure observable
+### P1-3 · Real sandboxed dispatch adapter: one concrete action, durable receipt, verified outcome
+
+Executes the first slice of the prior handoff's P-DIS-01 packet
+(`docs/handoffs/PLATFORM_ARCHITECTURE_AGENTVERIFY_2026-10-10.md` §7; ledger
+row in `docs/internal/TASKS.md`, "Handoff packets 2026-10-10").
+**Owner role:** Repository owner (@aliasfoxkde). Adapter crate location per
+Q4's fallback unless decided sooner.
+
+- **Evidence:** the gap is §1.1/§3.1 (`action_executor.rs:104-127`). The
+  outcome contract the adapter must honor is `DispatchOutcome`/`DispatchError`
+  (`action_executor.rs:10-34`; timeout variants `:23-30`; `should_retry`
+  true for timeouts only, `:85-91`); the prior handoff's mapping guidance is
+  transport/timeout/2xx/4xx/5xx → outcomes exactly per that enum.
+- **Action:** implement `HttpActionExecutor: ActionExecutor` in
+  `crates/agentverify-http/src/action_executor.rs`, **loopback-only**: the
+  constructor refuses any base URL whose host is not `127.0.0.1`/`localhost`
+  (the sandbox gate, test-enforced). Dispatch ONE concrete action end to end:
+  POST the contract action to a loopback reference service that persists the
+  payload durably to a file; verify the postcondition by reading the written
+  artifact back through the REST-observer path; record the receipt in
+  `FileReceiptStore` and re-read it (surface per `receipt.rs:67`: `action_id`,
+  `contract_id`, digest, optional Ed25519 signature). CLI: wire
+  `--executor simulated|http` with `simulated` the labeled default, per
+  P-DIS-01 (the simulated default stays; `AGENTS.md`'s invariant — the
+  convenience path must not be described as real dispatch — is lifted only
+  for the explicitly selected `http` path once these gates pass).
+- **Acceptance gates (executable):**
+  1. Integration test: one dispatch → artifact written by the loopback
+     service → postcondition `Verified` → receipt stored, digest matches
+     canonical receipt data, signature verifies via the signing path.
+  2. Sandbox assertion: constructor and tests reject non-loopback targets;
+     no test in the suite contacts a non-loopback host.
+  3. Timeout after dispatch → verdict `Unknown`, never `Failed`
+     (`executor.rs:2520` pattern); transport error → `Unknown` (`:1499`
+     pattern); timeout before dispatch releases the claim (`:1461` pattern).
+  4. Existing simulated-default tests unchanged; workspace gates green
+     (fmt, clippy `-D warnings`, tests) in CI on the implementing PR — this
+     is a code change, so CI is the evidence of record.
+- **No-claim:** this proves executable utility inside a loopback sandbox. It
+  is not a production-readiness claim and not Tier D (no authenticated
+  cross-process service yet — that is P1-5/P1-6).
+- **CI/GitForge relevance:** GitHub Actions only (§2).
+
+### P1-4 · Honest utility benchmark: real execution vs simulation, with failure/timeout/cancel behavior
+
+Depends on P1-3. Runs after it; no other blocker.
+
+- **Evidence:** no bench target exists for the runtime
+  (`crates/agentverify-runtime/benches/` absent at `f55e171`);
+  `criterion = "0.5"` is already a workspace dependency (`Cargo.toml:112`);
+  the behavior matrix to measure exists as Tier-B seams (§3.5).
+- **Action:** add `crates/agentverify-runtime/benches/utility_bench.rs`
+  (criterion) comparing `SimulatedActionExecutor` vs the P1-3 adapter through
+  `Executor::execute_with_executor` across: (a) happy path (dispatch →
+  observe → verify → receipt), (b) transport error → `Unknown`, (c) timeout
+  before and after dispatch, (d) cancellation (`executor.rs:1714` seam).
+  Report p50/p95/p99 per the quality rules.
+- **Acceptance gates:** the bench compiles and runs at the recorded SHA;
+  numbers are committed to a dated report under `docs/` with the run command
+  and SHA; every matrix scenario appears in the report, not only the happy
+  path; the report carries this line verbatim: "Utility demonstration only —
+  loopback sandbox measurement, not a production-readiness or latency
+  claim."
+- **No-claim:** simulation-vs-real deltas describe harness overhead, not
+  production behavior.
+- **CI/GitForge relevance:** benches stay out of the CI hot path; the dated
+  report is the artifact of record.
+
+### P1-5 · Platform-Architecture task-lifecycle/receipt-contract integration (co-owner: Control Center)
+
+Executes the receipt-identity half of P-CC-01 (prior handoff §7;
+`docs/internal/TASKS.md:144`). Depends on P1-3; parallel with P1-4.
+
+- **Evidence:** the integration surface already exists one-directional at
+  `f55e171`: `ControlCenterClient` POSTs receipts to
+  `{base}/api/v1/verification-receipts`
+  (`crates/agentverify-http/src/client.rs:168`) with the receipt digest as
+  `X-Idempotency-Key` (`:193`) and a `submit_receipt_with_unknown_on_timeout`
+  wrapper (`:232`), covered by wiremock tests (`:470`). What is missing is
+  identity binding: `Receipt` (`receipt.rs:67`) carries `action_id`/
+  `contract_id`/digest/signature but **no** project/task/work-request/job/
+  agent/commit/verifier/replay fields. Whether any Control Center deployment
+  implements the endpoint remains **[unverified]** (prior handoff §5).
+- **Action:** add the P-CC-01 identity fields to `Receipt` (digest computed
+  over the extended canonical form), bind them at execution time from the
+  platform task lifecycle (task/work-request/job/agent-run/commit), and pin
+  the versioned schema in `docs/INTEGRATIONS.md`; add wiremock rejection
+  fixtures (orphan, stale, tampered, unauthorized, cross-project, replayed)
+  proving the client surfaces rejection reasons. Submit-only: no
+  promotion-state mutation, per the client's existing design.
+- **Boundary preservation:** AgentVerify stays independently deployable —
+  `AGENTS.md`: it does not own Control Center authorization, GitForge
+  execution, Amortyx routing, or VIVERE experimentation; `docs/internal/
+  HANDOFF.md` assigns task/workspace ownership and lease state to Control
+  Center. No Amortyx or VIVERE imports; `ControlCenterClient` remains the
+  only platform seam.
+- **Acceptance gates:** versioned schema doc merged; fixtures green for all
+  six rejection classes; a receipt without bound identities is refused by
+  the submission path (test); boundary check: zero new dependencies outside
+  the workspace.
+- **No-claim:** wiremock fixtures prove the contract, not a live deployment;
+  live acceptance is P1-6 and stays stub-backed until Q6 resolves.
+- **Co-owner role:** Control Center owner (schema sign-off per Q6).
+
+### P1-6 · Live multi-turn end-to-end acceptance in an isolated repo, observable CI
+
+The acceptance run for the whole chain. Mocks are not the sole proof: the
+dispatched effects are real (files written by a real loopback service inside
+the job); only the Control Center endpoint may be stubbed, and only while Q6
+is undecided.
+
+- **Evidence:** GitHub Actions is the only merge gate and GitForge has no
+  AgentVerify repo (§2); internal Tier D remains open (§6; prior handoff §5).
+- **Action:** create the isolated scratch repo chosen under Q7 with a
+  workflow that builds AgentVerify at a pinned SHA of this repo and runs a
+  ≥3-turn multi-turn loop through `execute_with_executor` using the P1-3
+  adapter: turn 1 happy path; turn 2 injected transport error (final verdict
+  must be `Unknown`, never `Failed`); turn 3 timeout-after-dispatch resolved
+  by observation. Receipts are written, signature-verified in-job, and
+  uploaded as workflow artifacts; the run URL is recorded in the
+  `docs/internal/TASKS.md` ledger.
+- **Acceptance gates:** a green Actions run URL on the scratch repo; ≥3
+  receipts in the artifact, digest + signature verified in-job; turn 2's
+  final verdict logged as `Unknown`; no non-loopback egress in the job
+  (workflow-level network guard); the ledger row references the run URL
+  rather than describing it.
+- **No-claim:** passing this does not promote Tier D — the Control Center
+  hop is stubbed-or-absent unless Q6 resolved to a real deployment. It
+  proves the dispatch → observe → verify → receipt loop runs live and
+  multi-turn, in CI, on a real (sandboxed) effect.
+- **CI/GitForge relevance:** GitHub Actions is the record; if Q5 lands a
+  GitForge mirror the run may additionally route there, with GitHub
+  authoritative until then.
+
+### P2-7 · Make Redis completion-write failure observable (demoted from Rev. 1 P1-3)
+
+- **Demotion justification:** a one-line observability fix on a store whose
+  claim path is fail-closed after P0-1; the P1 chain exercises file/in-memory
+  stores, so this gates nothing in the utility proof.
 
 - **Evidence:** `idempotency_store.rs:428-435` — `complete`'s `SET` result is
   discarded (`let _: Result<(), _>`); contrast `release`'s warned `DEL`
-  (`:449`). Lost completion ⇒ key stays `InFlight` ⇒ false-`Duplicate`
+  (`:450`). Lost completion ⇒ key stays `InFlight` ⇒ false-`Duplicate`
   shape for later callers (§3.3).
 - **Action (post-stack, coordinate rebases — #27 and #29 both touch this
   file):** at minimum `warn!` on completion error, matching `release`; the
@@ -273,7 +483,13 @@ integration promotion; **P2** = readiness/quality debt.
 - **CI/GitForge relevance:** covered by the post-P0-2 `--all-features` test
   job.
 
-### P1-4 · Decide and pin the UNKNOWN-vs-TTL policy
+### P2-8 · Decide and pin the UNKNOWN-vs-TTL policy (demoted from Rev. 1 P1-4; decision pinned at §6 Q1)
+
+- **Demotion justification:** the executor boundary already consumes
+  `UNKNOWN`-verdict keys at every error exit (§3.2), so the residual hazard —
+  re-claim after TTL expiry — is guarded by caller verify-before-retry until
+  the pinned decision; Q1's fail-safe fallback (longer retention) is decided
+  on a bounded date.
 
 - **Evidence:** §3.4 — consumed-as-`UNKNOWN` keys expire with the shared 24 h
   TTL (`idempotency_store.rs:400-437`, `:257-259`), after which the key is
@@ -288,7 +504,11 @@ integration promotion; **P2** = readiness/quality debt.
 - **CI/GitForge relevance:** deterministic tests; no live-service dependency
   for option (a)/(c).
 
-### P1-5 · File-store completion divergence after restart
+### P2-9 · File-store completion divergence after restart (demoted from Rev. 1 P1-5)
+
+- **Demotion justification:** #29 closes the claim direction; the completion
+  direction is an evidence-freshness defect observable after restart, not a
+  dispatch-correctness gate for the utility proof.
 
 - **Evidence:** `idempotency_store.rs:190-205` — `complete` caches the
   completed entry even when `save_entry` failed; disk keeps `InFlight`
@@ -300,7 +520,12 @@ integration promotion; **P2** = readiness/quality debt.
   to the #29 claim-path contract.
 - **CI/GitForge relevance:** deterministic; runs in default-feature CI.
 
-### P2-6 · Durable cross-process idempotency store (Tier D prerequisite)
+### P2-10 · Durable cross-process idempotency store (Tier D durability enabler; was Rev. 1 P2-6)
+
+- **Ranking note:** an enabler for *durable* cross-process claims, but
+  P1-6's acceptance loop is a single-job loopback run, so durability does
+  not gate the utility proof; no durable/cross-process claim may be made in
+  any handoff until this lands (Q3's fallback records exactly that).
 
 - **Evidence:** trait doc names PostgreSQL as the durable implementor path
   (`executor.rs:99-102`); no implementation exists (§3.2); `FileReceiptStore`
@@ -318,7 +543,7 @@ integration promotion; **P2** = readiness/quality debt.
   conformance suite should be reusable by third-party implementors
   (`agentverify-testkit`).
 
-### P2-7 · Unify or map the two `ClaimResult` taxonomies
+### P2-11 · Unify or map the two `ClaimResult` taxonomies (was Rev. 1 P2-7)
 
 - **Evidence:** `agentverify-runtime` `ClaimResult::{Claimed,
   AlreadyClaimed(, Unavailable post-#27)}` (`executor.rs:90-95`) vs
@@ -331,7 +556,7 @@ integration promotion; **P2** = readiness/quality debt.
   mapping; WASM store compiled in CI (see P2-8).
 - **CI/GitForge relevance:** none beyond compile coverage.
 
-### P2-8 · Add `agentverify-http` (wasm target) to the WASM CI job and enforce coverage once baselined
+### P2-12 · Add `agentverify-http` (wasm target) to the WASM CI job and enforce coverage once baselined (was Rev. 1 P2-8)
 
 - **Evidence:** `ci.yml:212-219` checks only core/contract/engine/receipt/
   policy — `WasmIdempotencyStore` never compiles under CI's wasm target;
@@ -342,7 +567,7 @@ integration promotion; **P2** = readiness/quality debt.
 - **Acceptance gates:** wasm job green with `agentverify-http` included;
   codecov status flips from informational with a recorded baseline.
 
-### P2-9 · Sequence the dependency-debt PRs behind the stack
+### P2-13 · Sequence the dependency-debt PRs behind the stack (was Rev. 1 P2-9)
 
 - **Evidence:** 11 open dependabot/action PRs (§2), notably redis
   0.24.1 → 1.6.0 (#13) and deadpool-postgres (#17) — both touch the surface
@@ -368,38 +593,52 @@ integration promotion; **P2** = readiness/quality debt.
   `main` facts that #27/#29 will invalidate as they land — re-read this file
   against the new boundary before acting on P1+ items.
 
-**Open questions (owner decisions)**
+**Open questions (each pinned to an owner role, a bounded decision date, and
+a real fallback; dates from 2026-10-11)**
 
-1. Is `UNKNOWN`-verdict expiry under the shared Redis TTL intended product
-   semantics, or should `UNKNOWN` persist longer (P1-4)?
-2. Should `complete`/`release` persist failures stay non-fatal
-   (logged-only) after the stack lands, or become verdict-affecting (P1-3,
-   P1-5)?
-3. Postgres durable idempotency store: implement in v0.x, or re-scope v0.x
-   durability to Redis (P2-6)?
-4. Where should the production dispatch adapter live (new crate vs. existing
-   `agentverify-runtime`), given `AGENTS.md` forbids describing the
-   convenience path as real dispatch until one is wired and tested?
-5. Should AgentVerify gain a GitForge mirror so `AGENTS.md`'s
-   "expensive validation through GitForge" guidance is routable, or does
-   GitHub Actions remain the sole gate?
+| # | Decision | Owner role | Decide by | Fallback if undecided |
+|---|---|---|---|---|
+| Q1 | Is `UNKNOWN`-verdict expiry under the shared 24 h Redis TTL intended semantics, or should `UNKNOWN` persist longer (P2-8)? | Repository owner (@aliasfoxkde) | 2026-10-18 | Adopt option (a) — retain `UNKNOWN`-consumed entries longer — as the recorded default with a pinning test; it fails safe, unlike expiry |
+| Q2 | Do `complete`/`release` persist failures stay non-fatal (logged-only) after the stack lands, or become verdict-affecting (P2-7, P2-9)? | Repository owner (@aliasfoxkde) | 2026-10-18 | Land the minimum: warn-level observability on both paths, matching #29's recorded limitation |
+| Q3 | Postgres durable idempotency store in v0.x, or re-scope v0.x durability to Redis (P2-10)? | Repository owner (@aliasfoxkde) | 2026-10-25 | P2-10 stays open and every handoff records "no durable cross-process claim" until decided — no silent re-scoping |
+| Q4 | Where does the production dispatch adapter live (new crate vs. `agentverify-runtime`), given `AGENTS.md` forbids describing the convenience path as real dispatch until one is wired and tested? | Repository owner (@aliasfoxkde) | 2026-10-14 | `crates/agentverify-http` per P-DIS-01's file list; P1-3 proceeds on that path |
+| Q5 | Should AgentVerify gain a GitForge mirror so `AGENTS.md`'s "expensive validation through GitForge" guidance is routable, or does GitHub Actions remain the sole gate? | Platform-Architecture owner | 2026-10-25 | GitHub Actions remains the sole gate; P1-6 runs there and is the record |
+| Q6 | Which Control Center deployment implements `/api/v1/verification-receipts` for live acceptance (P1-5/P1-6)? Endpoint existence is **[unverified]** (prior handoff §5) | Control Center owner (co-owner per P-CC-01) | 2026-10-18 | Loopback CC stub in P1-6, explicitly labeled stub-backed; Tier D stays open |
+| Q7 | Location and retention of the isolated E2E scratch repo (P1-6) | Repository owner (@aliasfoxkde) | 2026-10-14 | Private dated scratch repo `agentverify-e2e-scratch-20261018`, GC-eligible after acceptance per the scratch-space rules |
 
 ## 7. Receipt (AGENTS.md change workflow item 4)
 
-- **Branch:** `docs/next-phase-handoff-20261011`, based on `main` @
-  `f55e17149b47c04eb53faa21c8b56b6de50a53d9` (origin/main, fast-forwarded).
-- **Files changed:** this document only.
-- **Commands run (read-only evidence gathering):** `git clone` (isolated NVMe
-  clone under `/home/mkinney/worktrees/`), `git merge --ff-only origin/main`,
-  `gh issue view 27/29`, `gh pr list`, `gh pr checks 27/29` (GitHub API),
-  codebase-memory `list_projects`/`search_graph` (symbol discovery),
-  harness `gitforge_repos` (inventory), targeted `grep`/`sed` source reads.
+- **Branch / revision:** `docs/next-phase-handoff-20261011`, based on `main`
+  @ `f55e17149b47c04eb53faa21c8b56b6de50a53d9` (origin/main,
+  fast-forwarded). Rev. 2 (this commit) updates this document only; Rev. 1
+  is the prior commit on the same branch. Only this file differs between
+  them.
+- **Commands run for Rev. 2 (read-only):** `gh pr view 27/29` and
+  `gh run view 38106630891` (PR/CI state re-read 2026-10-11: #27 draft with
+  10 green checks + 1 pending, run success; #29 draft, zero completed
+  checks, base = #27's head branch); per-crate recount
+  `grep -rE "#\[(tokio::)?test\]"` across `src/`, `tests/`, `benches/`
+  (748, matching §2); targeted `sed`/`awk`/`grep` re-verification of every
+  line citation carried into Rev. 2.
+- **Citation corrections made in Rev. 2:** §3.1 `McpClient` bullet — the
+  tool-call surface is `call_tool` (`client.rs:441-466`) and the private
+  `dispatch` (`client.rs:352-373`) is JSON-RPC routing; Rev. 1 cited
+  `client.rs:380-412`. §3.1 `action_executor.rs:104-128` → `:104-127`.
+  §3.3 `release` warn `:449` → `:450`. §3.5 seam list re-paired to the
+  correct test lines (4 of 8 pairings were drifted) and the
+  double-dispatch test line added (`:2353`). All other §2–§4 citations were
+  re-verified against `f55e171` and unchanged.
 - **Tests run:** none — docs-only branch, no code touched; per `AGENTS.md`
   the expensive validation gates (fmt/clippy/tests/coverage) apply to code
-  changes and run in CI on the PR.
-- **Docs validation:** markdown reviewed for broken relative links to repo
-  files and for claim tags on every finding; line references verified against
-  `f55e171` in this clone.
-- **Integration limitations:** GitForge inventory read is point-in-time
-  (2026-10-11); PR/CI state is point-in-time; `main` will move when
-  #27/#29 land.
+  changes and run in CI on the PR. The P1-3 … P1-6 acceptance gates are
+  stated as future criteria, not results: nothing in this document claims
+  any of them is met, and no utility, benchmark, integration, or E2E
+  acceptance is claimed done.
+- **Docs validation:** all referenced repo files verified to exist;
+  markdown reviewed for broken relative links and for claim tags on every
+  finding; line references re-verified against `f55e171` in this clone
+  (corrections above).
+- **Integration limitations:** unchanged from Rev. 1 — GitForge inventory
+  and PR/CI state are point-in-time (2026-10-11); `main` moves when
+  #27/#29 land; Q6's endpoint deployment remains unverified, so P1-6's
+  Control Center hop is stub-backed until Q6 resolves.
