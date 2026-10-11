@@ -17,6 +17,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   blind re-dispatch depending on the adapter's shape. Callers who treated the
   old `FAILED` verdict as "safe to retry" must now observe first — that is
   the point.
+- **Runtime** (`agentverify-runtime`): `FileIdempotencyStore::claim_or_check`
+  now returns `ClaimResult::Unavailable` instead of `Claimed` when it cannot
+  prove the claim. An existing entry file that cannot be read or parsed is no
+  longer overwritten and re-claimed — that unreadable entry may be an
+  in-flight claim from another process, and the old behavior handed the key
+  to a second caller precisely when the on-disk evidence was unreadable. A
+  claim that cannot be persisted to disk is likewise reported as
+  `Unavailable` and is not cached, so the next attempt retries the claim
+  instead of trusting an entry that was never stored. A missing entry file
+  remains the one provably unclaimed outcome and still claims normally.
+  This is the file-backed counterpart to the Redis store's existing
+  degradation policy, and `VerifiedExecutor` refuses dispatch on the result
+  (`ExecutorError::IdempotencyUnavailable`).
+- **Runtime** (`agentverify-runtime`): this release adds two public enum
+  variants — `ClaimResult::Unavailable` ("the store could not prove the
+  claim state") and `ExecutorError::IdempotencyUnavailable` ("the action was
+  not dispatched because of it"). Exhaustive `match`es over `ClaimResult`
+  or `ExecutorError` will fail to compile until they handle the new
+  variants; treat `Unavailable` as "nothing was dispatched, no claim is
+  held, retry once the store recovers" rather than mapping it to
+  `Claimed`/`FAILED`.
 
 ### Fixed
 

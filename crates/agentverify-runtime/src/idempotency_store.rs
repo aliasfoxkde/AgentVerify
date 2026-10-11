@@ -76,15 +76,57 @@ impl PersistedEntry {
     }
 }
 
+/// The outcome of reading an idempotency entry from disk.
+///
+/// A key may only be claimed on [`DiskEntry::Absent`]: it is the one
+/// outcome that proves no entry exists. A file that cannot be read or
+/// parsed proves nothing about the claim state, because it may hold an
+/// in-flight claim from another process.
+#[cfg(not(target_arch = "wasm32"))]
+enum DiskEntry {
+    /// No entry file exists for the key: the key is provably unclaimed.
+    Absent,
+    /// The entry was read and parsed successfully.
+    Read(PersistedEntry),
+    /// An entry file exists but could not be read or parsed, so the
+    /// on-disk claim state cannot be proven. The string describes why.
+    Unreadable(String),
+}
+
 /// File-based idempotency store
 ///
 /// # Storage Format
 /// - Each entry stored as a JSON file named `{key_hash}.json`
-/// - Uses filesystem locking for cross-process atomicity
+/// - Claims are taken by exclusive file creation (`create_new`, i.e.
+///   `O_CREAT | O_EXCL` on Unix and `CREATE_NEW` on Windows), which the
+///   kernel arbitrates across every process sharing the directory — the
+///   claim does not depend on a check that ran earlier, so two processes
+///   cannot both hold a key. Updates are written via a uniquely named temp
+///   file + atomic rename.
+///
+/// # Claim Outcomes
+/// The store answers a claim with one of three outcomes and never guesses:
+///
+/// - [`ClaimResult::Claimed`] — no entry file existed *and* the exclusive
+///   create succeeded; this caller owns the claim.
+/// - [`ClaimResult::AlreadyClaimed`] — a readable entry exists (in flight
+///   or completed), or a second exclusive-create attempt lost after the
+///   first winner's entry was proven absent and removed.
+/// - [`ClaimResult::Unavailable`] — the claim state could not be proven:
+///   an entry file exists but cannot be read or parsed, or the new claim
+///   could not be persisted. Nothing is claimed and nothing is cached, so
+///   the caller must not dispatch and may retry once the store recovers.
 ///
 /// # Limitations
-/// - Requires filesystem that supports file locking (NFS, local FS may have issues)
 /// - No TTL: entries persist until manually cleaned up
+/// - A process that dies between the exclusive create and writing the entry
+///   leaves an empty or partial file; the key stays `Unavailable` (never
+///   silently re-claimed) until that file is removed
+/// - A write error after exclusive creation can likewise leave an unreadable
+///   entry that requires operator cleanup; do not remove it automatically,
+///   because it may be another process's in-flight claim
+/// - A process crash before a completion temp-file rename may leave an
+///   orphaned uniquely named temp file; temp files are not currently swept
 ///
 /// For production distributed use, implement `IdempotencyStore` with Redis or `PostgreSQL`.
 #[cfg(not(target_arch = "wasm32"))]
@@ -126,22 +168,60 @@ impl FileIdempotencyStore {
             .join(format!("{}.json", Self::key_to_filename(key)))
     }
 
-    /// Load entry from disk, returns None if not found
-    fn load_entry(&self, key: &str) -> Option<PersistedEntry> {
+    /// Load the entry for `key` from disk, distinguishing a provably
+    /// absent entry from one that exists but cannot be read or parsed.
+    fn load_entry(&self, key: &str) -> DiskEntry {
         let path = self.entry_path(key);
-        if !path.exists() {
-            return None;
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            // A missing file is the one outcome that proves the key free.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return DiskEntry::Absent,
+            Err(e) => return DiskEntry::Unreadable(format!("could not read entry: {e}")),
+        };
+        match serde_json::from_str(&content) {
+            Ok(entry) => DiskEntry::Read(entry),
+            Err(e) => DiskEntry::Unreadable(format!("could not parse entry: {e}")),
         }
-        let content = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&content).ok()
     }
 
-    /// Save entry to disk atomically using temp file + rename
-    fn save_entry(&self, entry: &PersistedEntry) -> std::io::Result<()> {
+    /// Create the in-flight claim file for `entry`, exclusively.
+    ///
+    /// `create_new` maps to `O_CREAT | O_EXCL` on Unix and `CREATE_NEW` on
+    /// Windows: exactly one caller — in this process or any other process
+    /// sharing the directory — can create the entry, and losing callers get
+    /// [`std::io::ErrorKind::AlreadyExists`]. The claim is decided by the
+    /// filesystem, not by the timing of a check that preceded it. The
+    /// content is written after the exclusive create, so a crash in that
+    /// window leaves an empty or partial file that every later reader
+    /// treats as unreadable evidence (refused, never re-claimed over).
+    fn create_claim_file(&self, entry: &PersistedEntry) -> std::io::Result<()> {
+        use std::io::Write;
         let path = self.entry_path(&entry.original_key);
         let content = serde_json::to_string_pretty(entry)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let temp_path = path.with_extension("tmp");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        file.write_all(content.as_bytes())
+    }
+
+    /// Overwrite an existing entry atomically via a uniquely named temp
+    /// file + rename. Used for updates such as `complete`, never for
+    /// claims: a rename replaces whatever sits at the destination, so
+    /// claims must go through [`Self::create_claim_file`].
+    ///
+    /// The temp name is unique to this process and call — two processes
+    /// updating the same entry would otherwise write one shared temp path
+    /// concurrently and rename interleaved bytes into place.
+    fn save_entry(&self, entry: &PersistedEntry) -> std::io::Result<()> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let path = self.entry_path(&entry.original_key);
+        let content = serde_json::to_string_pretty(entry)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let seq = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temp_path = path.with_extension(format!("tmp.{}.{}", std::process::id(), seq));
         std::fs::write(&temp_path, &content)?;
         std::fs::rename(&temp_path, &path)?;
         Ok(())
@@ -167,22 +247,96 @@ impl IdempotencyStore for FileIdempotencyStore {
                 };
             }
 
-            // Load from disk
-            if let Some(entry) = self.load_entry(key) {
-                let result = entry.to_result();
-                cache.insert(key.to_string(), entry);
-                match result {
-                    None => (ClaimResult::AlreadyClaimed, None),
-                    Some(r) => (ClaimResult::AlreadyClaimed, Some(r)),
+            // Nothing is cached, so the disk is the source of truth. Only a
+            // provably absent entry may be claimed, and only if the claim
+            // itself can be persisted; every other outcome refuses the
+            // claim rather than guess.
+            match self.load_entry(key) {
+                DiskEntry::Read(entry) => {
+                    let result = entry.to_result();
+                    cache.insert(key.to_string(), entry);
+                    (ClaimResult::AlreadyClaimed, result)
                 }
-            } else {
-                // Key doesn't exist — claim it
-                let entry = PersistedEntry::new_in_flight(key.to_string());
-                if let Err(e) = self.save_entry(&entry) {
-                    tracing::warn!("failed to persist claim: {e}");
+                DiskEntry::Unreadable(reason) => {
+                    // The entry may hold an in-flight claim from another
+                    // process. Claiming would mean overwriting evidence we
+                    // cannot read, so the claim state stays unresolved and
+                    // the caller must not dispatch.
+                    tracing::warn!("idempotency claim unavailable, {reason}");
+                    (ClaimResult::Unavailable, None)
                 }
-                cache.insert(key.to_string(), entry);
-                (ClaimResult::Claimed, None)
+                DiskEntry::Absent => {
+                    let entry = PersistedEntry::new_in_flight(key.to_string());
+                    // Two processes can both observe an absent entry, so the
+                    // observation claims nothing: the exclusive create, which
+                    // the kernel arbitrates across processes, decides who
+                    // owns the key.
+                    match self.create_claim_file(&entry) {
+                        Ok(()) => {
+                            cache.insert(key.to_string(), entry);
+                            (ClaimResult::Claimed, None)
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                            // Another process claimed the key between our
+                            // read and our create. The disk, not our now
+                            // stale observation, answers.
+                            match self.load_entry(key) {
+                                DiskEntry::Read(entry) => {
+                                    let result = entry.to_result();
+                                    cache.insert(key.to_string(), entry);
+                                    (ClaimResult::AlreadyClaimed, result)
+                                }
+                                DiskEntry::Unreadable(reason) => {
+                                    // The winner created the file but may
+                                    // not have finished writing it, so
+                                    // occupied-or-free cannot be proven. The
+                                    // claim is refused; a later attempt
+                                    // re-reads the disk.
+                                    tracing::warn!("idempotency claim unavailable, {reason}");
+                                    (ClaimResult::Unavailable, None)
+                                }
+                                DiskEntry::Absent => {
+                                    // The competing claim was released
+                                    // between its create and our read, so
+                                    // the key is provably free again.
+                                    // Re-claim exactly once, mirroring the
+                                    // Redis store's expiry-race handling.
+                                    match self.create_claim_file(&entry) {
+                                        Ok(()) => {
+                                            cache.insert(key.to_string(), entry);
+                                            (ClaimResult::Claimed, None)
+                                        }
+                                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                                            // Occupied again by a claim we
+                                            // could not read: answer
+                                            // occupied with no result
+                                            // instead of retrying forever.
+                                            (ClaimResult::AlreadyClaimed, None)
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "failed to persist claim, reporting it \
+                                                 unavailable: {e}"
+                                            );
+                                            (ClaimResult::Unavailable, None)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // The claim was not persisted, so no other
+                            // process can see it: reporting Claimed would
+                            // let two callers run the same action. Nothing
+                            // is cached, so the next attempt retries the
+                            // claim from scratch.
+                            tracing::warn!(
+                                "failed to persist claim, reporting it unavailable: {e}"
+                            );
+                            (ClaimResult::Unavailable, None)
+                        }
+                    }
+                }
             }
         })
     }
@@ -576,14 +730,26 @@ mod tests {
     /// Monotonic counter so keys generated inside a single test run never collide.
     static KEY_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+    fn nanos_since_epoch() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    }
+
     fn next_key(label: &str) -> String {
         use std::sync::atomic::Ordering;
         let seq = KEY_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        format!("{label}-{nanos}-{seq}")
+        format!("{label}-{}-{seq}", nanos_since_epoch())
+    }
+
+    /// Busy-wait until `deadline_nanos`. Used as a cross-process barrier so
+    /// every spawned claimer enters the claim window at the same instant
+    /// instead of being spread out by process startup time.
+    fn spin_until(deadline_nanos: u128) {
+        while nanos_since_epoch() < deadline_nanos {
+            std::hint::spin_loop();
+        }
     }
 
     #[test]
@@ -753,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn file_idempotency_store_survives_unreadable_entry_file() {
+    fn file_idempotency_store_refuses_to_claim_over_a_corrupt_entry() {
         let dir = tempfile::tempdir().unwrap();
         let key = next_key("file-corrupt-json");
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -763,17 +929,29 @@ mod tests {
             "{}.json",
             FileIdempotencyStore::key_to_filename(&key)
         ));
-        std::fs::write(&entry_path, "{\"state\": \"Completed\"").unwrap();
+        let corrupt = "{\"state\": \"Completed\"";
+        std::fs::write(&entry_path, corrupt).unwrap();
 
-        // The malformed entry is unreadable, so the key looks unclaimed: the
-        // store must claim it rather than report a stale outcome.
+        // The entry exists but cannot be parsed, so the store cannot prove
+        // whether another caller still holds the key in flight: it must
+        // refuse the claim rather than overwrite the evidence.
         let (claim, observed) = rt.block_on(store.claim_or_check(&key));
-        assert_eq!(claim, ClaimResult::Claimed);
+        assert_eq!(claim, ClaimResult::Unavailable);
+        assert_eq!(observed, None);
+
+        // The unreadable entry must be left exactly as it was found.
+        let after = std::fs::read_to_string(&entry_path).unwrap();
+        assert_eq!(after, corrupt, "the corrupt entry must not be overwritten");
+
+        // A refusal holds no claim, so a retry re-attempts the disk instead
+        // of answering from a cached entry.
+        let (claim, observed) = rt.block_on(store.claim_or_check(&key));
+        assert_eq!(claim, ClaimResult::Unavailable);
         assert_eq!(observed, None);
     }
 
     #[test]
-    fn file_idempotency_store_survives_undecodable_entry_file() {
+    fn file_idempotency_store_refuses_to_claim_over_an_undecodable_entry() {
         let dir = tempfile::tempdir().unwrap();
         let key = next_key("file-corrupt-bytes");
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -784,40 +962,52 @@ mod tests {
             FileIdempotencyStore::key_to_filename(&key)
         ));
         // Invalid UTF-8: the entry cannot even be read as text.
-        std::fs::write(&entry_path, [0xFF, 0xFE, 0x00, 0xC3]).unwrap();
+        let undecodable: [u8; 4] = [0xFF, 0xFE, 0x00, 0xC3];
+        std::fs::write(&entry_path, undecodable).unwrap();
 
+        // A read failure proves nothing about the claim state, so the claim
+        // must be refused rather than taken by overwriting the file.
         let (claim, observed) = rt.block_on(store.claim_or_check(&key));
-        assert_eq!(claim, ClaimResult::Claimed);
+        assert_eq!(claim, ClaimResult::Unavailable);
         assert_eq!(observed, None);
+        assert_eq!(
+            std::fs::read(&entry_path).unwrap(),
+            undecodable,
+            "the undecodable entry must not be overwritten"
+        );
     }
 
     #[test]
-    fn file_idempotency_store_warns_when_claims_cannot_be_persisted() {
+    fn file_idempotency_store_does_not_cache_a_claim_that_cannot_be_persisted() {
         let dir = tempfile::tempdir().unwrap();
         let key = next_key("file-unwritable");
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         // The store is constructed while the directory exists, then the
-        // directory is removed: persistence fails, but claiming and completing
-        // must still succeed in-process so the caller is not stranded.
+        // directory is removed: the claim cannot be persisted, so it must be
+        // refused rather than reported as held.
         let store = FileIdempotencyStore::new(dir.path()).unwrap();
         let orphaned_path = dir.path().to_path_buf();
         drop(dir);
 
         let (claim, observed) = rt.block_on(store.claim_or_check(&key));
-        assert_eq!(claim, ClaimResult::Claimed);
+        assert_eq!(claim, ClaimResult::Unavailable);
         assert_eq!(observed, None);
         assert!(
             !orphaned_path.exists(),
             "precondition: backing directory must be gone"
         );
 
-        rt.block_on(store.complete(key.clone(), VerificationResult::Verified));
-
-        // The in-process cache still answers authoritatively.
+        // A refused claim is cached by nobody: a retry re-attempts the claim
+        // instead of answering AlreadyClaimed from an entry that was never
+        // stored.
         let (claim, observed) = rt.block_on(store.claim_or_check(&key));
-        assert_eq!(claim, ClaimResult::AlreadyClaimed);
-        assert_eq!(observed, Some(VerificationResult::Verified));
+        assert_eq!(
+            claim,
+            ClaimResult::Unavailable,
+            "a failed claim must not be cached"
+        );
+        assert_eq!(observed, None);
     }
 
     #[test]
@@ -877,20 +1067,139 @@ mod tests {
 
         let mut claimed = 0;
         let mut already_claimed = 0;
+        let mut unavailable = 0;
         for handle in handles {
             let (claim, _) = rt.block_on(handle).unwrap();
-            // The file store never reports an unavailable claim: anything
-            // that is not Claimed is counted as a lost race, and the
-            // exact-one-winner assertions below fail if that mapping is wrong.
-            if matches!(claim, ClaimResult::Claimed) {
-                claimed += 1;
-            } else {
-                already_claimed += 1;
+            match claim {
+                ClaimResult::Claimed => claimed += 1,
+                ClaimResult::AlreadyClaimed => already_claimed += 1,
+                ClaimResult::Unavailable => unavailable += 1,
             }
         }
 
         assert_eq!(claimed, 1, "exactly one caller may claim a key");
-        assert_eq!(already_claimed, attempts - 1);
+        assert_eq!(
+            already_claimed,
+            attempts - 1,
+            "every loser of the race must see the key occupied"
+        );
+        assert_eq!(
+            unavailable, 0,
+            "no claim may be refused while persistence works"
+        );
+    }
+
+    /// Environment variable marking a child process that was re-executed by
+    /// [`Self::file_idempotency_store_claims_once_across_processes`] to
+    /// attempt one claim from a separate OS process. Its value is the child's
+    /// tag, used to name its outcome file.
+    const CROSS_PROCESS_CLAIM_ENV: &str = "AGENTVERIFY_TEST_CROSS_PROCESS_CLAIM";
+
+    #[test]
+    fn file_idempotency_store_claims_once_across_processes() {
+        // Child mode: claim once and report the outcome as a file. The file
+        // is the reliable channel — the test harness captures stdout, and the
+        // parent needs a per-process verdict it can read after reaping.
+        if let Ok(tag) = std::env::var(CROSS_PROCESS_CLAIM_ENV) {
+            let dir = std::path::PathBuf::from(std::env::var("AGENTVERIFY_CLAIM_DIR").unwrap());
+            let key = std::env::var("AGENTVERIFY_CLAIM_KEY").unwrap();
+            let deadline: u128 = std::env::var("AGENTVERIFY_CLAIM_DEADLINE")
+                .unwrap()
+                .parse()
+                .unwrap();
+            // Everything heavyweight happens before the barrier so that the
+            // release drops every process straight into the claim window.
+            let store = FileIdempotencyStore::new(&dir).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            spin_until(deadline);
+            let (claim, _) = rt.block_on(store.claim_or_check(&key));
+            std::fs::write(
+                dir.join(format!("claim-child-{tag}.out")),
+                format!("{claim:?}"),
+            )
+            .unwrap();
+            return;
+        }
+
+        // Parent mode: release several real processes into the claim window
+        // at the same instant. A per-instance Mutex cannot arbitrate this —
+        // only an on-disk mechanism can — so whichever verdicts come back
+        // prove whether the store holds one claim per key across processes.
+        let dir = tempfile::tempdir().unwrap();
+        let key = next_key("file-cross-process");
+        // Headroom for every child to start and reach the spin barrier.
+        let deadline = nanos_since_epoch() + 300_000_000;
+        let exe = std::env::current_exe().unwrap();
+        let test_name =
+            "idempotency_store::tests::file_idempotency_store_claims_once_across_processes";
+        let processes = 16;
+
+        let mut children = Vec::with_capacity(processes);
+        for tag in 0..processes {
+            children.push((
+                tag,
+                std::process::Command::new(&exe)
+                    .arg("--exact")
+                    .arg(test_name)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .env(CROSS_PROCESS_CLAIM_ENV, tag.to_string())
+                    .env("AGENTVERIFY_CLAIM_DIR", dir.path())
+                    .env("AGENTVERIFY_CLAIM_KEY", &key)
+                    .env("AGENTVERIFY_CLAIM_DEADLINE", deadline.to_string())
+                    .spawn()
+                    .expect("child claim process must spawn"),
+            ));
+        }
+
+        let mut claimed = 0;
+        let mut already_claimed = 0;
+        let mut unavailable = 0;
+        let mut unparseable: Vec<(usize, String)> = Vec::new();
+        for (tag, mut child) in children {
+            let status = child.wait().expect("child must be waitable");
+            assert!(
+                status.success(),
+                "child {tag} exited with {status}; the claim must not panic or fail"
+            );
+            let outcome_path = dir.path().join(format!("claim-child-{tag}.out"));
+            let outcome = std::fs::read_to_string(&outcome_path).unwrap_or_default();
+            assert!(
+                !outcome.is_empty(),
+                "child {tag} wrote no outcome file at {outcome_path:?}"
+            );
+            match outcome.trim() {
+                "Claimed" => claimed += 1,
+                "AlreadyClaimed" => already_claimed += 1,
+                "Unavailable" => unavailable += 1,
+                other => unparseable.push((tag, other.to_string())),
+            }
+        }
+        assert!(
+            unparseable.is_empty(),
+            "children reported unparseable outcomes: {unparseable:?}"
+        );
+
+        assert_eq!(
+            claimed, 1,
+            "exactly one process may claim a key; {claimed} of {processes} claimed it"
+        );
+        assert_eq!(
+            claimed + already_claimed + unavailable,
+            processes,
+            "every process must receive a verdict"
+        );
+
+        // After every child has exited the winner's entry is fully written,
+        // so a fresh instance must see the key occupied and in flight.
+        let later = FileIdempotencyStore::new(dir.path()).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (claim, observed) = rt.block_on(later.claim_or_check(&key));
+        assert_eq!(claim, ClaimResult::AlreadyClaimed);
+        assert_eq!(observed, None, "the winner never completed; no outcome");
     }
 
     #[cfg(all(not(target_arch = "wasm32"), feature = "redis"))]
