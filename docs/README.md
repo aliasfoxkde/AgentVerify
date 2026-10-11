@@ -11,9 +11,9 @@
 | [`INTEGRATIONS.md`](INTEGRATIONS.md) | Observer integrations (Postgres, Redis, REST) |
 | [`WASM_ARCHITECTURE.md`](WASM_ARCHITECTURE.md) | WASM (wasm32-wasip1) support and limitations |
 
-Working/internal documents (session handoffs, proposals, qualification
-reports) live in [`internal/`](internal/) and are not part of the public
-documentation set.
+Dated session handoffs live in [`handoffs/`](handoffs/); working/internal
+documents (proposals, qualification reports, the task ledger) live in
+[`internal/`](internal/). Neither is part of the public documentation set.
 
 ## For contributors
 

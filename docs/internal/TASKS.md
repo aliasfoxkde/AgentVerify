@@ -232,6 +232,7 @@ rows here; do not fork a new ledger.
 | 2026-08-30 | v0.1.0 GitHub Release (6 targets + WASI + checksums) | ✅ | Release run 33324170554; crates.io publish skipped — no `CARGO_REGISTRY_TOKEN` |
 | 2026-09-01 | CI green at `main@2b6d021` (10/10 jobs incl. Test with PG/Redis services) | ✅ | Run 33482496746 |
 | 2026-10-10 | Platform handoff + idempotency claim-leak fix | 🔄 | `docs/handoffs/PLATFORM_ARCHITECTURE_AGENTVERIFY_2026-10-10.md`; PR #26 — also unblocks main's clippy-1.99/rustls drift (16 `assert_is_empty` sites, rustls 0.23.45). Review round 2 (2026-10-10): full post-claim error-exit sweep + `DispatchOutcome::TransportError` → Unknown/consumed, 10 regression tests |
+| 2026-10-11 | Next-phase readiness handoff: utility proof ranked ahead of polish | 🔄 | `docs/handoffs/PLATFORM_ARCHITECTURE_AGENTVERIFY_NEXT_PHASE_2026-10-11.md`; PR #30 (draft) — audits dispatch/idempotency/fail-closed at `main@f55e171`, accounts for PR stack #27→#29, re-ranks next phase around the executable utility proof (P1-3 real sandboxed dispatch → P1-4 honest benchmark → P1-5 CC receipt/lifecycle integration → P1-6 live multi-turn E2E); idempotency polish demoted to P2. Crate inventory corrected to 14 (`cargo metadata --no-deps`) |
 | TBD | PostgresObserver | ✅ | `agentverify-observe` implemented with live-service tests |
 
 ---

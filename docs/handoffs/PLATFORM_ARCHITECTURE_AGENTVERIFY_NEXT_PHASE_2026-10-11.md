@@ -6,16 +6,29 @@ fail-closed behavior, and test strategy at the current `main` boundary;
 accounting for the open PR stack #27 → #29 without modifying or duplicating
 them; ranked next-phase tasks with acceptance gates. **No source code is
 changed by this handoff.**
-**Revision 2 (2026-10-11, this commit):** same evidence boundary as Rev. 1 —
-this branch still changes only this document. Adds §1.1 (independently
-verified spec finding: the shipped executor cannot dispatch, and Rev. 1
-scheduled no task for it), re-ranks §5 around an executable utility proof
-chain (real sandboxed dispatch adapter → honest simulation-vs-real benchmark
-→ Platform-Architecture lifecycle/receipt integration → live multi-turn
-end-to-end acceptance), demotes idempotency polish behind that proof, and
-pins every owner decision to an owner role, a bounded date, and a fallback
-(§6). §3's audit findings are unchanged except citation corrections recorded
-in §7.
+**Revision 2 (2026-10-11, commit `a7dd069`):** same evidence boundary as
+Rev. 1 — at that commit the branch changed only this document. Adds §1.1
+(independently verified spec finding: the shipped executor cannot dispatch,
+and Rev. 1 scheduled no task for it), re-ranks §5 around an executable
+utility proof chain (real sandboxed dispatch adapter → honest
+simulation-vs-real benchmark → Platform-Architecture lifecycle/receipt
+integration → live multi-turn end-to-end acceptance), demotes idempotency
+polish behind that proof, and pins every owner decision to an owner role, a
+bounded date, and a fallback (§6). §3's audit findings are unchanged except
+citation corrections recorded in §7.
+**Revision 3 (2026-10-11, this commit):** same evidence boundary (`f55e171`)
+and same §1–§6 substance; the Rev. 2 utility proof chain is retained
+unchanged. Three corrections/registrations, no re-ranking: (1) §2's crate
+inventory is corrected from "13 crates" to **14 workspace crates**
+(`agentverify-policy` was already in the per-crate test inventory; the prose
+count alone was wrong) — re-counted with `cargo metadata --no-deps` at the
+boundary, receipt in §7; (2) this handoff is now registered in the task
+ledger (`docs/internal/TASKS.md` Progress Timeline, per that ledger's
+"update the rows here" rule) and `docs/README.md`'s navigation note now
+points to `handoffs/` — the branch therefore changes three documentation
+files, still no source; (3) every line citation carried into Rev. 3 was
+re-verified against `f55e171` in this clone — all confirmed, no further
+corrections.
 **Evidence boundary:** branch `main` @ `f55e17149b47c04eb53faa21c8b56b6de50a53d9`
 (origin/main, fast-forwarded local clone, working tree clean except this
 document). This boundary already contains PR #26 (post-claim error-exit claim
@@ -89,11 +102,15 @@ not dropped: they still land before any promotion claim.
 
 ## 2. Boundary snapshot
 
-- `main` @ `f55e171`; 13 crates; static inventory of `#[test]`/`#[tokio::test]`
+- `main` @ `f55e171`; **14 workspace crates** (`cargo metadata --no-deps`:
+  cli, contract, core, engine, http, mcp, observe, otel, policy, receipt,
+  recovery, runtime, storage, testkit); static inventory of
+  `#[test]`/`#[tokio::test]`
   functions: core 131, observe 111, engine 108, runtime 97, policy 66, mcp 63,
   recovery 55, http 51, storage 22, contract 21, testkit 8, cli 7, receipt 5,
   otel 3 — **748 declared test functions** (grep count, not a run count)
-  **[confirmed]**.
+  **[confirmed]**. (Rev. 1–2 said "13 crates" here; the per-crate list below
+  already named all 14 — only the prose count was wrong, corrected in Rev. 3.)
 - Open PRs: #27 (draft, CI green), #29 (draft, stacked, no CI runs),
   #25 + #8–#17 (11 dependabot/action bumps, including redis 0.24.1 → 1.6.0 in
   #13 and axum 0.7.9 → 0.8.9 in #11) **[confirmed]**.
@@ -610,9 +627,24 @@ a real fallback; dates from 2026-10-11)**
 
 - **Branch / revision:** `docs/next-phase-handoff-20261011`, based on `main`
   @ `f55e17149b47c04eb53faa21c8b56b6de50a53d9` (origin/main,
-  fast-forwarded). Rev. 2 (this commit) updates this document only; Rev. 1
-  is the prior commit on the same branch. Only this file differs between
-  them.
+  fast-forwarded). Rev. 1 (`45aabc8`) added this document; Rev. 2
+  (`a7dd069`) updated only this file; **Rev. 3 (this commit)** corrects the
+  §2 crate count in this file and registers the handoff in
+  `docs/internal/TASKS.md` (Progress Timeline row) and `docs/README.md`
+  (navigation pointer to `handoffs/`). Rev. 3 changes exactly three
+  documentation files; no source, test, CI, or workflow file is touched.
+- **Crate count (corrected in Rev. 3):** command
+  `cargo metadata --no-deps --format-version 1`, run in this clone on
+  2026-10-11: **14 workspace packages** — agentverify-{cli, contract, core,
+  engine, http, mcp, observe, otel, policy, receipt, recovery, runtime,
+  storage, testkit}. Boundary equivalence: `git diff f55e171..HEAD` at the
+  pre-edit head `a7dd069` touched only `docs/` files (no `Cargo.toml`,
+  `Cargo.lock`, or crate membership change), so the count at `f55e171` is
+  identical. Rev. 1–2 said "13 crates" — wrong prose count; the §2 per-crate
+  test inventory had always listed all 14 crates and summed correctly to
+  748. Cross-checks agreeing on 14: `docs/ROADMAP.md` ("all 14 crates"),
+  `docs/internal/TASKS.md` ("Create all 14 crates"), and the 2026-10-10
+  handoff ("source read of all 14 crates").
 - **Commands run for Rev. 2 (read-only):** `gh pr view 27/29` and
   `gh run view 38106630891` (PR/CI state re-read 2026-10-11: #27 draft with
   10 green checks + 1 pending, run success; #29 draft, zero completed
@@ -620,6 +652,20 @@ a real fallback; dates from 2026-10-11)**
   `grep -rE "#\[(tokio::)?test\]"` across `src/`, `tests/`, `benches/`
   (748, matching §2); targeted `sed`/`awk`/`grep` re-verification of every
   line citation carried into Rev. 2.
+- **Commands run for Rev. 3 (read-only):** the `cargo metadata` count above;
+  independent re-run of the per-crate test-function grep (748; all 14
+  per-crate numbers match §2 exactly); `sed`-based re-verification of every
+  load-bearing line citation against this clone (which differs from
+  `f55e171` only by docs commits): §3.1 `action_executor.rs:104-127`,
+  `:85-91`, `:10-34`, `main.rs:386-388`, `client.rs:441-466`, `:352-373`;
+  §3.2 `executor.rs:90-95`, `:99-102`, `:244-259`, `:316-330`, `:396-405`,
+  `receipt.rs:67`, `:406-407`; §3.3 table anchors `idempotency_store.rs:
+  321-324`, `:331-334`, `:387-390`, `:394-397`, `:181-185`, `:190-205`,
+  `:428-435`, `:449-451`; §3.5 all ten seam↔test pairings (`:1461`, `:1499`,
+  `:1536`, `:1572`, `:1607`, `:1654`, `:1714`, `:1856`, `:2353`, `:2520`)
+  and `ci.yml:118-121`, `:212-219`, `:243-244`; `wasm_storage.rs:140-147`;
+  `client.rs:168`, `:193`, `:232`; `recovery/src/lib.rs:999-1023`,
+  `:1485-1493`. **All confirmed; no further citation corrections.**
 - **Citation corrections made in Rev. 2:** §3.1 `McpClient` bullet — the
   tool-call surface is `call_tool` (`client.rs:441-466`) and the private
   `dispatch` (`client.rs:352-373`) is JSON-RPC routing; Rev. 1 cited
@@ -628,16 +674,21 @@ a real fallback; dates from 2026-10-11)**
   correct test lines (4 of 8 pairings were drifted) and the
   double-dispatch test line added (`:2353`). All other §2–§4 citations were
   re-verified against `f55e171` and unchanged.
-- **Tests run:** none — docs-only branch, no code touched; per `AGENTS.md`
-  the expensive validation gates (fmt/clippy/tests/coverage) apply to code
-  changes and run in CI on the PR. The P1-3 … P1-6 acceptance gates are
-  stated as future criteria, not results: nothing in this document claims
-  any of them is met, and no utility, benchmark, integration, or E2E
-  acceptance is claimed done.
-- **Docs validation:** all referenced repo files verified to exist;
-  markdown reviewed for broken relative links and for claim tags on every
-  finding; line references re-verified against `f55e171` in this clone
-  (corrections above).
+- **Tests run:** none — docs-only branch, no code touched (Rev. 3 included;
+  `cargo metadata` resolves manifests only, no build or test execution);
+  per `AGENTS.md` the expensive validation gates (fmt/clippy/tests/coverage)
+  apply to code changes and run in CI on the PR. The P1-3 … P1-6 acceptance
+  gates are stated as future criteria, not results: nothing in this
+  document claims any of them is met, and no utility, benchmark,
+  integration, or E2E acceptance is claimed done. §5's P1-3 sandbox is
+  explicitly loopback-only; all Rev. 2 wording distinguishing loopback/test
+  doubles from production behavior is retained unchanged.
+- **Docs validation (Rev. 3):** all referenced repo files verified to
+  exist, including the newly registered `docs/internal/TASKS.md` row and
+  the `docs/README.md` → `handoffs/` pointer (single pointer, no duplicate
+  index rows — the README table still lists only the public doc set);
+  markdown re-reviewed for broken relative links and claim tags on every
+  finding; `git diff --check` clean.
 - **Integration limitations:** unchanged from Rev. 1 — GitForge inventory
   and PR/CI state are point-in-time (2026-10-11); `main` moves when
   #27/#29 land; Q6's endpoint deployment remains unverified, so P1-6's
