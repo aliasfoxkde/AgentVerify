@@ -1,12 +1,14 @@
 # AgentVerify execution handoff
 
-**Last updated:** 2026-10-10
+**Last updated:** 2026-10-11
 **Evidence boundary (central audit):** branch `main`, HEAD `2b6d021`, 0 dirty
 status entries at audit start. Source code at `2b6d021` is identical to the
 previously recorded boundary `a7163422837c6f85cf42fa61b3c29653b247b1ff`; the
-delta between them is a docs-only commit. The 2026-10-10 worker change on
-branch `codex/agentverify-platform-handoff-20261011` is recorded separately in
-`docs/internal/HANDOFF_PLATFORM_2026-10-10.md`.
+delta between them is a docs-only commit. Worker changes on
+`codex/agentverify-platform-handoff-20261011` (2026-10-10) and
+`codex/agentverify-idempotency-unknown-20261011` (2026-10-11) are recorded
+separately in `docs/internal/HANDOFF_PLATFORM_2026-10-10.md` and
+`docs/internal/HANDOFF_REDIS_CLAIM_UNAVAILABLE_2026-10-11.md`.
 **Rating:** 3/5 — deterministic verification source is qualified; production integration is open.
 
 This handoff is registered against the Platform audit in
@@ -32,6 +34,15 @@ The longer historical evidence record remains in `docs/internal/HANDOFF.md`.
   `WRONGTYPE` → `AlreadyClaimed`), with regression coverage. The runtime
   `redis` feature remains non-default, so those tests still need an explicit
   `--features redis` CI step to execute (2026-10-10 handoff, §4 #1).
+- 2026-10-11: The 2026-10-10 degradation policy above was **reversed** after
+  independent review: an unanswerable claim now reports the new
+  `ClaimResult::Unavailable` and the executor rejects the action with a
+  retryable, non-duplicate `ExecutorError::IdempotencyUnavailable` instead of
+  dispatching unprotected or fabricating a `Duplicate` receipt. An occupied
+  key whose outcome cannot be read is reported as `(AlreadyClaimed, None)`
+  and its claim is never retried. CI now also runs
+  `cargo test --workspace --all-features` against the Redis service. See
+  `docs/internal/HANDOFF_REDIS_CLAIM_UNAVAILABLE_2026-10-11.md`.
 - Local evidence does not by itself prove a deployed authenticated service,
   durable cross-process receipt persistence, real external dispatch through the
   CLI, or Control Center correlation.
