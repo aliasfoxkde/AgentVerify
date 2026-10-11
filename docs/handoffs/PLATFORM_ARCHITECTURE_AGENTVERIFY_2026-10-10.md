@@ -8,7 +8,16 @@ and the next implementation packet.
 `main` @ `2b6d021` (origin/main in sync at branch point). Working tree at
 inspection: this handoff, `docs/internal/TASKS.md` ledger refresh, an
 idempotency-claim fix in `agentverify-runtime`, a doc-comment fix in
-`agentverify-http`, and a changelog entry. Nothing else.
+`agentverify-http`, and a changelog entry. **Amended 2026-10-10 (PR #26
+review round 2):** an independent Standards+Spec review found two residual
+gaps in the runtime fix — post-claim error exits that still bypassed claim
+resolution, and divergent `TransportError` semantics between the
+`DispatchError` and `DispatchOutcome` shapes. This branch additionally
+carries the review-response runtime commit (full post-claim error-exit
+resolution + conservative transport alignment + regression tests) and
+corrections to this handoff, the task ledger, and the changelog. The §4 CI
+run numbers refer to the pre-amendment head; the post-amendment run on the
+PR is the evidence of record for the amendment.
 **Method:** source read of all 14 crates (no local builds/tests run, per
 campaign rules), codebase-memory index `nas-Temp-repos-AgentVerify`, GitHub
 Actions evidence via `gh`, GitForge repo inventory via harness MCP. Every
@@ -61,12 +70,16 @@ numbers refer to this branch.
    state, not the post-dispatch observation **[confirmed]**.
 3. **Dispatch** — `ActionExecutor::execute` returns `DispatchOutcome`
    (`Completed`/`Accepted`/`TimeoutBeforeDispatch`/`TimeoutAfterDispatch`/
-   `TransportError`/`Ambiguous`, `action_executor.rs:41–92`). Mapping:
-   timeouts → state `Unknown` then observation proceeds;
-   `TransportError` → `Failed`, claim released, no retry;
-   `Ambiguous` → verdict `Unknown` (executor.rs:942–990). Only the shipped
-   `SimulatedActionExecutor` exists in-repo and always returns `Completed`
-   (action_executor.rs:104–128) **[confirmed]**.
+   `TransportError`/`Ambiguous`, `action_executor.rs:41–92`). Mapping
+   (amended 2026-10-10): timeouts → state `Unknown` then observation
+   proceeds; `TransportError` → verdict `Unknown` with the idempotency key
+   consumed as `Unknown` (ambiguous: the request may have reached the
+   target — aligned with `DispatchError::TransportError`); `Ambiguous` →
+   verdict `Unknown`. Previously `TransportError` returned `Failed` with
+   the claim released, which permitted a blind re-dispatch of a possibly
+   delivered request. Only the shipped `SimulatedActionExecutor` exists
+   in-repo and always returns `Completed` (action_executor.rs:104–128)
+   **[confirmed]**.
 4. **Observation** — bounded by `ExecutorConfig.verification_timeout_ms`
    (default 5000); timeout ⇒ `ExecutorError::Timeout` (hard error, not a
    verdict). `RestObserver` (agentverify-http/src/observer.rs) maps every
@@ -93,7 +106,7 @@ numbers refer to this branch.
 
 | # | Risk | Class | Source | Consequence |
 |---|------|-------|--------|-------------|
-| R1 | **Idempotency claim leak on error paths** (fixed in this branch): adapter `Err` (`?` at old executor.rs:904), non-`Unknown` observer error, and observation timeout returned without `complete`/`release`; key stayed `InFlight` forever, so every later call with that key returned a false `Duplicate` and the action could never run again in that process. | confirmed (pre-fix) | old code path; now `resolve_claim_on_error` (executor.rs:323–339) + 4 regression tests (executor.rs:1662+) | false `DUPLICATE`, liveness loss |
+| R1 | **Idempotency claim leak on error paths** (fixed in this branch, completed in review round 2): adapter `Err` (`?` at old executor.rs:904), non-`Unknown` observer error, and observation timeout returned without `complete`/`release`; key stayed `InFlight` forever, so every later call with that key returned a false `Duplicate` and the action could never run again in that process. The first fix left two residual gaps, found by independent review: `Self::verify_postconditions(...)?` (reachable via an uncompilable predicate regex) and every `state_machine.advance(...)?` after the claim still bypassed resolution, and `DispatchOutcome::TransportError` released the claim with a `Failed` verdict while `DispatchError::TransportError` consumed it as `Unknown`. Both are closed: every post-claim error exit resolves through `resolve_claim_on_error` (release before dispatch, consume-as-`Unknown` after), adapter-error classification is default-safe for future variants, and both `TransportError` shapes converge on `Unknown`. | confirmed (pre-fix and pre-round-2) | old code paths; now `resolve_claim_on_error`/`abort_claimed_run`/`advance_or_abort`/`claim_policy_for` (executor.rs) + 10 claim/transport regression tests in the executor suite | false `DUPLICATE`, liveness loss, duplicate external effect |
 | R2 | **Evidence-shape errors collapse to `Failed`**: leaf predicates never return `Unknown` — missing path, type mismatch, non-string on `matches` all yield `Failed` (engine.rs:91–97, 107–120, 160–201). `All`/`Any` collapse an `Unknown` child to `Failed`/skip; `Implies` is vacuously `Verified` on a non-`Verified` antecedent, including `Unknown` (engine.rs eval_all/eval_any/eval_implies). | confirmed (semantics); consequences inferred | agentverify-engine/src/engine.rs | "evidence not evaluable" is indistinguishable from "postcondition false" ⇒ wrong terminal verdicts; `Implies` can report `Verified` from an unevaluable antecedent (false positive) |
 | R3 | **Oversize evidence becomes `Failed`**: `RestObserver::truncate` replaces an over-limit payload with the string `"[TRUNCATED: …]"` (observer.rs:178–190); all postconditions then evaluate against that string and fail — an infrastructure condition producing a `Failed` verdict and, with `verify_before_retry`, a re-dispatch of an action that may have succeeded. | confirmed mechanism; double-dispatch consequence inferred | observer.rs; executor retry loop | false `FAILED` → possible re-dispatch |
 | R4 | **`Unknown` retries re-dispatch without a verified state**: in `execute_with_executor`, a `Unknown` postcondition verdict loops back to dispatch (executor.rs:1068–1090) — the action is re-sent while its prior effect is unconfirmed. `verify_before_retry` gates only the `Failed` arm. Tension with AGENTS.md invariant "never dispatch again without verify-before-retry". | inferred (behavior read from source; not covered by an explicit test) | executor.rs | duplicate external effect for non-idempotent targets |
@@ -142,10 +155,11 @@ test's still-qualified call, 8 further drift sites in observe/mcp/core —
 all fixed in commits `acfd8da`/`b5e9af1`/`b424775`). The latest run on the
 PR is the evidence of record for this handoff.
 
-**Volume**: ~741 test functions counted statically (`#[test]` +
-`#[tokio::test]` across src and tests/, this branch) **[confirmed as a
-static count; not a CI pass-claim]**. Largest suites: engine 108,
-recovery 55, runtime executor 49, postgres observer 41+21, contract 40+21.
+**Volume**: ~748 test functions counted statically (`#[test]` +
+`#[tokio::test]` across src and tests/, this branch; 745 at `eaff0b4`,
++3 in review round 2) **[confirmed as a static count; not a CI
+pass-claim]**. Largest suites: engine 108, recovery 55, runtime executor
+56, postgres observer 41+21, contract 40+21.
 Integration coverage includes wiremock Control Center client tests (13,
 http/tests/control_center_client.rs), HTTP observer integration
 (http/tests/integration.rs), Postgres/Redis observer integration
@@ -205,16 +219,52 @@ One scoped fix — **idempotency claim resolution on error paths**
 (R1), plus a doc-comment correction and ledger/handoff docs:
 
 - `crates/agentverify-runtime/src/executor.rs` — new private
-  `resolve_claim_on_error(action, unknown_effect)` (executor.rs:323–339):
-  releases the claim when dispatch could not have started
-  (`ActionNotSupported`, `TimeoutBeforeDispatch`, `Rejected`), consumes the
-  key with `VerificationResult::Unknown` when the external effect is unknown
-  (`TransportError`/`TimeoutAfterDispatch`/`Ambiguous` adapter errors, and
-  any post-dispatch observation failure/timeout), so the action is never
-  silently re-dispatched and the key is never left `InFlight`. Wired into
-  both `execute` and `execute_with_executor`. Public signatures and
-  success-path behavior unchanged. 4 regression tests added
-  (executor.rs:1662–1895).
+  `resolve_claim_on_error(action, policy)` (executor.rs): releases the claim
+  when dispatch could not have started and consumes the key with
+  `VerificationResult::Unknown` when the external effect is unknown, so the
+  action is never silently re-dispatched. Wired into both `execute` and
+  `execute_with_executor`. Public signatures and success-path behavior
+  unchanged. 4 regression tests added (executor.rs). **Amended in review
+  round 2, below.**
+
+**Review round 2 (2026-10-10, PR #26 independent Standards+Spec review).**
+The first fix overclaimed: two gaps remained.
+
+1. *Post-claim error exits still bypassed resolution.* Every
+   `state_machine.advance(...)?` and the two
+   `Self::verify_postconditions(...)?` calls returned early without
+   resolving the claim. The verification error is reachable: a contract
+   with a `matches` predicate whose regex fails to compile raises
+   `EngineError::RegexError` *after* dispatch and observation, and the old
+   code leaked the key as `InFlight` — the exact false-`Duplicate` liveness
+   bug R1 described. Closed by routing every error exit after the claim
+   through the awaited helpers `abort_claimed_run` /
+   `advance_or_abort` with an explicit `ClaimPolicy` (`Release` when
+   nothing could have been dispatched — the whole simulated `execute` path;
+   `ConsumeUnknown` after dispatch in `execute_with_executor`).
+2. *Divergent `TransportError` semantics.* `DispatchError::TransportError`
+   (adapter `Err`) was consumed as `Unknown` while
+   `DispatchOutcome::TransportError` (adapter `Ok`) released the claim and
+   returned `Failed` — the same ambiguous transport could permit a blind
+   re-dispatch depending on adapter shape. Aligned conservatively: both
+   shapes now yield an `Unknown` verdict with the key consumed as `Unknown`.
+   `DispatchOutcome::TransportError` remains terminal (no automatic
+   re-dispatch at all); the loop's `Unknown`-retry arm is not reached from
+   it.
+
+Additionally, adapter-error classification was inverted to be
+default-safe: `claim_policy_for` releases the claim only for errors that
+prove nothing was sent (`ActionNotSupported`, `TimeoutBeforeDispatch`,
+`Rejected`); every other variant — including any future `DispatchError`
+variant — consumes the key as `Unknown`.
+
+Regression tests (executor suite 53 → 56; claim/transport coverage now 10
+tests): verification error after a completed dispatch consumes the claim as
+`Unknown` (the invalid-regex case, both entry points — release on the
+simulated path, consume on the adapter path), `DispatchOutcome::TransportError`
+verdict `Unknown` with consumed claim (two tests), and the adapter-error
+classification matrix. Three existing transport tests were reworked from
+asserting release/`Failed` to asserting consume/`Unknown`.
 - `crates/agentverify-http/src/client.rs` — corrected
   `submit_receipt` doc (timeout semantics belong to the
   `_with_unknown_on_timeout` wrapper).
@@ -237,6 +287,19 @@ clean in 1m16s (covers the runtime lib test with the new regression tests
 and the observe/mcp/core/policy lint edits). No local test run otherwise;
 the full workspace build/test gates are delegated to the repository's CI
 lane (GitHub Actions) and the PR's latest run is the evidence of record.
+
+**Validation actually run — review round 2 (2026-10-10):**
+`cargo fmt --all -- --check` clean; `cargo test -p agentverify-runtime`
+= 76 lib + 11 integration tests, 0 failed; `cargo clippy -p
+agentverify-runtime -p agentverify-cli -p agentverify-http -p
+agentverify-testkit -p agentverify-mcp --all-targets -- -D warnings`
+clean. A workspace-wide sweep is blocked locally by the repo hook
+(`full_validation_sweep_must_route_through_gitforge`), and the GitForge
+job runner's cwd allowlist does not include this worktree — so the full
+workspace lint/test gate remains GitHub Actions CI on push, and the
+post-amendment CI run is the evidence of record for the round-2 changes.
+**If CI is red on the runtime crate, treat the round-2 fix as unproven
+and do not merge.**
 **If CI is red on the runtime crate, treat the fix as unproven and do not
 merge.**
 
@@ -326,6 +389,17 @@ Ledger: these are recorded as open rows in `docs/internal/TASKS.md`
   list, run 33482496746 all-green at `2b6d021`, v0.1.0 assets published /
   crates.io publish failed for lack of token, no GitForge seam, CC client
   one-directional with 13 wiremock tests.
+- **Confirmed — review round 2** (local run, worktree
+  `pa-handoff-agentverify-20261010`): every post-claim error exit in
+  `execute`/`execute_with_executor` resolves the claim via
+  `abort_claimed_run`/`advance_or_abort` with an explicit `ClaimPolicy`;
+  `DispatchOutcome::TransportError` now yields `Unknown` with the key
+  consumed (aligned with `DispatchError::TransportError`); adapter-error
+  classification is default-safe (unknown variants → consume). Evidence:
+  fmt clean; `cargo test -p agentverify-runtime` 76 lib + 11 integration,
+  0 failed; scoped clippy `-D warnings` clean on runtime/cli/http/testkit/
+  mcp; 56 executor tests incl. 10 claim/transport regressions. Not yet
+  confirmed at CI for this round — see the Unverified row.
 - **Inferred**: double-dispatch chains from R2/R3/R4; InFlight
   poll-then-Duplicate behavior for long overlaps; "Tier A–C only" framing.
 - **Unverified**: coverage % at this SHA; crates.io registry state directly
@@ -333,7 +407,9 @@ Ledger: these are recorded as open rows in `docs/internal/TASKS.md`
   `/api/v1/verification-receipts`; behavior of PG/Redis observers against
   services other than the CI ones; this branch's final CI result (runs
   38096454733 and 38096769946 failed and were fixed; the latest run on the
-  PR is the evidence of record — check it before merging).
+  PR is the evidence of record — check it before merging); the round-2
+  claim/transport changes specifically (local validation only until the
+  post-amendment CI run completes — hold merge on it).
 
 ## 9. Source index
 

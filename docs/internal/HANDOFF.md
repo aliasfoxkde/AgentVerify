@@ -61,7 +61,7 @@ action execution.
 
 **P1 (doc reconciliation): ✅ COMPLETE** — TASKS.md and NEXT_STEPS.md corrected; stale task/phase status tables updated; 142 tests verified.
 
-**P2 (atomic idempotency): ✅ COMPLETE** — `IdempotencyStore::claim_or_check` replaces `check`/`insert`; `ClaimResult::Claimed`/`AlreadyClaimed` with `Mutex`; in-flight tracking; `TransportError` releases claim; 4 new tests added (146 total).
+**P2 (atomic idempotency): ✅ COMPLETE** — `IdempotencyStore::claim_or_check` replaces `check`/`insert`; `ClaimResult::Claimed`/`AlreadyClaimed` with `Mutex`; in-flight tracking; `TransportError` releases claim; 4 new tests added (146 total). *Amended 2026-10-10 (PR #26 review round 2): the release-on-`TransportError` behavior above is superseded — both `DispatchError::TransportError` and `DispatchOutcome::TransportError` now yield an `Unknown` verdict with the key consumed as `Unknown`, and every post-claim error exit resolves the claim (see `.github/CHANGELOG.md` Unreleased).*
 
 **P3 (receipt lifecycle): ✅ COMPLETE** — `ReceiptStore` wired into executor; `get_receipt` API; receipts bind idempotency key; 4 new tests.
 
