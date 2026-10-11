@@ -254,6 +254,17 @@ const REDIS_KEY_PREFIX: &str = "idempotency:";
 /// - `complete` uses SET to update with result
 /// - `release` uses DEL to remove entry
 ///
+/// # Degradation Policy
+/// When Redis cannot answer a claim, the store degrades exactly one way:
+/// to [`ClaimResult::Claimed`], so the caller dispatches and reconciles
+/// afterwards. This is the policy pinned by
+/// `redis_idempotency_store_claims_when_redis_is_unreachable` and applies
+/// to pool exhaustion, serialization failures, and command errors alike.
+/// The one exception is a `WRONGTYPE` (`TypeError`) answer: that is a
+/// definitive statement that the key namespace is occupied by foreign
+/// content, so the key is reported as
+/// [`ClaimResult::AlreadyClaimed`] with no readable outcome.
+///
 /// # TTL
 /// Default TTL is 24 hours. Entries are automatically expired to prevent
 /// unbounded growth and allow retry of genuinely failed actions.
@@ -303,6 +314,22 @@ impl RedisIdempotencyStore {
 
     fn redis_key(key: &str) -> String {
         format!("{REDIS_KEY_PREFIX}{key}")
+    }
+
+    /// Classify a failed SETNX attempt per the degradation policy.
+    ///
+    /// A `TypeError` (e.g. `WRONGTYPE`) is a definitive answer about this
+    /// key: the namespace is occupied by foreign content, so the key is
+    /// taken and no outcome can be read from it. Every other error means
+    /// the store could not answer at all — the same condition as an
+    /// unreachable pool — so the caller is told it claimed the key and
+    /// reconciles afterwards.
+    fn claim_on_setnx_error(kind: redis::ErrorKind) -> ClaimResult {
+        if matches!(kind, redis::ErrorKind::TypeError) {
+            ClaimResult::AlreadyClaimed
+        } else {
+            ClaimResult::Claimed
+        }
     }
 }
 
@@ -385,15 +412,22 @@ impl IdempotencyStore for RedisIdempotencyStore {
                             Ok(true) => (ClaimResult::Claimed, None),
                             Ok(false) => (ClaimResult::AlreadyClaimed, None),
                             Err(e) => {
-                                tracing::warn!("Redis retry failed: {e}");
-                                (ClaimResult::AlreadyClaimed, None)
+                                let claim = Self::claim_on_setnx_error(e.kind());
+                                tracing::warn!(
+                                    "Redis retry SETNX failed, degrading to {claim:?}: {e}"
+                                );
+                                (claim, None)
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Redis SETNX failed: {e}");
-                    (ClaimResult::AlreadyClaimed, None)
+                    // An unanswered SETNX is store unavailability, not a
+                    // competing claim: degrade per the recorded policy. The
+                    // WRONGTYPE exception is a definitive "key is taken".
+                    let claim = Self::claim_on_setnx_error(e.kind());
+                    tracing::warn!("Redis SETNX failed, degrading to {claim:?}: {e}");
+                    (claim, None)
                 }
             }
         })
@@ -1113,6 +1147,43 @@ mod tests {
                 .complete(key.clone(), VerificationResult::Failed)
                 .await;
             store.release(&key).await;
+        }
+
+        #[test]
+        fn setnx_type_error_is_a_definitive_occupied_key_answer() {
+            // WRONGTYPE surfaces as ErrorKind::TypeError: the idempotency
+            // namespace holds foreign content at this key, so the key is
+            // taken even though no outcome can be read from it. This is the
+            // classification the wrong-Redis-type integration test observes
+            // end to end.
+            assert_eq!(
+                RedisIdempotencyStore::claim_on_setnx_error(redis::ErrorKind::TypeError),
+                ClaimResult::AlreadyClaimed
+            );
+        }
+
+        #[test]
+        fn setnx_store_unavailability_degrades_to_claimed() {
+            // Errors that say nothing about the key itself — refused
+            // commands, dropped connections, cluster redirections — are the
+            // same condition as an unreachable pool: the caller is told it
+            // claimed the key so it will dispatch and reconcile afterwards.
+            // Reporting AlreadyClaimed here would fabricate a Duplicate
+            // receipt for an action that never dispatched.
+            for kind in [
+                redis::ErrorKind::ResponseError,
+                redis::ErrorKind::IoError,
+                redis::ErrorKind::Moved,
+                redis::ErrorKind::TryAgain,
+                redis::ErrorKind::ClusterDown,
+                redis::ErrorKind::ClientError,
+            ] {
+                assert_eq!(
+                    RedisIdempotencyStore::claim_on_setnx_error(kind),
+                    ClaimResult::Claimed,
+                    "kind {kind:?} must degrade to Claimed"
+                );
+            }
         }
 
         #[test]
