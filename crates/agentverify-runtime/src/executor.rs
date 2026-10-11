@@ -42,6 +42,11 @@ pub enum ExecutorError {
     /// The idempotency key was already claimed and completed elsewhere
     #[error("Idempotency conflict: action already executed")]
     IdempotencyConflict,
+    /// The idempotency store could not answer the claim, so the action was
+    /// not dispatched. Nothing was sent and no claim is held, so retrying
+    /// the operation is safe once the store recovers.
+    #[error("Idempotency store unavailable: {0}")]
+    IdempotencyUnavailable(String),
     /// All retry attempts were consumed without a verified outcome
     #[error("Retry exhausted after {attempts} attempts")]
     RetryExhausted {
@@ -92,6 +97,12 @@ pub enum ClaimResult {
     Claimed,
     /// Key was already claimed by another concurrent request
     AlreadyClaimed,
+    /// The store could not prove the claim state: it could not answer
+    /// whether the key is free, in-flight, or completed. The caller must
+    /// not dispatch — idempotency cannot be guaranteed. Nothing was
+    /// dispatched and no claim is held, so the caller may retry the
+    /// operation once the store recovers.
+    Unavailable,
 }
 
 /// Idempotency store trait for tracking executed actions
@@ -121,6 +132,15 @@ pub trait IdempotencyStore: Send + Sync {
     /// Returns `(ClaimResult, optional_result)`:
     /// - `(Claimed, None)` — key was claimed by this call; caller is responsible for dispatch
     /// - `(AlreadyClaimed, Some(result))` — key was already claimed (in-flight) or completed
+    /// - `(AlreadyClaimed, None)` — key is occupied by another request whose
+    ///   outcome is not readable
+    /// - `(Unavailable, None)` — the store could not answer whether the key
+    ///   is claimed; the caller must not dispatch
+    ///
+    /// Implementors must return `Unavailable` instead of guessing whenever
+    /// the store cannot prove the claim state. Reporting `Claimed` without a
+    /// proof causes a double dispatch; reporting `AlreadyClaimed` without a
+    /// proof hides live work behind a duplicate verdict.
     fn claim_or_check<'a>(
         &'a self,
         key: &'a str,
@@ -520,6 +540,17 @@ impl Executor {
                         Vec::new(),
                     );
                     return Ok((VerificationResult::Duplicate, receipt));
+                }
+                ClaimResult::Unavailable => {
+                    // The store could not prove the claim state. Dispatching
+                    // would give up idempotency protection and answering
+                    // Duplicate would fabricate evidence: the action never
+                    // dispatched. Surface a retryable error instead.
+                    return Err(ExecutorError::IdempotencyUnavailable(format!(
+                        "idempotency store could not answer the claim for key '{}'; \
+                         the action was not dispatched",
+                        key.0
+                    )));
                 }
             }
         }
@@ -1018,6 +1049,17 @@ impl Executor {
                         Vec::new(),
                     );
                     return Ok((VerificationResult::Duplicate, receipt));
+                }
+                ClaimResult::Unavailable => {
+                    // The store could not prove the claim state. Dispatching
+                    // would give up idempotency protection and answering
+                    // Duplicate would fabricate evidence: the action never
+                    // dispatched. Surface a retryable error instead.
+                    return Err(ExecutorError::IdempotencyUnavailable(format!(
+                        "idempotency store could not answer the claim for key '{}'; \
+                         the action was not dispatched",
+                        key.0
+                    )));
                 }
             }
         } else {
@@ -3682,5 +3724,149 @@ mod tests {
         assert_eq!(result, VerificationResult::Verified);
         assert_eq!(receipt.attempts, 1);
         assert_eq!(receipt.observations.len(), 1);
+    }
+
+    /// Idempotency store whose claim answer is fixed, counting complete and
+    /// release calls so tests can prove the executor took no side effects.
+    struct FixedClaimStore {
+        claim: ClaimResult,
+        existing: Option<VerificationResult>,
+        completes: AtomicUsize,
+        releases: AtomicUsize,
+    }
+
+    impl FixedClaimStore {
+        /// Build a store answering every claim with `(claim, existing)`.
+        fn new(claim: ClaimResult, existing: Option<VerificationResult>) -> Arc<Self> {
+            Arc::new(Self {
+                claim,
+                existing,
+                completes: AtomicUsize::new(0),
+                releases: AtomicUsize::new(0),
+            })
+        }
+    }
+
+    impl IdempotencyStore for FixedClaimStore {
+        fn claim_or_check<'a>(
+            &'a self,
+            _key: &'a str,
+        ) -> Pin<Box<dyn Future<Output = (ClaimResult, Option<VerificationResult>)> + Send + 'a>>
+        {
+            Box::pin(async move { (self.claim.clone(), self.existing) })
+        }
+
+        fn complete(
+            &self,
+            _key: String,
+            _result: VerificationResult,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(async move {
+                self.completes.fetch_add(1, Ordering::SeqCst);
+            })
+        }
+
+        fn release(&self, _key: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(async move {
+                self.releases.fetch_add(1, Ordering::SeqCst);
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_claim_errors_instead_of_dispatching() {
+        // The store could not prove the claim state: the executor must not
+        // dispatch, must not record an outcome, and must not answer
+        // Duplicate — the action never ran, so a duplicate receipt would be
+        // fabricated evidence.
+        let store = FixedClaimStore::new(ClaimResult::Unavailable, None);
+        let (dispatch, dispatches) = CountingDispatch::new();
+        let executor = Executor::with_config_and_store(ExecutorConfig::default(), store.clone());
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("unavailable-claim-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let error = executor
+            .execute_with_executor(action, contract, dispatch, None)
+            .await
+            .expect_err("an unprovable claim must neither dispatch nor fabricate a duplicate");
+
+        assert!(
+            matches!(error, ExecutorError::IdempotencyUnavailable(ref message)
+                if message.contains("unavailable-claim-key")),
+            "the error must name the key, got {error:?}"
+        );
+        assert_eq!(
+            dispatches.load(Ordering::SeqCst),
+            0,
+            "nothing may be dispatched without a proven claim"
+        );
+        assert_eq!(
+            store.completes.load(Ordering::SeqCst),
+            0,
+            "no outcome may be recorded for an undispatched action"
+        );
+        assert_eq!(
+            store.releases.load(Ordering::SeqCst),
+            0,
+            "no claim was held, so nothing may be released"
+        );
+    }
+
+    #[tokio::test]
+    async fn simulated_execute_unavailable_claim_errors_without_side_effects() {
+        // The simulated-dispatch path holds the same invariant.
+        let store = FixedClaimStore::new(ClaimResult::Unavailable, None);
+        let executor = Executor::with_config_and_store(ExecutorConfig::default(), store.clone());
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("unavailable-simulated-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let error = executor
+            .execute(action, contract, None)
+            .await
+            .expect_err("an unprovable claim must not reach dispatch");
+
+        assert!(
+            matches!(error, ExecutorError::IdempotencyUnavailable(_)),
+            "got {error:?}"
+        );
+        assert_eq!(store.completes.load(Ordering::SeqCst), 0);
+        assert_eq!(store.releases.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn occupied_claim_with_unreadable_outcome_is_duplicate_without_dispatch() {
+        // The key is provably occupied (SET NX answered that the claim is
+        // taken) but the outcome could not be read: the executor must not
+        // dispatch. Duplicate is honest here — the key is held elsewhere.
+        let store = FixedClaimStore::new(ClaimResult::AlreadyClaimed, None);
+        let (dispatch, dispatches) = CountingDispatch::new();
+        let executor = Executor::with_config_and_store(ExecutorConfig::default(), store.clone());
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("occupied-unreadable-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let (result, receipt) = executor
+            .execute_with_executor(action, contract, dispatch, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Duplicate);
+        assert_eq!(receipt.attempts, 0, "nothing was dispatched by this caller");
+        assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+        assert_eq!(store.completes.load(Ordering::SeqCst), 0);
     }
 }

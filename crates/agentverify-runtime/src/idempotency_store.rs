@@ -76,15 +76,57 @@ impl PersistedEntry {
     }
 }
 
+/// The outcome of reading an idempotency entry from disk.
+///
+/// A key may only be claimed on [`DiskEntry::Absent`]: it is the one
+/// outcome that proves no entry exists. A file that cannot be read or
+/// parsed proves nothing about the claim state, because it may hold an
+/// in-flight claim from another process.
+#[cfg(not(target_arch = "wasm32"))]
+enum DiskEntry {
+    /// No entry file exists for the key: the key is provably unclaimed.
+    Absent,
+    /// The entry was read and parsed successfully.
+    Read(PersistedEntry),
+    /// An entry file exists but could not be read or parsed, so the
+    /// on-disk claim state cannot be proven. The string describes why.
+    Unreadable(String),
+}
+
 /// File-based idempotency store
 ///
 /// # Storage Format
 /// - Each entry stored as a JSON file named `{key_hash}.json`
-/// - Uses filesystem locking for cross-process atomicity
+/// - Claims are taken by exclusive file creation (`create_new`, i.e.
+///   `O_CREAT | O_EXCL` on Unix and `CREATE_NEW` on Windows), which the
+///   kernel arbitrates across every process sharing the directory — the
+///   claim does not depend on a check that ran earlier, so two processes
+///   cannot both hold a key. Updates are written via a uniquely named temp
+///   file + atomic rename.
+///
+/// # Claim Outcomes
+/// The store answers a claim with one of three outcomes and never guesses:
+///
+/// - [`ClaimResult::Claimed`] — no entry file existed *and* the exclusive
+///   create succeeded; this caller owns the claim.
+/// - [`ClaimResult::AlreadyClaimed`] — a readable entry exists (in flight
+///   or completed), or a second exclusive-create attempt lost after the
+///   first winner's entry was proven absent and removed.
+/// - [`ClaimResult::Unavailable`] — the claim state could not be proven:
+///   an entry file exists but cannot be read or parsed, or the new claim
+///   could not be persisted. Nothing is claimed and nothing is cached, so
+///   the caller must not dispatch and may retry once the store recovers.
 ///
 /// # Limitations
-/// - Requires filesystem that supports file locking (NFS, local FS may have issues)
 /// - No TTL: entries persist until manually cleaned up
+/// - A process that dies between the exclusive create and writing the entry
+///   leaves an empty or partial file; the key stays `Unavailable` (never
+///   silently re-claimed) until that file is removed
+/// - A write error after exclusive creation can likewise leave an unreadable
+///   entry that requires operator cleanup; do not remove it automatically,
+///   because it may be another process's in-flight claim
+/// - A process crash before a completion temp-file rename may leave an
+///   orphaned uniquely named temp file; temp files are not currently swept
 ///
 /// For production distributed use, implement `IdempotencyStore` with Redis or `PostgreSQL`.
 #[cfg(not(target_arch = "wasm32"))]
@@ -126,22 +168,60 @@ impl FileIdempotencyStore {
             .join(format!("{}.json", Self::key_to_filename(key)))
     }
 
-    /// Load entry from disk, returns None if not found
-    fn load_entry(&self, key: &str) -> Option<PersistedEntry> {
+    /// Load the entry for `key` from disk, distinguishing a provably
+    /// absent entry from one that exists but cannot be read or parsed.
+    fn load_entry(&self, key: &str) -> DiskEntry {
         let path = self.entry_path(key);
-        if !path.exists() {
-            return None;
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            // A missing file is the one outcome that proves the key free.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return DiskEntry::Absent,
+            Err(e) => return DiskEntry::Unreadable(format!("could not read entry: {e}")),
+        };
+        match serde_json::from_str(&content) {
+            Ok(entry) => DiskEntry::Read(entry),
+            Err(e) => DiskEntry::Unreadable(format!("could not parse entry: {e}")),
         }
-        let content = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str(&content).ok()
     }
 
-    /// Save entry to disk atomically using temp file + rename
-    fn save_entry(&self, entry: &PersistedEntry) -> std::io::Result<()> {
+    /// Create the in-flight claim file for `entry`, exclusively.
+    ///
+    /// `create_new` maps to `O_CREAT | O_EXCL` on Unix and `CREATE_NEW` on
+    /// Windows: exactly one caller — in this process or any other process
+    /// sharing the directory — can create the entry, and losing callers get
+    /// [`std::io::ErrorKind::AlreadyExists`]. The claim is decided by the
+    /// filesystem, not by the timing of a check that preceded it. The
+    /// content is written after the exclusive create, so a crash in that
+    /// window leaves an empty or partial file that every later reader
+    /// treats as unreadable evidence (refused, never re-claimed over).
+    fn create_claim_file(&self, entry: &PersistedEntry) -> std::io::Result<()> {
+        use std::io::Write;
         let path = self.entry_path(&entry.original_key);
         let content = serde_json::to_string_pretty(entry)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let temp_path = path.with_extension("tmp");
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        file.write_all(content.as_bytes())
+    }
+
+    /// Overwrite an existing entry atomically via a uniquely named temp
+    /// file + rename. Used for updates such as `complete`, never for
+    /// claims: a rename replaces whatever sits at the destination, so
+    /// claims must go through [`Self::create_claim_file`].
+    ///
+    /// The temp name is unique to this process and call — two processes
+    /// updating the same entry would otherwise write one shared temp path
+    /// concurrently and rename interleaved bytes into place.
+    fn save_entry(&self, entry: &PersistedEntry) -> std::io::Result<()> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let path = self.entry_path(&entry.original_key);
+        let content = serde_json::to_string_pretty(entry)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let seq = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temp_path = path.with_extension(format!("tmp.{}.{}", std::process::id(), seq));
         std::fs::write(&temp_path, &content)?;
         std::fs::rename(&temp_path, &path)?;
         Ok(())
@@ -167,22 +247,96 @@ impl IdempotencyStore for FileIdempotencyStore {
                 };
             }
 
-            // Load from disk
-            if let Some(entry) = self.load_entry(key) {
-                let result = entry.to_result();
-                cache.insert(key.to_string(), entry);
-                match result {
-                    None => (ClaimResult::AlreadyClaimed, None),
-                    Some(r) => (ClaimResult::AlreadyClaimed, Some(r)),
+            // Nothing is cached, so the disk is the source of truth. Only a
+            // provably absent entry may be claimed, and only if the claim
+            // itself can be persisted; every other outcome refuses the
+            // claim rather than guess.
+            match self.load_entry(key) {
+                DiskEntry::Read(entry) => {
+                    let result = entry.to_result();
+                    cache.insert(key.to_string(), entry);
+                    (ClaimResult::AlreadyClaimed, result)
                 }
-            } else {
-                // Key doesn't exist — claim it
-                let entry = PersistedEntry::new_in_flight(key.to_string());
-                if let Err(e) = self.save_entry(&entry) {
-                    tracing::warn!("failed to persist claim: {e}");
+                DiskEntry::Unreadable(reason) => {
+                    // The entry may hold an in-flight claim from another
+                    // process. Claiming would mean overwriting evidence we
+                    // cannot read, so the claim state stays unresolved and
+                    // the caller must not dispatch.
+                    tracing::warn!("idempotency claim unavailable, {reason}");
+                    (ClaimResult::Unavailable, None)
                 }
-                cache.insert(key.to_string(), entry);
-                (ClaimResult::Claimed, None)
+                DiskEntry::Absent => {
+                    let entry = PersistedEntry::new_in_flight(key.to_string());
+                    // Two processes can both observe an absent entry, so the
+                    // observation claims nothing: the exclusive create, which
+                    // the kernel arbitrates across processes, decides who
+                    // owns the key.
+                    match self.create_claim_file(&entry) {
+                        Ok(()) => {
+                            cache.insert(key.to_string(), entry);
+                            (ClaimResult::Claimed, None)
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                            // Another process claimed the key between our
+                            // read and our create. The disk, not our now
+                            // stale observation, answers.
+                            match self.load_entry(key) {
+                                DiskEntry::Read(entry) => {
+                                    let result = entry.to_result();
+                                    cache.insert(key.to_string(), entry);
+                                    (ClaimResult::AlreadyClaimed, result)
+                                }
+                                DiskEntry::Unreadable(reason) => {
+                                    // The winner created the file but may
+                                    // not have finished writing it, so
+                                    // occupied-or-free cannot be proven. The
+                                    // claim is refused; a later attempt
+                                    // re-reads the disk.
+                                    tracing::warn!("idempotency claim unavailable, {reason}");
+                                    (ClaimResult::Unavailable, None)
+                                }
+                                DiskEntry::Absent => {
+                                    // The competing claim was released
+                                    // between its create and our read, so
+                                    // the key is provably free again.
+                                    // Re-claim exactly once, mirroring the
+                                    // Redis store's expiry-race handling.
+                                    match self.create_claim_file(&entry) {
+                                        Ok(()) => {
+                                            cache.insert(key.to_string(), entry);
+                                            (ClaimResult::Claimed, None)
+                                        }
+                                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                                            // Occupied again by a claim we
+                                            // could not read: answer
+                                            // occupied with no result
+                                            // instead of retrying forever.
+                                            (ClaimResult::AlreadyClaimed, None)
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "failed to persist claim, reporting it \
+                                                 unavailable: {e}"
+                                            );
+                                            (ClaimResult::Unavailable, None)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // The claim was not persisted, so no other
+                            // process can see it: reporting Claimed would
+                            // let two callers run the same action. Nothing
+                            // is cached, so the next attempt retries the
+                            // claim from scratch.
+                            tracing::warn!(
+                                "failed to persist claim, reporting it unavailable: {e}"
+                            );
+                            (ClaimResult::Unavailable, None)
+                        }
+                    }
+                }
             }
         })
     }
@@ -254,6 +408,26 @@ const REDIS_KEY_PREFIX: &str = "idempotency:";
 /// - `complete` uses SET to update with result
 /// - `release` uses DEL to remove entry
 ///
+/// # Claim Outcomes
+/// The store answers a claim with one of three outcomes and never guesses:
+///
+/// - [`ClaimResult::Claimed`] — Redis answered `OK` to
+///   `SET idempotency:{key} <entry> NX EX <ttl>`; this caller owns the claim.
+/// - [`ClaimResult::AlreadyClaimed`] — the key is *provably* occupied: SET
+///   answered nil and a readable entry (or a corrupted but present entry)
+///   was read back, or the single expiry-race re-claim lost the key to
+///   another caller.
+/// - [`ClaimResult::Unavailable`] — Redis could not prove the claim state:
+///   the pool had no connection, the entry could not be serialized, or the
+///   `SET ... NX` command itself failed. This includes `WRONGTYPE`, which
+///   means the shared namespace holds foreign content at that key. The
+///   caller must not dispatch; reporting `Claimed` here would strip
+///   idempotency protection exactly when the store is failing.
+///
+/// These outcomes are produced by the public
+/// [`IdempotencyStore::claim_or_check`] implementation for this store,
+/// from the exact Redis command sequence described in each arm above.
+///
 /// # TTL
 /// Default TTL is 24 hours. Entries are automatically expired to prevent
 /// unbounded growth and allow retry of genuinely failed actions.
@@ -304,6 +478,104 @@ impl RedisIdempotencyStore {
     fn redis_key(key: &str) -> String {
         format!("{REDIS_KEY_PREFIX}{key}")
     }
+
+    /// Issue the atomic claim command over an established connection.
+    ///
+    /// `SET key value NX EX ttl` answers `OK` when the key did not exist
+    /// (and is now written with `value`), `nil` when the key already exists
+    /// (the value is left untouched), or an error. `WRONGTYPE` is raised
+    /// instead of `nil` when the key holds a non-string value written by
+    /// something else in the shared namespace.
+    async fn set_nx_claim<C: redis::aio::ConnectionLike>(
+        conn: &mut C,
+        redis_key: &str,
+        value: &str,
+        ttl_secs: u64,
+    ) -> redis::RedisResult<bool> {
+        redis::cmd("SET")
+            .arg(redis_key)
+            .arg(value)
+            .arg("NX")
+            .arg("EX")
+            .arg(i64::try_from(ttl_secs).unwrap_or(i64::MAX))
+            .query_async(conn)
+            .await
+    }
+
+    /// Run the claim decision over an established connection.
+    ///
+    /// # Redis command semantics
+    /// - `SET key value NX EX ttl` errors (connection drop, cluster
+    ///   redirection, `WRONGTYPE` on foreign content, …) say nothing
+    ///   readable about the key's claim state →
+    ///   `(Unavailable, None)`. No dispatch.
+    /// - `SET ... NX` answers nil: the key exists and holds a string. A
+    ///   follow-up `GET` therefore cannot fail with `WRONGTYPE`; it returns
+    ///   the entry, nil, or a store-level error.
+    ///   - entry read back → `(AlreadyClaimed, result)`; a present but
+    ///     corrupted entry is occupied with an unreadable outcome →
+    ///     `(AlreadyClaimed, None)`.
+    ///   - `GET` returns nil: the entry expired or was released between the
+    ///     two commands, so the key is provably unclaimed. The claim is
+    ///     retried exactly once; if that retry errors, the outcome is
+    ///     `(Unavailable, None)`, never a fabricated claim.
+    ///   - `GET` errors: the key was *proven* occupied by the nil answer,
+    ///     so the outcome is `(AlreadyClaimed, None)` — occupied, outcome
+    ///     unreadable. The claim is never retried: a retry that succeeded
+    ///     would hand this caller a key another request may still own.
+    async fn claim_with_connection<C: redis::aio::ConnectionLike>(
+        conn: &mut C,
+        redis_key: &str,
+        value: &str,
+        ttl_secs: u64,
+    ) -> (ClaimResult, Option<VerificationResult>) {
+        match Self::set_nx_claim(conn, redis_key, value, ttl_secs).await {
+            Ok(true) => (ClaimResult::Claimed, None),
+            Ok(false) => {
+                // Key already exists — check its state
+                let get_result: redis::RedisResult<Option<String>> =
+                    redis::cmd("GET").arg(redis_key).query_async(conn).await;
+                match get_result {
+                    Ok(Some(raw)) => match serde_json::from_str::<RedisEntry>(&raw) {
+                        Ok(entry) => (ClaimResult::AlreadyClaimed, entry.to_result()),
+                        Err(_) => {
+                            // Corrupted entry - occupied, but no readable result
+                            (ClaimResult::AlreadyClaimed, None)
+                        }
+                    },
+                    Ok(None) => {
+                        // The entry expired or was released between the two
+                        // commands, so the key is provably unclaimed: retry
+                        // the claim exactly once.
+                        match Self::set_nx_claim(conn, redis_key, value, ttl_secs).await {
+                            Ok(true) => (ClaimResult::Claimed, None),
+                            Ok(false) => (ClaimResult::AlreadyClaimed, None),
+                            Err(e) => {
+                                tracing::warn!("Redis claim retry failed: {e}");
+                                (ClaimResult::Unavailable, None)
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // SET NX proved the key occupied; the outcome is
+                        // unreadable. Never retry the claim — a successful
+                        // retry could grant a key another request still owns.
+                        tracing::warn!(
+                            "Redis GET after occupied claim failed, reporting \
+                             the key occupied with no outcome: {e}"
+                        );
+                        (ClaimResult::AlreadyClaimed, None)
+                    }
+                }
+            }
+            Err(e) => {
+                // An unanswered SET NX proves nothing about the key: the
+                // claim state is unknown and the caller must not dispatch.
+                tracing::warn!("Redis SETNX failed, claim unavailable: {e}");
+                (ClaimResult::Unavailable, None)
+            }
+        }
+    }
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "redis"))]
@@ -320,7 +592,7 @@ impl IdempotencyStore for RedisIdempotencyStore {
                 Ok(conn) => conn,
                 Err(e) => {
                     tracing::warn!("failed to get Redis connection: {e}");
-                    return (ClaimResult::Claimed, None);
+                    return (ClaimResult::Unavailable, None);
                 }
             };
 
@@ -330,72 +602,11 @@ impl IdempotencyStore for RedisIdempotencyStore {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!("failed to serialize entry: {e}");
-                    return (ClaimResult::Claimed, None);
+                    return (ClaimResult::Unavailable, None);
                 }
             };
 
-            // SETNX with TTL - atomic claim operation
-            let setnx_result: Result<bool, _> = redis::cmd("SET")
-                .arg(&redis_key)
-                .arg(&value)
-                .arg("NX")
-                .arg("EX")
-                .arg(i64::try_from(ttl_secs).unwrap_or(i64::MAX))
-                .query_async(&mut conn)
-                .await;
-
-            match setnx_result {
-                Ok(true) => {
-                    // We successfully claimed the key
-                    (ClaimResult::Claimed, None)
-                }
-                Ok(false) => {
-                    // Key already exists - check its state
-                    let get_result: Option<String> = redis::cmd("GET")
-                        .arg(&redis_key)
-                        .query_async(&mut conn)
-                        .await
-                        .ok();
-
-                    if let Some(raw) = get_result {
-                        match serde_json::from_str::<RedisEntry>(&raw) {
-                            Ok(entry) => {
-                                let result = entry.to_result();
-                                (ClaimResult::AlreadyClaimed, result)
-                            }
-                            Err(_) => {
-                                // Corrupted entry - treat as already claimed
-                                (ClaimResult::AlreadyClaimed, None)
-                            }
-                        }
-                    } else {
-                        // Race condition: entry expired between SETNX and GET
-                        // Try again (recursive retry once)
-                        let entry = RedisEntry::new_in_flight(key.to_string());
-                        let value = serde_json::to_string(&entry).unwrap_or_default();
-                        let retry_result: Result<bool, _> = redis::cmd("SET")
-                            .arg(&redis_key)
-                            .arg(&value)
-                            .arg("NX")
-                            .arg("EX")
-                            .arg(i64::try_from(ttl_secs).unwrap_or(i64::MAX))
-                            .query_async(&mut conn)
-                            .await;
-                        match retry_result {
-                            Ok(true) => (ClaimResult::Claimed, None),
-                            Ok(false) => (ClaimResult::AlreadyClaimed, None),
-                            Err(e) => {
-                                tracing::warn!("Redis retry failed: {e}");
-                                (ClaimResult::AlreadyClaimed, None)
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("Redis SETNX failed: {e}");
-                    (ClaimResult::AlreadyClaimed, None)
-                }
-            }
+            Self::claim_with_connection(&mut conn, &redis_key, &value, ttl_secs).await
         })
     }
 
@@ -519,14 +730,26 @@ mod tests {
     /// Monotonic counter so keys generated inside a single test run never collide.
     static KEY_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+    fn nanos_since_epoch() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    }
+
     fn next_key(label: &str) -> String {
         use std::sync::atomic::Ordering;
         let seq = KEY_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
-        format!("{label}-{nanos}-{seq}")
+        format!("{label}-{}-{seq}", nanos_since_epoch())
+    }
+
+    /// Busy-wait until `deadline_nanos`. Used as a cross-process barrier so
+    /// every spawned claimer enters the claim window at the same instant
+    /// instead of being spread out by process startup time.
+    fn spin_until(deadline_nanos: u128) {
+        while nanos_since_epoch() < deadline_nanos {
+            std::hint::spin_loop();
+        }
     }
 
     #[test]
@@ -696,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn file_idempotency_store_survives_unreadable_entry_file() {
+    fn file_idempotency_store_refuses_to_claim_over_a_corrupt_entry() {
         let dir = tempfile::tempdir().unwrap();
         let key = next_key("file-corrupt-json");
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -706,17 +929,29 @@ mod tests {
             "{}.json",
             FileIdempotencyStore::key_to_filename(&key)
         ));
-        std::fs::write(&entry_path, "{\"state\": \"Completed\"").unwrap();
+        let corrupt = "{\"state\": \"Completed\"";
+        std::fs::write(&entry_path, corrupt).unwrap();
 
-        // The malformed entry is unreadable, so the key looks unclaimed: the
-        // store must claim it rather than report a stale outcome.
+        // The entry exists but cannot be parsed, so the store cannot prove
+        // whether another caller still holds the key in flight: it must
+        // refuse the claim rather than overwrite the evidence.
         let (claim, observed) = rt.block_on(store.claim_or_check(&key));
-        assert_eq!(claim, ClaimResult::Claimed);
+        assert_eq!(claim, ClaimResult::Unavailable);
+        assert_eq!(observed, None);
+
+        // The unreadable entry must be left exactly as it was found.
+        let after = std::fs::read_to_string(&entry_path).unwrap();
+        assert_eq!(after, corrupt, "the corrupt entry must not be overwritten");
+
+        // A refusal holds no claim, so a retry re-attempts the disk instead
+        // of answering from a cached entry.
+        let (claim, observed) = rt.block_on(store.claim_or_check(&key));
+        assert_eq!(claim, ClaimResult::Unavailable);
         assert_eq!(observed, None);
     }
 
     #[test]
-    fn file_idempotency_store_survives_undecodable_entry_file() {
+    fn file_idempotency_store_refuses_to_claim_over_an_undecodable_entry() {
         let dir = tempfile::tempdir().unwrap();
         let key = next_key("file-corrupt-bytes");
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -727,40 +962,52 @@ mod tests {
             FileIdempotencyStore::key_to_filename(&key)
         ));
         // Invalid UTF-8: the entry cannot even be read as text.
-        std::fs::write(&entry_path, [0xFF, 0xFE, 0x00, 0xC3]).unwrap();
+        let undecodable: [u8; 4] = [0xFF, 0xFE, 0x00, 0xC3];
+        std::fs::write(&entry_path, undecodable).unwrap();
 
+        // A read failure proves nothing about the claim state, so the claim
+        // must be refused rather than taken by overwriting the file.
         let (claim, observed) = rt.block_on(store.claim_or_check(&key));
-        assert_eq!(claim, ClaimResult::Claimed);
+        assert_eq!(claim, ClaimResult::Unavailable);
         assert_eq!(observed, None);
+        assert_eq!(
+            std::fs::read(&entry_path).unwrap(),
+            undecodable,
+            "the undecodable entry must not be overwritten"
+        );
     }
 
     #[test]
-    fn file_idempotency_store_warns_when_claims_cannot_be_persisted() {
+    fn file_idempotency_store_does_not_cache_a_claim_that_cannot_be_persisted() {
         let dir = tempfile::tempdir().unwrap();
         let key = next_key("file-unwritable");
         let rt = tokio::runtime::Runtime::new().unwrap();
 
         // The store is constructed while the directory exists, then the
-        // directory is removed: persistence fails, but claiming and completing
-        // must still succeed in-process so the caller is not stranded.
+        // directory is removed: the claim cannot be persisted, so it must be
+        // refused rather than reported as held.
         let store = FileIdempotencyStore::new(dir.path()).unwrap();
         let orphaned_path = dir.path().to_path_buf();
         drop(dir);
 
         let (claim, observed) = rt.block_on(store.claim_or_check(&key));
-        assert_eq!(claim, ClaimResult::Claimed);
+        assert_eq!(claim, ClaimResult::Unavailable);
         assert_eq!(observed, None);
         assert!(
             !orphaned_path.exists(),
             "precondition: backing directory must be gone"
         );
 
-        rt.block_on(store.complete(key.clone(), VerificationResult::Verified));
-
-        // The in-process cache still answers authoritatively.
+        // A refused claim is cached by nobody: a retry re-attempts the claim
+        // instead of answering AlreadyClaimed from an entry that was never
+        // stored.
         let (claim, observed) = rt.block_on(store.claim_or_check(&key));
-        assert_eq!(claim, ClaimResult::AlreadyClaimed);
-        assert_eq!(observed, Some(VerificationResult::Verified));
+        assert_eq!(
+            claim,
+            ClaimResult::Unavailable,
+            "a failed claim must not be cached"
+        );
+        assert_eq!(observed, None);
     }
 
     #[test]
@@ -820,16 +1067,139 @@ mod tests {
 
         let mut claimed = 0;
         let mut already_claimed = 0;
+        let mut unavailable = 0;
         for handle in handles {
             let (claim, _) = rt.block_on(handle).unwrap();
             match claim {
                 ClaimResult::Claimed => claimed += 1,
                 ClaimResult::AlreadyClaimed => already_claimed += 1,
+                ClaimResult::Unavailable => unavailable += 1,
             }
         }
 
         assert_eq!(claimed, 1, "exactly one caller may claim a key");
-        assert_eq!(already_claimed, attempts - 1);
+        assert_eq!(
+            already_claimed,
+            attempts - 1,
+            "every loser of the race must see the key occupied"
+        );
+        assert_eq!(
+            unavailable, 0,
+            "no claim may be refused while persistence works"
+        );
+    }
+
+    /// Environment variable marking a child process that was re-executed by
+    /// [`Self::file_idempotency_store_claims_once_across_processes`] to
+    /// attempt one claim from a separate OS process. Its value is the child's
+    /// tag, used to name its outcome file.
+    const CROSS_PROCESS_CLAIM_ENV: &str = "AGENTVERIFY_TEST_CROSS_PROCESS_CLAIM";
+
+    #[test]
+    fn file_idempotency_store_claims_once_across_processes() {
+        // Child mode: claim once and report the outcome as a file. The file
+        // is the reliable channel — the test harness captures stdout, and the
+        // parent needs a per-process verdict it can read after reaping.
+        if let Ok(tag) = std::env::var(CROSS_PROCESS_CLAIM_ENV) {
+            let dir = std::path::PathBuf::from(std::env::var("AGENTVERIFY_CLAIM_DIR").unwrap());
+            let key = std::env::var("AGENTVERIFY_CLAIM_KEY").unwrap();
+            let deadline: u128 = std::env::var("AGENTVERIFY_CLAIM_DEADLINE")
+                .unwrap()
+                .parse()
+                .unwrap();
+            // Everything heavyweight happens before the barrier so that the
+            // release drops every process straight into the claim window.
+            let store = FileIdempotencyStore::new(&dir).unwrap();
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            spin_until(deadline);
+            let (claim, _) = rt.block_on(store.claim_or_check(&key));
+            std::fs::write(
+                dir.join(format!("claim-child-{tag}.out")),
+                format!("{claim:?}"),
+            )
+            .unwrap();
+            return;
+        }
+
+        // Parent mode: release several real processes into the claim window
+        // at the same instant. A per-instance Mutex cannot arbitrate this —
+        // only an on-disk mechanism can — so whichever verdicts come back
+        // prove whether the store holds one claim per key across processes.
+        let dir = tempfile::tempdir().unwrap();
+        let key = next_key("file-cross-process");
+        // Headroom for every child to start and reach the spin barrier.
+        let deadline = nanos_since_epoch() + 300_000_000;
+        let exe = std::env::current_exe().unwrap();
+        let test_name =
+            "idempotency_store::tests::file_idempotency_store_claims_once_across_processes";
+        let processes = 16;
+
+        let mut children = Vec::with_capacity(processes);
+        for tag in 0..processes {
+            children.push((
+                tag,
+                std::process::Command::new(&exe)
+                    .arg("--exact")
+                    .arg(test_name)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .env(CROSS_PROCESS_CLAIM_ENV, tag.to_string())
+                    .env("AGENTVERIFY_CLAIM_DIR", dir.path())
+                    .env("AGENTVERIFY_CLAIM_KEY", &key)
+                    .env("AGENTVERIFY_CLAIM_DEADLINE", deadline.to_string())
+                    .spawn()
+                    .expect("child claim process must spawn"),
+            ));
+        }
+
+        let mut claimed = 0;
+        let mut already_claimed = 0;
+        let mut unavailable = 0;
+        let mut unparseable: Vec<(usize, String)> = Vec::new();
+        for (tag, mut child) in children {
+            let status = child.wait().expect("child must be waitable");
+            assert!(
+                status.success(),
+                "child {tag} exited with {status}; the claim must not panic or fail"
+            );
+            let outcome_path = dir.path().join(format!("claim-child-{tag}.out"));
+            let outcome = std::fs::read_to_string(&outcome_path).unwrap_or_default();
+            assert!(
+                !outcome.is_empty(),
+                "child {tag} wrote no outcome file at {outcome_path:?}"
+            );
+            match outcome.trim() {
+                "Claimed" => claimed += 1,
+                "AlreadyClaimed" => already_claimed += 1,
+                "Unavailable" => unavailable += 1,
+                other => unparseable.push((tag, other.to_string())),
+            }
+        }
+        assert!(
+            unparseable.is_empty(),
+            "children reported unparseable outcomes: {unparseable:?}"
+        );
+
+        assert_eq!(
+            claimed, 1,
+            "exactly one process may claim a key; {claimed} of {processes} claimed it"
+        );
+        assert_eq!(
+            claimed + already_claimed + unavailable,
+            processes,
+            "every process must receive a verdict"
+        );
+
+        // After every child has exited the winner's entry is fully written,
+        // so a fresh instance must see the key occupied and in flight.
+        let later = FileIdempotencyStore::new(dir.path()).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (claim, observed) = rt.block_on(later.claim_or_check(&key));
+        assert_eq!(claim, ClaimResult::AlreadyClaimed);
+        assert_eq!(observed, None, "the winner never completed; no outcome");
     }
 
     #[cfg(all(not(target_arch = "wasm32"), feature = "redis"))]
@@ -1048,15 +1418,19 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn redis_idempotency_store_survives_a_key_holding_the_wrong_redis_type() {
+        async fn redis_idempotency_store_does_not_claim_a_key_holding_the_wrong_redis_type() {
             let Some(url) = redis_url() else { return };
             let store = redis_store(&url, 300).await;
             let key = next_key("redis-wrong-type");
 
             // The idempotency namespace is shared with whatever else uses this
-            // Redis. A key that holds a list instead of an entry makes SETNX report
-            // the key as taken and makes the follow-up GET fail with WRONGTYPE, so
-            // the store falls into its retry path.
+            // Redis. A key holding a list instead of an entry cannot be claimed
+            // or read, and the exact reply shape is server-dependent: Redis
+            // before 8.0 answers the claim with a WRONGTYPE error, Redis 8.0
+            // answers nil (the NX condition is simply unmet) and the follow-up
+            // GET fails with WRONGTYPE instead. Both shapes mean the key is
+            // occupied by foreign content with no readable outcome, so the
+            // store must never answer Claimed for it.
             let mut conn = store.pool.get().await.expect("redis connection available");
             redis::cmd("RPUSH")
                 .arg(RedisIdempotencyStore::redis_key(&key))
@@ -1068,26 +1442,35 @@ mod tests {
                 .expect("RPUSH succeeds");
             drop(conn);
 
-            // Both the retried SET NX and the fallback agree: the key is taken and
-            // no outcome can be read from it.
             let (claim, observed) = store.claim_or_check(&key).await;
-            assert_eq!(claim, ClaimResult::AlreadyClaimed);
+            assert_ne!(
+                claim,
+                ClaimResult::Claimed,
+                "a foreign key must never be claimable, got {claim:?}"
+            );
             assert_eq!(observed, None, "a foreign key must not yield a result");
 
+            // Release only deletes the key, so it repairs the namespace.
             store.release(&key).await;
 
-            // After release the key is gone and can be claimed normally.
             let (claim, observed) = store.claim_or_check(&key).await;
-            assert_eq!(claim, ClaimResult::Claimed);
+            assert_eq!(
+                claim,
+                ClaimResult::Claimed,
+                "after release the key must be claimable"
+            );
             assert_eq!(observed, None);
             store.release(&key).await;
         }
 
         #[tokio::test]
-        async fn redis_idempotency_store_claims_when_redis_is_unreachable() {
+        async fn redis_idempotency_store_does_not_claim_when_redis_is_unreachable() {
             // A pool pointed at a closed port: no connection can be established
-            // within the configured window, so every operation must fail closed
-            // without panicking or blocking indefinitely.
+            // within the configured window. The claim state cannot be proven,
+            // so the store must report Unavailable — answering Claimed would
+            // send the caller to dispatch without idempotency protection
+            // precisely while the store is failing, and answering
+            // AlreadyClaimed would hide real work behind a duplicate verdict.
             let mut config = deadpool_redis::Config::from_url("redis://127.0.0.1:1/");
             config.pool = Some(deadpool_redis::PoolConfig {
                 timeouts: deadpool_redis::Timeouts {
@@ -1103,16 +1486,231 @@ mod tests {
             let store = RedisIdempotencyStore::new(pool, 300);
             let key = next_key("redis-unreachable");
 
-            // Fail-closed: the caller is told it claimed the key so it will attempt
-            // dispatch and reconcile afterwards.
             let (claim, observed) = store.claim_or_check(&key).await;
+            assert_eq!(claim, ClaimResult::Unavailable);
+            assert_eq!(observed, None);
+        }
+
+        // =========================================================================
+        // Deterministic claim-path coverage over a scripted connection. These
+        // exercise the two real command-error paths of `claim_or_check` — the
+        // `SET key value NX EX ttl` command failing, and the follow-up `GET`
+        // failing after an occupied answer — without a live server, so they
+        // run in every build that enables the feature.
+        // =========================================================================
+
+        use std::collections::VecDeque;
+
+        /// A scripted connection serving one prepared reply per command and
+        /// recording the name of every command it was asked to run.
+        struct ScriptedConnection {
+            replies: VecDeque<Result<redis::Value, redis::RedisError>>,
+            sent: Vec<String>,
+        }
+
+        impl ScriptedConnection {
+            fn new(replies: Vec<Result<redis::Value, redis::RedisError>>) -> Self {
+                Self {
+                    replies: VecDeque::from(replies),
+                    sent: Vec::new(),
+                }
+            }
+
+            /// The error a Redis server raises for commands against a key
+            /// holding a non-string value (reported by the crate as
+            /// `ErrorKind::TypeError`).
+            fn wrongtype() -> redis::RedisError {
+                redis::RedisError::from((
+                    redis::ErrorKind::TypeError,
+                    "WRONGTYPE Operation against a key holding the wrong kind of value",
+                ))
+            }
+
+            fn connection_dropped() -> redis::RedisError {
+                redis::RedisError::from((redis::ErrorKind::IoError, "connection dropped"))
+            }
+        }
+
+        impl redis::aio::ConnectionLike for ScriptedConnection {
+            fn req_packed_command<'a>(
+                &'a mut self,
+                cmd: &'a redis::Cmd,
+            ) -> redis::RedisFuture<'a, redis::Value> {
+                let name = match cmd.args_iter().next() {
+                    Some(redis::Arg::Simple(bytes)) => String::from_utf8_lossy(bytes).into_owned(),
+                    _ => String::new(),
+                };
+                self.sent.push(name);
+                let reply = self
+                    .replies
+                    .pop_front()
+                    .expect("scripted connection ran out of replies");
+                Box::pin(async move { reply })
+            }
+
+            fn req_packed_commands<'a>(
+                &'a mut self,
+                _cmd: &'a redis::Pipeline,
+                _offset: usize,
+                _count: usize,
+            ) -> redis::RedisFuture<'a, Vec<redis::Value>> {
+                Box::pin(async move {
+                    Err(redis::RedisError::from((
+                        redis::ErrorKind::ClientError,
+                        "pipelining is not scripted",
+                    )))
+                })
+            }
+
+            fn get_db(&self) -> i64 {
+                0
+            }
+        }
+
+        /// The payload the store serializes for a fresh claim.
+        fn in_flight_value() -> String {
+            serde_json::to_string(&RedisEntry::new_in_flight("scripted".to_string()))
+                .expect("in-flight entry serializes")
+        }
+
+        #[tokio::test]
+        async fn claim_command_error_is_unavailable_and_sends_nothing_else() {
+            // The claim command itself failed: it proved nothing about the
+            // key, so the answer is Unavailable for every error family —
+            // WRONGTYPE (foreign content) and transport failures alike — and
+            // no follow-up command may run.
+            for error in [
+                ScriptedConnection::wrongtype(),
+                ScriptedConnection::connection_dropped(),
+            ] {
+                let mut conn = ScriptedConnection::new(vec![Err(error)]);
+                let (claim, observed) = RedisIdempotencyStore::claim_with_connection(
+                    &mut conn,
+                    "idempotency:scripted",
+                    &in_flight_value(),
+                    300,
+                )
+                .await;
+                assert_eq!(claim, ClaimResult::Unavailable);
+                assert_eq!(observed, None);
+                assert_eq!(conn.sent, vec!["SET"], "no other command may follow");
+            }
+        }
+
+        #[tokio::test]
+        async fn get_error_after_occupied_answer_reports_claimed_without_a_retry() {
+            // SET NX answered nil: the key is provably occupied. A failing
+            // GET leaves the outcome unreadable — WRONGTYPE is the shape a
+            // foreign key produces on Redis 8.0 — so the answer is
+            // (AlreadyClaimed, None) and the claim is never retried: a
+            // retry that succeeded could grant a key another request
+            // still owns.
+            for error in [
+                ScriptedConnection::wrongtype(),
+                ScriptedConnection::connection_dropped(),
+            ] {
+                let mut conn = ScriptedConnection::new(vec![Ok(redis::Value::Nil), Err(error)]);
+                let (claim, observed) = RedisIdempotencyStore::claim_with_connection(
+                    &mut conn,
+                    "idempotency:scripted",
+                    &in_flight_value(),
+                    300,
+                )
+                .await;
+                assert_eq!(claim, ClaimResult::AlreadyClaimed);
+                assert_eq!(observed, None, "an unreadable outcome must not be guessed");
+                assert_eq!(
+                    conn.sent,
+                    vec!["SET", "GET"],
+                    "the claim must not be retried after an occupied answer"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn expired_entry_reclaims_exactly_once() {
+            // The GET returned nil: the entry expired or was released between
+            // the two commands, so the key is provably unclaimed and a single
+            // re-claim is correct.
+            let mut conn = ScriptedConnection::new(vec![
+                Ok(redis::Value::Nil),
+                Ok(redis::Value::Nil),
+                Ok(redis::Value::Okay),
+            ]);
+            let (claim, observed) = RedisIdempotencyStore::claim_with_connection(
+                &mut conn,
+                "idempotency:scripted",
+                &in_flight_value(),
+                300,
+            )
+            .await;
             assert_eq!(claim, ClaimResult::Claimed);
             assert_eq!(observed, None);
+            assert_eq!(conn.sent, vec!["SET", "GET", "SET"]);
+        }
 
-            store
-                .complete(key.clone(), VerificationResult::Failed)
-                .await;
-            store.release(&key).await;
+        #[tokio::test]
+        async fn lost_reclaim_race_reports_already_claimed() {
+            // The re-claim answered nil: the key exists again, so it is
+            // occupied and nobody may dispatch against it.
+            let mut conn = ScriptedConnection::new(vec![
+                Ok(redis::Value::Nil),
+                Ok(redis::Value::Nil),
+                Ok(redis::Value::Nil),
+            ]);
+            let (claim, observed) = RedisIdempotencyStore::claim_with_connection(
+                &mut conn,
+                "idempotency:scripted",
+                &in_flight_value(),
+                300,
+            )
+            .await;
+            assert_eq!(claim, ClaimResult::AlreadyClaimed);
+            assert_eq!(observed, None);
+            assert_eq!(conn.sent, vec!["SET", "GET", "SET"]);
+        }
+
+        #[tokio::test]
+        async fn failed_reclaim_is_unavailable_not_claimed() {
+            // The expiry-race re-claim errored: the claim state is unknown
+            // again, so the answer must be Unavailable rather than a
+            // fabricated Claimed.
+            let mut conn = ScriptedConnection::new(vec![
+                Ok(redis::Value::Nil),
+                Ok(redis::Value::Nil),
+                Err(ScriptedConnection::connection_dropped()),
+            ]);
+            let (claim, observed) = RedisIdempotencyStore::claim_with_connection(
+                &mut conn,
+                "idempotency:scripted",
+                &in_flight_value(),
+                300,
+            )
+            .await;
+            assert_eq!(claim, ClaimResult::Unavailable);
+            assert_eq!(observed, None);
+            assert_eq!(conn.sent, vec!["SET", "GET", "SET"]);
+        }
+
+        #[tokio::test]
+        async fn completed_sibling_entry_is_read_back_after_occupied_answer() {
+            let entry =
+                RedisEntry::new_completed("scripted".to_string(), VerificationResult::Verified);
+            let raw = serde_json::to_string(&entry).expect("completed entry serializes");
+            let mut conn = ScriptedConnection::new(vec![
+                Ok(redis::Value::Nil),
+                Ok(redis::Value::Data(raw.into_bytes())),
+            ]);
+            let (claim, observed) = RedisIdempotencyStore::claim_with_connection(
+                &mut conn,
+                "idempotency:scripted",
+                &in_flight_value(),
+                300,
+            )
+            .await;
+            assert_eq!(claim, ClaimResult::AlreadyClaimed);
+            assert_eq!(observed, Some(VerificationResult::Verified));
+            assert_eq!(conn.sent, vec!["SET", "GET"]);
         }
 
         #[test]
