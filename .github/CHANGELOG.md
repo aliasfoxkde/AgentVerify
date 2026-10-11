@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **HTTP** (`agentverify-http`): corrected the `ControlCenterClient::
   submit_receipt` doc comment, which claimed timeout-to-UNKNOWN conversion
   that only `submit_receipt_with_unknown_on_timeout` performs.
+- **CI**: unblocked the gates after the unpinned stable toolchain moved to
+  clippy 1.99: rewrote 16 test assertions to the new `assert_is_empty`
+  lint's suggested forms (semantics unchanged) and bumped `rustls` to
+  0.23.45 in the lockfile for RUSTSEC-2026-0285.
 
 ## [0.1.0] - 2026-08-30
 

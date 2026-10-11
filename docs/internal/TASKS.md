@@ -126,7 +126,7 @@ statically on this branch.
 | QF-002 | Cargo-dist configuration | ❌ | Needed for WASM builds |
 | QF-003 | Property tests for predicate engine | ❌ | Deferred |
 | QF-004 | CLI `--max-retries` accepted but ignored | ❌ Open | Fold into P-DIS-01 (`ExecutorConfig` wiring in `agentverify-cli/src/main.rs`) |
-| QF-005 | Idempotency claim leak on error paths | ✅ | 2026-10-10: `resolve_claim_on_error` + 4 regression tests (`agentverify-runtime/src/executor.rs`); pending CI on the PR |
+| QF-005 | Idempotency claim leak on error paths | ✅ | 2026-10-10: `resolve_claim_on_error` + 4 regression tests (`agentverify-runtime/src/executor.rs`); PR #26 runs 38096454733/38096769946 failed (new-test qualification + clippy-1.99 drift on main, both fixed) — latest PR run is the record |
 
 ---
 
@@ -231,7 +231,7 @@ rows here; do not fork a new ledger.
 | 2026-08-15 | CI/CD GitHub Actions | ✅ | `.github/workflows/ci.yml` and `release.yml` |
 | 2026-08-30 | v0.1.0 GitHub Release (6 targets + WASI + checksums) | ✅ | Release run 33324170554; crates.io publish skipped — no `CARGO_REGISTRY_TOKEN` |
 | 2026-09-01 | CI green at `main@2b6d021` (10/10 jobs incl. Test with PG/Redis services) | ✅ | Run 33482496746 |
-| 2026-10-10 | Platform handoff + idempotency claim-leak fix | 🔄 | `docs/handoffs/PLATFORM_ARCHITECTURE_AGENTVERIFY_2026-10-10.md`; pending PR CI |
+| 2026-10-10 | Platform handoff + idempotency claim-leak fix | 🔄 | `docs/handoffs/PLATFORM_ARCHITECTURE_AGENTVERIFY_2026-10-10.md`; PR #26 — also unblocks main's clippy-1.99/rustls drift (16 `assert_is_empty` sites, rustls 0.23.45) |
 | TBD | PostgresObserver | ✅ | `agentverify-observe` implemented with live-service tests |
 
 ---

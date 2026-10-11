@@ -124,6 +124,24 @@ Actions run **33482496746** (2026-09-01), all 10 jobs green — Formatting,
 MSRV, Documentation, Deny ×2, Clippy ×2, Coverage, **Test (1m34s, with the
 PG/Redis services)**, WASM **[confirmed]**.
 
+**Toolchain drift has left main red since that run** [confirmed]: the CI
+toolchain is unpinned stable and moved to clippy/rustc 1.99, whose new
+`assert_is_empty` lint (and rustc `unused-qualifications`) now fail the
+clippy/test gates on pre-existing code. Plus RUSTSEC-2026-0285 (rustls
+0.23.43). Proven-firing sites fixed in this branch: `redis_observer.rs` ×5,
+`agentverify-mcp/client.rs` ×2, `core/receipt.rs` ×1, `policy` ×8, one
+rustls lock bump. Note the lint's actual reach, measured from run
+**38096769946** logs: it fires on `String`/`&str` and `Vec`-of-primitive
+receivers (including the negated `assert!(!x.is_empty())` form) but **not**
+on `Vec<Struct>`/`HashMap` receivers — `core/contract.rs` and
+`core/observation.rs` assert sites were fully linted in that run and did
+not fire; they are left untouched. This PR's CI runs so far:
+**38096454733** (failed: my test's qualified `sleep`, the observe
+`assert_is_empty` site, rustls advisory) and **38096769946** (failed: my
+test's still-qualified call, 8 further drift sites in observe/mcp/core —
+all fixed in commits `acfd8da`/`b5e9af1`/`b424775`). The latest run on the
+PR is the evidence of record for this handoff.
+
 **Volume**: ~741 test functions counted statically (`#[test]` +
 `#[tokio::test]` across src and tests/, this branch) **[confirmed as a
 static count; not a CI pass-claim]**. Largest suites: engine 108,
@@ -200,15 +218,27 @@ One scoped fix — **idempotency claim resolution on error paths**
 - `crates/agentverify-http/src/client.rs` — corrected
   `submit_receipt` doc (timeout semantics belong to the
   `_with_unknown_on_timeout` wrapper).
+- CI unblocks for pre-existing main drift (needed for any green run):
+  `Cargo.lock` rustls 0.23.43 → 0.23.45 (RUSTSEC-2026-0285, the advisory's
+  own recommendation) and clippy-1.99 `assert_is_empty` rewrites at 16
+  proven-firing sites (`redis_observer.rs` ×5, `agentverify-mcp/client.rs`
+  ×2, `core/receipt.rs` ×1, `policy/error.rs` ×1, `policy/policy.rs` ×7) —
+  each rewritten to the lint's own suggested form; assertion semantics
+  unchanged (see §4 for the run evidence and the lint's measured reach).
 - `.github/CHANGELOG.md` — Unreleased/Fixed entries.
 - `docs/internal/TASKS.md` — ledger refresh (§7 of the ledger).
 
-**Validation actually run:** `cargo fmt --all -- --check` clean locally
-(parse-level only — no local compile/test per campaign rules). Compilation
-and tests are delegated to the repository's CI lane (GitHub Actions); this
-PR's check run is the evidence of record and its result is recorded in the
-PR body/receipt. **If CI is red on the runtime crate, treat the fix as
-unproven and do not merge.**
+**Validation actually run:** `cargo fmt --all -- --check` clean, and —
+after two CI runs spent discovering mechanical failures (runs
+38096454733/38096769946) — one scoped local lint: `cargo clippy -p
+agentverify-core -p agentverify-policy -p agentverify-mcp -p
+agentverify-observe -p agentverify-runtime --all-targets -- -D warnings`,
+clean in 1m16s (covers the runtime lib test with the new regression tests
+and the observe/mcp/core/policy lint edits). No local test run otherwise;
+the full workspace build/test gates are delegated to the repository's CI
+lane (GitHub Actions) and the PR's latest run is the evidence of record.
+**If CI is red on the runtime crate, treat the fix as unproven and do not
+merge.**
 
 **Rollback:** revert the single fix commit (or close the PR); no schema,
 API, or data migration involved. The doc-only changes are independently
@@ -301,8 +331,9 @@ Ledger: these are recorded as open rows in `docs/internal/TASKS.md`
 - **Unverified**: coverage % at this SHA; crates.io registry state directly
   (403 to anonymous API); existence of a CC deployment implementing
   `/api/v1/verification-receipts`; behavior of PG/Redis observers against
-  services other than the CI ones; this branch's CI result (pending at
-  writing — check the PR before merging).
+  services other than the CI ones; this branch's final CI result (runs
+  38096454733 and 38096769946 failed and were fixed; the latest run on the
+  PR is the evidence of record — check it before merging).
 
 ## 9. Source index
 
