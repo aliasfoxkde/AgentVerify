@@ -34,7 +34,7 @@ bullet.)*
 **Revision 4 (2026-10-11, this commit):** same evidence boundary (`f55e171`)
 and same §1–§6 substance and ranking; three corrections from an independent
 exact-head review, docs-only again (this revision changes only this file):
-(1) §3.3 and P2-7 cite the Redis `release` warn as `idempotency_store.rs:
+(1) §3.3 and P2-7 cite the Redis `release` warn as `crates/agentverify-runtime/src/idempotency_store.rs:
 450`; the warn is at **`:449`** — Rev. 2's recorded `:449 → :450`
 "correction" was itself wrong (verified in this clone, whose `crates/` and
 `.github/` trees are byte-identical to `f55e171`; §7's `:449-451` anchor
@@ -166,9 +166,9 @@ not dropped: they still land before any promotion claim.
 - `McpClient` exposes an outbound tool-call surface (`call_tool`,
   `crates/agentverify-mcp/src/client.rs:441-466`), but no `ActionExecutor`
   adapter implements it, and the type's private `dispatch` method
-  (`client.rs:352-373`) is JSON-RPC message routing, not action dispatch —
+  (`crates/agentverify-mcp/src/client.rs:352-373`) is JSON-RPC message routing, not action dispatch —
   neither is an outcome-bearing dispatch adapter. **[confirmed]** (Rev. 1
-  cited this bullet as `client.rs:380-412`; corrected in Rev. 2.)
+  cited this bullet as `crates/agentverify-mcp/src/client.rs:380-412`; corrected in Rev. 2.)
 
 ### 3.2 Idempotency persistence
 
@@ -199,11 +199,11 @@ claim answer** rather than a refusal **[confirmed]**:
 
 | Site (at `f55e171`) | Error | Answer returned | Consequence |
 |---|---|---|---|
-| `idempotency_store.rs:321-324` | Redis pool get fails | `(Claimed, None)` | Dispatch with **no claim at all** |
-| `idempotency_store.rs:331-334` | entry serialization fails | `(Claimed, None)` | Dispatch with no durable claim |
-| `idempotency_store.rs:394-397` | `SET NX EX` command error | `(AlreadyClaimed, None)` | Fabricated occupancy; caller denied a dispatch that was actually never claimable |
-| `idempotency_store.rs:387-390` | expiry-race retry `SET NX` error | `(AlreadyClaimed, None)` | Same fabricated occupancy |
-| `idempotency_store.rs:181-185` | file claim persist fails | `(Claimed, None)` + cache insert | **Phantom claim**: dispatch with no durable claim, and later in-process calls see `AlreadyClaimed` from cache |
+| `crates/agentverify-runtime/src/idempotency_store.rs:321-324` | Redis pool get fails | `(Claimed, None)` | Dispatch with **no claim at all** |
+| `crates/agentverify-runtime/src/idempotency_store.rs:331-334` | entry serialization fails | `(Claimed, None)` | Dispatch with no durable claim |
+| `crates/agentverify-runtime/src/idempotency_store.rs:394-397` | `SET NX EX` command error | `(AlreadyClaimed, None)` | Fabricated occupancy; caller denied a dispatch that was actually never claimable |
+| `crates/agentverify-runtime/src/idempotency_store.rs:387-390` | expiry-race retry `SET NX` error | `(AlreadyClaimed, None)` | Same fabricated occupancy |
+| `crates/agentverify-runtime/src/idempotency_store.rs:181-185` | file claim persist fails | `(Claimed, None)` + cache insert | **Phantom claim**: dispatch with no durable claim, and later in-process calls see `AlreadyClaimed` from cache |
 
 #27 replaces the four Redis rows with `ClaimResult::Unavailable` (new
 variant) refused by the executor as retryable
@@ -218,7 +218,7 @@ Residual fail-closed gaps **not** covered by #27/#29 (source-verified on
 
 - **Redis completion writes are silently discarded on error.**
   `RedisIdempotencyStore::complete` ignores the `SET` result entirely
-  (`idempotency_store.rs:428-435`: `let _: Result<(), _> = ...`); unlike
+  (`crates/agentverify-runtime/src/idempotency_store.rs:428-435`: `let _: Result<(), _> = ...`); unlike
   `release` (which warns at `:449`) a failed completion write is not even
   logged. A lost completion leaves the key `InFlight` until TTL, so later
   callers get `(AlreadyClaimed, None)` — the unresolved-claim shape that reads
@@ -227,11 +227,11 @@ Residual fail-closed gaps **not** covered by #27/#29 (source-verified on
 - **File-store completion divergence after restart.**
   `FileIdempotencyStore::complete` inserts the completed entry into the
   in-process cache regardless of whether `save_entry` succeeded
-  (`idempotency_store.rs:190-205`). If the persist failed, the disk keeps
+  (`crates/agentverify-runtime/src/idempotency_store.rs:190-205`). If the persist failed, the disk keeps
   `InFlight`; after a process restart the key reads as an unresolved claim,
   not the completed verdict. **[inferred, same basis]**
 - **`complete`/`release` on the file store log persist failures but proceed**
-  (`idempotency_store.rs:197-199`, `214-217`) — pre-existing, acknowledged in
+  (`crates/agentverify-runtime/src/idempotency_store.rs:197-199`, `214-217`) — pre-existing, acknowledged in
   #29's limitations.
 - **`WasmIdempotencyStore` is a separate claim taxonomy**
   (`crates/agentverify-http/src/wasm_storage.rs:140-147`:
@@ -243,7 +243,7 @@ Residual fail-closed gaps **not** covered by #27/#29 (source-verified on
 ### 3.4 UNKNOWN semantics vs. store TTL (interaction defect candidate)
 
 `RedisIdempotencyStore::complete` writes consumed-as-`UNKNOWN` verdicts with
-the **same** TTL as every other entry (`idempotency_store.rs:400-437`; default
+the **same** TTL as every other entry (`crates/agentverify-runtime/src/idempotency_store.rs:400-437`; default
 24 h per the doc comment at `:257-259`, which frames TTL as allowing retry of
 "genuinely failed actions"). After expiry the key vanishes, `claim_or_check`
 answers `Claimed` again, and the only thing standing between a blind
@@ -335,7 +335,7 @@ once P0-1 lands, every store error is refused (`Unavailable`) instead of
 answered with a fabricated claim, so the P2 items are robustness and
 observability polish on already fail-closed stores — none of them gates
 executable utility. The P1 chain also avoids the high-contention
-`idempotency_store.rs` surface entirely, so it proceeds without rebasing
+`crates/agentverify-runtime/src/idempotency_store.rs` surface entirely, so it proceeds without rebasing
 against #27/#29. Real dispatch raises the stakes of the polish items (real
 external effects make a lost completion write consequential), which is why
 they remain ranked ahead of promotion and carry owner decisions in §6.
@@ -348,7 +348,7 @@ they remain ranked ahead of promotion and carry owner decisions in §6.
 - **Acceptance gates:** #27 merged with all Actions checks green including
   the new `--all-features` Redis test run; #29 undrafted, its checks green on
   the post-#27 base, stack merges without semantic conflicts in
-  `idempotency_store.rs`; `.github/CHANGELOG.md` Unreleased entries for both.
+  `crates/agentverify-runtime/src/idempotency_store.rs`; `.github/CHANGELOG.md` Unreleased entries for both.
 - **CI/GitForge relevance:** GitHub Actions is the only gate (§2). If
   expensive workspace validation is routed through GitForge per `AGENTS.md`,
   note that no AgentVerify GitForge mirror exists today (§6 Q5).
@@ -458,7 +458,7 @@ Executes the receipt-identity half of P-CC-01 (prior handoff §7;
   That field is **not by itself persisted request-level
   idempotency/replay evidence**: it is `None` unless the action carried a
   key, the submission path keys `X-Idempotency-Key` on the receipt digest
-  instead (`client.rs:193`), and nothing client- or server-side deduplicates
+  instead (`crates/agentverify-http/src/client.rs:193`), and nothing client- or server-side deduplicates
   on it. What `Receipt` has no equivalent of is project/task/work-request/
   job/agent/commit/verifier identity fields, and no request-scoped replay
   evidence. Whether any Control Center deployment implements the endpoint
@@ -526,7 +526,7 @@ is undecided.
   claim path is fail-closed after P0-1; the P1 chain exercises file/in-memory
   stores, so this gates nothing in the utility proof.
 
-- **Evidence:** `idempotency_store.rs:428-435` — `complete`'s `SET` result is
+- **Evidence:** `crates/agentverify-runtime/src/idempotency_store.rs:428-435` — `complete`'s `SET` result is
   discarded (`let _: Result<(), _>`); contrast `release`'s warned `DEL`
   (`:449`). Lost completion ⇒ key stays `InFlight` ⇒ false-`Duplicate`
   shape for later callers (§3.3).
@@ -550,7 +550,7 @@ is undecided.
   on a bounded date.
 
 - **Evidence:** §3.4 — consumed-as-`UNKNOWN` keys expire with the shared 24 h
-  TTL (`idempotency_store.rs:400-437`, `:257-259`), after which the key is
+  TTL (`crates/agentverify-runtime/src/idempotency_store.rs:400-437`, `:257-259`), after which the key is
   claimable again.
 - **Action:** owner decision between (a) longer/permanent retention for
   `UNKNOWN`-consumed entries, (b) explicit reconciliation sweep before
@@ -568,7 +568,7 @@ is undecided.
   direction is an evidence-freshness defect observable after restart, not a
   dispatch-correctness gate for the utility proof.
 
-- **Evidence:** `idempotency_store.rs:190-205` — `complete` caches the
+- **Evidence:** `crates/agentverify-runtime/src/idempotency_store.rs:190-205` — `complete` caches the
   completed entry even when `save_entry` failed; disk keeps `InFlight`
   (§3.3). #29 fixes the claim direction only.
 - **Action (after #29):** same decision shape as P1-3 (observability at
@@ -703,21 +703,21 @@ a real fallback; dates from 2026-10-11)**
   per-crate numbers match §2 exactly); `sed`-based re-verification of every
   load-bearing line citation against this clone (which differs from
   `f55e171` only by docs commits): §3.1 `action_executor.rs:104-127`,
-  `:85-91`, `:10-34`, `main.rs:386-388`, `client.rs:441-466`, `:352-373`;
+  `:85-91`, `:10-34`, `main.rs:386-388`, `crates/agentverify-mcp/src/client.rs:441-466`, `:352-373`;
   §3.2 `executor.rs:90-95`, `:99-102`, `:244-259`, `:316-330`, `:396-405`,
-  `receipt.rs:67`, `:406-407`; §3.3 table anchors `idempotency_store.rs:
+  `receipt.rs:67`, `:406-407`; §3.3 table anchors `crates/agentverify-runtime/src/idempotency_store.rs:
   321-324`, `:331-334`, `:387-390`, `:394-397`, `:181-185`, `:190-205`,
   `:428-435`, `:449-451`; §3.5 all ten seam↔test pairings (`:1461`, `:1499`,
   `:1536`, `:1572`, `:1607`, `:1654`, `:1714`, `:1856`, `:2353`, `:2520`)
   and `ci.yml:118-121`, `:212-219`, `:243-244`; `wasm_storage.rs:140-147`;
-  `client.rs:168`, `:193`, `:232`; `recovery/src/lib.rs:999-1023`,
+  `crates/agentverify-http/src/client.rs:168`, `:193`, `:232`; `recovery/src/lib.rs:999-1023`,
   `:1485-1493`. **All confirmed; no further citation corrections.**
   *(Superseded by Rev. 4: two load-bearing claims escaped that pass — see
   the citation-corrections bullet below.)*
 - **Citation corrections made in Rev. 2:** §3.1 `McpClient` bullet — the
-  tool-call surface is `call_tool` (`client.rs:441-466`) and the private
-  `dispatch` (`client.rs:352-373`) is JSON-RPC routing; Rev. 1 cited
-  `client.rs:380-412`. §3.1 `action_executor.rs:104-128` → `:104-127`.
+  tool-call surface is `call_tool` (`crates/agentverify-mcp/src/client.rs:441-466`) and the private
+  `dispatch` (`crates/agentverify-mcp/src/client.rs:352-373`) is JSON-RPC routing; Rev. 1 cited
+  `crates/agentverify-mcp/src/client.rs:380-412`. §3.1 `action_executor.rs:104-128` → `:104-127`.
   §3.3 `release` warn `:449` → `:450`. §3.5 seam list re-paired to the
   correct test lines (4 of 8 pairings were drifted) and the
   double-dispatch test line added (`:2353`). All other §2–§4 citations were
@@ -734,15 +734,15 @@ a real fallback; dates from 2026-10-11)**
   request" — skipped, not pending. This is a point-in-time observation,
   not a permanent guarantee; re-read before merge decisions. Source
   re-verification in this clone: `release`'s warn at
-  `idempotency_store.rs:449` (inside `release`, fn at `:439`) and
+  `crates/agentverify-runtime/src/idempotency_store.rs:449` (inside `release`, fn at `:439`) and
   `complete`'s discarded `SET` at `:428-435`; `Receipt` struct
   `receipt.rs:67`, `idempotency_key` field `:93-95`, constructor
   `:132-158`, canonical-digest coverage `:187`; executor key flow
-  `executor.rs:1356`; header source `client.rs:193`; `Action.idempotency_key`
+  `executor.rs:1356`; header source `crates/agentverify-http/src/client.rs:193`; `Action.idempotency_key`
   `action.rs:20`. `git diff f55e171..HEAD` shows only `docs/` files, so
   source line numbers at this head equal the `f55e171` boundary.
 - **Citation corrections made in Rev. 4:** §3.3 and P2-7 — the Redis
-  `release` warn is `idempotency_store.rs:449`, not `:450`; Rev. 2's
+  `release` warn is `crates/agentverify-runtime/src/idempotency_store.rs:449`, not `:450`; Rev. 2's
   recorded `:449 → :450` correction (above) was itself wrong. §7's
   `:449-451` anchor range was verified to contain the warn line and stands
   as written. P1-5 — the Evidence and Action bullets no longer claim
