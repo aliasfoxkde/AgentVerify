@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Runtime** (`agentverify-runtime`): `DispatchOutcome::TransportError` is
+  now handled as the ambiguous outcome it is: the verdict is `UNKNOWN` (not
+  `FAILED`) and the idempotency key is consumed as `UNKNOWN` instead of
+  released. This matches the existing `DispatchError::TransportError`
+  treatment, so the same ambiguous transport failure can no longer permit a
+  blind re-dispatch depending on the adapter's shape. Callers who treated the
+  old `FAILED` verdict as "safe to retry" must now observe first — that is
+  the point.
+
+### Fixed
+
+- **Runtime** (`agentverify-runtime`): idempotency claim resolution now
+  covers *every* error exit after a claim is taken. Previously postcondition
+  evaluation errors (e.g. an uncompilable predicate regex) and unexpected
+  state-machine transition failures could still return without resolving the
+  claim, leaving the key in flight so later calls with that key returned a
+  false `Duplicate`. Claims are now released only when dispatch could not
+  have started (unsupported action, pre-dispatch timeout, explicit
+  rejection); adapter errors with unknown external effect — transport drops,
+  post-dispatch timeouts, ambiguity, and any future `DispatchError` variant —
+  default to consuming the key as `UNKNOWN`, as do post-dispatch
+  verification and observation failures. In the simulated `execute` path,
+  where nothing dispatches externally, error exits release the key for
+  retry. Regression-tested for the verification-error and transport paths in
+  both executor entry points plus the adapter-error classification.
+- **HTTP** (`agentverify-http`): corrected the `ControlCenterClient::
+  submit_receipt` doc comment, which claimed timeout-to-UNKNOWN conversion
+  that only `submit_receipt_with_unknown_on_timeout` performs.
+- **CI**: unblocked the gates after the unpinned stable toolchain moved to
+  clippy 1.99: rewrote 16 test assertions to the new `assert_is_empty`
+  lint's suggested forms (semantics unchanged) and bumped `rustls` to
+  0.23.45 in the lockfile for RUSTSEC-2026-0285.
+
 ## [0.1.0] - 2026-08-30
 
 First open-source release of AgentVerify: outcome verification for

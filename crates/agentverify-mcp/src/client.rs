@@ -651,8 +651,8 @@ mod tests {
         assert_eq!(config.timeout_secs, 30);
         assert_eq!(config.client_info.name, "agentverify-mcp");
         assert_eq!(config.client_info.version, env!("CARGO_PKG_VERSION"));
-        assert!(config.command.is_empty());
-        assert!(config.args.is_empty());
+        assert_eq!(config.command, "");
+        assert_eq!(config.args, [] as [String; 0]);
         assert!(config.capabilities.sampling.is_none());
     }
 

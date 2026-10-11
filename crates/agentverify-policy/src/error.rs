@@ -126,7 +126,7 @@ mod tests {
         ];
         assert_eq!(errors.len(), 4);
         for err in &errors {
-            assert!(!err.to_string().is_empty());
+            assert_ne!(err.to_string(), "");
             // No variant wraps a source error.
             assert!(err.source().is_none());
         }

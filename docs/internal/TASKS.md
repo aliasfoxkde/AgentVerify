@@ -24,10 +24,20 @@ This document tracks all tasks for AgentVerify development. Organized by priorit
 | Phase 5: Runtime | ✅ Complete | Executor with verify-before-retry, bounded retry/backoff |
 | Phase 6: HTTP Observer | ✅ Complete | REST observer with auth, redaction, truncation |
 | Phase 7: Receipts | ✅ Complete | Ed25519 signing, SHA-256 digest, idempotency |
-| Phase 8: CLI | ✅ | validate/verify commands work; `execute_with_executor` with `SimulatedActionExecutor` wired |
-| Phase 9-12 | ❌ Deferred | MCP, OTel, policy, recovery, storage adapters |
+| Phase 8: CLI | ⚠️ Partial | `contract validate` correct exit codes; `verify` observes really but **dispatch is simulated** (`SimulatedActionExecutor`, main.rs:386) and `--max-retries` is accepted but ignored (`_max_retries`, main.rs:345) |
+| Phase 9: Observers (Postgres, Redis) | ✅ Implemented | `agentverify-observe` with live-service integration tests (CI: PG 5433 / Redis 7) |
+| Phase 10: Policy, recovery, storage, testkit | ✅ Implemented | crates + unit tests present; storage adapters are in-memory/file-backed, not cross-process |
+| Phase 11: MCP, OTel | ✅ Implemented | `agentverify-mcp` (stdio transport, protocol), `agentverify-otel` (OTLP/gRPC); deployment boundaries unestablished |
+| Phase 12: HTTP gateway | ⚠️ Partial | `ControlCenterClient` (submission-only, wiremock-tested); CLI `serve` is health/shutdown only |
 
-**Current Focus:** Packet P1 complete — stabilizing evidence boundary; P2 addresses real dispatch and atomic idempotency
+**Current Focus (2026-10-10):** deterministic core evidenced through Tier C;
+open work is real dispatch (P-DIS-01), receipt ingestion contract with
+Control Center (P-CC-01), evidence-shape semantics (P-ENG-01), durability
+(P-DUR-01) — specified in
+`docs/handoffs/PLATFORM_ARCHITECTURE_AGENTVERIFY_2026-10-10.md` and tracked
+below under "Handoff packets 2026-10-10". Evidence: CI run 33482496746 all
+10 jobs green at `main@2b6d021` (2026-09-01); ~748 test functions counted
+statically on this branch.
 
 ---
 
@@ -115,6 +125,25 @@ This document tracks all tasks for AgentVerify development. Organized by priorit
 | QF-001 | GitHub Actions CI workflow | ✅ | Already created |
 | QF-002 | Cargo-dist configuration | ❌ | Needed for WASM builds |
 | QF-003 | Property tests for predicate engine | ❌ | Deferred |
+| QF-004 | CLI `--max-retries` accepted but ignored | ❌ Open | Fold into P-DIS-01 (`ExecutorConfig` wiring in `agentverify-cli/src/main.rs`) |
+| QF-005 | Idempotency claim leak on error paths | ✅ | 2026-10-10: every post-claim error exit resolves the claim (`resolve_claim_on_error` + `ClaimPolicy`, 10 regression tests) and `DispatchOutcome::TransportError` aligns with `DispatchError::TransportError` (Unknown verdict, key consumed) (`agentverify-runtime/src/executor.rs`); PR #26 runs 38096454733/38096769946 failed (new-test qualification + clippy-1.99 drift on main, both fixed) — post-amendment PR run is the record |
+
+---
+
+## Handoff packets 2026-10-10
+
+Full specification with file-level ownership and acceptance criteria:
+`docs/handoffs/PLATFORM_ARCHITECTURE_AGENTVERIFY_2026-10-10.md`. Update the
+rows here; do not fork a new ledger.
+
+| ID | Packet | Status | Notes |
+|----|--------|--------|-------|
+| P-DIS-01 | Real dispatch adapter (`HttpActionExecutor`) + CLI executor selection | ❌ Open | Tier-D blocker; also closes QF-004 and the "(real executor path)" comment (main.rs:391) |
+| P-ENG-01 | Evidence-shape semantics decision (missing path / type mismatch / truncation → `Failed` vs unevaluable/`Unknown`; `Implies` vacuous-`Verified`) | ❌ Open | Owner decision required; changes predicate-engine semantics |
+| P-UNK-01 | Observe-before-re-dispatch on `Unknown` retry arm | ❌ Open | AGENTS.md verify-before-retry invariant |
+| P-CC-01 | Versioned receipt ingestion contract + rejection fixtures (orphan/stale/tampered/unauthorized/cross-project/replayed) | ❌ Open | Tier-D blocker; co-owner: Control Center |
+| P-DUR-01 | Cross-process `IdempotencyStore` + durable `ReceiptStore` (Postgres), restart/replay tests | ❌ Open | Model on `agentverify-observe/src/postgres.rs` |
+| P-OPS-01 | crates.io publication of v0.1.0 | ❌ Blocked (user) | `CARGO_REGISTRY_TOKEN` missing — release run 33324170554 skipped publish and exited 1; GitHub Release v0.1.0 assets are published |
 
 ---
 
@@ -200,7 +229,10 @@ This document tracks all tasks for AgentVerify development. Organized by priorit
 | 2026-08-14 | Contract parsing | ✅ |
 | 2026-08-14 | VerifiedExecutor | ✅ |
 | 2026-08-15 | CI/CD GitHub Actions | ✅ | `.github/workflows/ci.yml` and `release.yml` |
-| TBD | PostgresObserver | ❌ |
+| 2026-08-30 | v0.1.0 GitHub Release (6 targets + WASI + checksums) | ✅ | Release run 33324170554; crates.io publish skipped — no `CARGO_REGISTRY_TOKEN` |
+| 2026-09-01 | CI green at `main@2b6d021` (10/10 jobs incl. Test with PG/Redis services) | ✅ | Run 33482496746 |
+| 2026-10-10 | Platform handoff + idempotency claim-leak fix | 🔄 | `docs/handoffs/PLATFORM_ARCHITECTURE_AGENTVERIFY_2026-10-10.md`; PR #26 — also unblocks main's clippy-1.99/rustls drift (16 `assert_is_empty` sites, rustls 0.23.45). Review round 2 (2026-10-10): full post-claim error-exit sweep + `DispatchOutcome::TransportError` → Unknown/consumed, 10 regression tests |
+| TBD | PostgresObserver | ✅ | `agentverify-observe` implemented with live-service tests |
 
 ---
 
