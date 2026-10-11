@@ -140,7 +140,7 @@ async fn from_uri_selects_the_database_named_in_the_uri() {
 
     assert_eq!(row["db"], json!(database), "URI database must be selected");
     assert_eq!(row["usr"], json!(user), "URI user must be applied");
-    assert!(!host_port.is_empty());
+    assert_ne!(host_port, "");
 }
 
 #[tokio::test]

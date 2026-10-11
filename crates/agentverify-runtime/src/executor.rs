@@ -2,7 +2,7 @@
 //!
 //! Orchestrates action execution with verification using verify-before-retry semantics.
 
-use crate::action_executor::{ActionExecutor, DispatchOutcome};
+use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
 use crate::receipt_store::ReceiptStore;
 use agentverify_contract::Contract;
 use agentverify_core::{
@@ -241,6 +241,23 @@ struct PostconditionEvaluation {
     details: Vec<PostconditionResult>,
 }
 
+/// How an aborted run resolves its idempotency claim.
+///
+/// The policy is chosen explicitly at every error exit after a claim: the
+/// claim is released only when nothing could have been dispatched;
+/// otherwise the key is consumed with [`VerificationResult::Unknown`] so a
+/// later caller observes a verdict and can never blindly re-dispatch an
+/// action whose external effect is unknown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimPolicy {
+    /// Nothing could have reached the target: release the key so a
+    /// subsequent request may retry the action.
+    Release,
+    /// An external effect may already exist: complete the key with
+    /// [`VerificationResult::Unknown`].
+    ConsumeUnknown,
+}
+
 /// Verified executor
 pub struct Executor {
     config: ExecutorConfig,
@@ -309,6 +326,81 @@ impl Executor {
                     "failed to persist verification receipt"
                 );
             }
+        }
+    }
+
+    /// Resolve the idempotency claim when a run aborts with an error.
+    ///
+    /// Every error exit after a successful claim must be resolved through
+    /// this method — directly, or via [`Self::abort_claimed_run`] /
+    /// [`Self::advance_or_abort`] — so no aborted run can leave a claimed
+    /// key in flight.
+    async fn resolve_claim_on_error(&self, action: &Action, policy: ClaimPolicy) {
+        if let Some(key) = &action.idempotency_key {
+            match policy {
+                ClaimPolicy::ConsumeUnknown => {
+                    self.idempotency
+                        .complete(key.0.clone(), VerificationResult::Unknown)
+                        .await;
+                }
+                ClaimPolicy::Release => {
+                    self.idempotency.release(&key.0).await;
+                }
+            }
+        }
+    }
+
+    /// Resolve the idempotency claim for an aborted run and return the error
+    /// to surface to the caller, so resolution is always awaited before the
+    /// error escapes.
+    async fn abort_claimed_run(
+        &self,
+        action: &Action,
+        policy: ClaimPolicy,
+        error: ExecutorError,
+    ) -> ExecutorError {
+        self.resolve_claim_on_error(action, policy).await;
+        error
+    }
+
+    /// Advance the state machine, resolving the idempotency claim per
+    /// `policy` when the transition fails unexpectedly. The `?` applied to
+    /// the returned future's result at the call site therefore cannot bypass
+    /// claim resolution.
+    async fn advance_or_abort(
+        &self,
+        state_machine: &mut StateMachine,
+        next: State,
+        action: &Action,
+        policy: ClaimPolicy,
+        wrap: impl Fn(String) -> ExecutorError,
+    ) -> Result<(), ExecutorError> {
+        match state_machine.advance(next) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(self
+                .abort_claimed_run(action, policy, wrap(e.to_string()))
+                .await),
+        }
+    }
+
+    /// Map an adapter error to the claim policy for the aborted run.
+    ///
+    /// Default-safe: only errors that prove nothing was sent
+    /// ([`DispatchError::ActionNotSupported`],
+    /// [`DispatchError::TimeoutBeforeDispatch`], [`DispatchError::Rejected`])
+    /// release the claim. Every other variant — transport drops,
+    /// post-dispatch timeouts, ambiguity, and any variant added in the
+    /// future — leaves the external effect unknown and consumes the key as
+    /// `Unknown`, so an ambiguous transport outcome can never permit a blind
+    /// re-dispatch regardless of adapter shape.
+    fn claim_policy_for(error: &DispatchError) -> ClaimPolicy {
+        match error {
+            DispatchError::ActionNotSupported(_)
+            | DispatchError::TimeoutBeforeDispatch
+            | DispatchError::Rejected(_) => ClaimPolicy::Release,
+            // TransportError, TimeoutAfterDispatch, Ambiguous, and any
+            // future variant: the external effect cannot be proven absent.
+            _ => ClaimPolicy::ConsumeUnknown,
         }
     }
 
@@ -385,6 +477,10 @@ impl Executor {
     /// 5. Verify postconditions
     /// 6. Complete idempotency entry
     ///
+    /// No external dispatch happens on this path, so every error exit after
+    /// the claim releases the key — a later request may retry. The claim is
+    /// still resolved on every exit: no aborted run leaves the key in flight.
+    ///
     /// # Errors
     ///
     /// Returns [`ExecutorError::PreconditionFailed`] when preconditions do not
@@ -398,6 +494,10 @@ impl Executor {
         contract: Contract,
         observer: Option<Arc<dyn Observer>>,
     ) -> Result<(VerificationResult, Receipt), ExecutorError> {
+        // Nothing on this path dispatches externally, so an aborted run
+        // always releases the claim: a later request may retry the action.
+        const ABORT_POLICY: ClaimPolicy = ClaimPolicy::Release;
+
         // Atomically claim or check idempotency key
         if let Some(ref key) = action.idempotency_key {
             let (result, existing) = self.idempotency.claim_or_check(&key.0).await;
@@ -435,9 +535,14 @@ impl Executor {
             let mut state_machine = StateMachine::new();
 
             // Validate preconditions
-            state_machine
-                .advance(State::Validating)
-                .map_err(|e| ExecutorError::PreconditionFailed(e.to_string()))?;
+            self.advance_or_abort(
+                &mut state_machine,
+                State::Validating,
+                &action,
+                ABORT_POLICY,
+                ExecutorError::PreconditionFailed,
+            )
+            .await?;
 
             // Preconditions need the state as it is *before* dispatch, so it is
             // observed here rather than reusing the post-dispatch observation.
@@ -456,9 +561,14 @@ impl Executor {
                             contract = %contract.id,
                             "action rejected before dispatch: {message}"
                         );
-                        state_machine
-                            .advance(State::Rejected)
-                            .map_err(|_| ExecutorError::PreconditionFailed(message.clone()))?;
+                        self.advance_or_abort(
+                            &mut state_machine,
+                            State::Rejected,
+                            &action,
+                            ABORT_POLICY,
+                            |_| ExecutorError::PreconditionFailed(message.clone()),
+                        )
+                        .await?;
                         // Precondition failure is terminal for this action — complete with Failed
                         final_result = Some(VerificationResult::Failed);
                         break;
@@ -467,44 +577,79 @@ impl Executor {
             };
 
             if let Err(e) = Self::validate_preconditions(&action, &contract, pre_state.as_ref()) {
-                state_machine
-                    .advance(State::Rejected)
-                    .map_err(|_| ExecutorError::PreconditionFailed(e.clone()))?;
+                self.advance_or_abort(
+                    &mut state_machine,
+                    State::Rejected,
+                    &action,
+                    ABORT_POLICY,
+                    |_| ExecutorError::PreconditionFailed(e.clone()),
+                )
+                .await?;
                 // Precondition failure is terminal for this action — complete with Failed
                 final_result = Some(VerificationResult::Failed);
                 break;
             }
 
-            state_machine
-                .advance(State::Authorized)
-                .map_err(|e| ExecutorError::ExecutionFailed(e.to_string()))?;
+            self.advance_or_abort(
+                &mut state_machine,
+                State::Authorized,
+                &action,
+                ABORT_POLICY,
+                ExecutorError::ExecutionFailed,
+            )
+            .await?;
 
             // Execute action (simulated)
-            state_machine
-                .advance(State::Executing)
-                .map_err(|e| ExecutorError::ExecutionFailed(e.to_string()))?;
+            self.advance_or_abort(
+                &mut state_machine,
+                State::Executing,
+                &action,
+                ABORT_POLICY,
+                ExecutorError::ExecutionFailed,
+            )
+            .await?;
 
             // Simulate execution — no real dispatch available in this path
-            state_machine
-                .advance(State::Unknown)
-                .map_err(|e| ExecutorError::Unknown(e.to_string()))?;
+            self.advance_or_abort(
+                &mut state_machine,
+                State::Unknown,
+                &action,
+                ABORT_POLICY,
+                ExecutorError::Unknown,
+            )
+            .await?;
 
             // Observe state
-            state_machine
-                .advance(State::Observing)
-                .map_err(|e| ExecutorError::Unknown(e.to_string()))?;
+            self.advance_or_abort(
+                &mut state_machine,
+                State::Observing,
+                &action,
+                ABORT_POLICY,
+                ExecutorError::Unknown,
+            )
+            .await?;
 
             let timeout_duration =
                 std::time::Duration::from_millis(self.config.verification_timeout_ms);
             let observation = if let Some(ref obs) = observer {
                 match tokio_timeout(timeout_duration, obs.observe(&action, &contract)).await {
                     Ok(Ok(obs)) => obs,
-                    Ok(Err(e)) => return Err(e),
+                    Ok(Err(e)) => {
+                        // A failed run must not leave the key in-flight:
+                        // release it so a later request can retry.
+                        return Err(self.abort_claimed_run(&action, ABORT_POLICY, e).await);
+                    }
                     Err(_) => {
-                        return Err(ExecutorError::Timeout(format!(
-                            "Observation timed out after {}ms",
-                            self.config.verification_timeout_ms
-                        )));
+                        return Err(self
+                            .abort_claimed_run(
+                                &action,
+                                ABORT_POLICY,
+                                ExecutorError::Timeout(format!(
+                                    "Observation timed out after {}ms",
+                                    self.config.verification_timeout_ms
+                                )),
+                            )
+                            .await);
                     }
                 }
             } else {
@@ -512,22 +657,45 @@ impl Executor {
             };
 
             // Verify postconditions
-            state_machine
-                .advance(State::Verifying)
-                .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
+            self.advance_or_abort(
+                &mut state_machine,
+                State::Verifying,
+                &action,
+                ABORT_POLICY,
+                ExecutorError::VerificationFailed,
+            )
+            .await?;
 
-            let evaluation = Self::verify_postconditions(&action, &contract, &observation)?;
+            let evaluation = match Self::verify_postconditions(&action, &contract, &observation) {
+                Ok(evaluation) => evaluation,
+                Err(e) => {
+                    // A predicate that cannot be evaluated (e.g. an
+                    // invalid regex) aborts the run after the claim;
+                    // release the key so a later request can retry.
+                    return Err(self.abort_claimed_run(&action, ABORT_POLICY, e).await);
+                }
+            };
             postcondition_details = evaluation.details;
 
             // Determine final state
             match evaluation.result {
                 VerificationResult::Verified => {
-                    state_machine
-                        .advance(State::Verified)
-                        .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
-                    state_machine
-                        .advance(State::Committed)
-                        .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
+                    self.advance_or_abort(
+                        &mut state_machine,
+                        State::Verified,
+                        &action,
+                        ABORT_POLICY,
+                        ExecutorError::VerificationFailed,
+                    )
+                    .await?;
+                    self.advance_or_abort(
+                        &mut state_machine,
+                        State::Committed,
+                        &action,
+                        ABORT_POLICY,
+                        ExecutorError::VerificationFailed,
+                    )
+                    .await?;
                     final_result = Some(VerificationResult::Verified);
                     final_observation = Some(observation);
                     break;
@@ -551,9 +719,14 @@ impl Executor {
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
-                    state_machine
-                        .advance(State::VerificationFailed)
-                        .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
+                    self.advance_or_abort(
+                        &mut state_machine,
+                        State::VerificationFailed,
+                        &action,
+                        ABORT_POLICY,
+                        ExecutorError::VerificationFailed,
+                    )
+                    .await?;
                     final_result = Some(VerificationResult::Failed);
                     break;
                 }
@@ -784,8 +957,17 @@ impl Executor {
     /// 6. Complete the idempotency entry with the result
     ///
     /// Timeouts are treated as UNKNOWN, not failure. The caller must observe
-    /// state before retrying. On transport error, the claim is released so
-    /// a subsequent request may retry.
+    /// state before retrying. Transport failures are ambiguous — the request
+    /// may have reached the target — so both shapes
+    /// ([`DispatchOutcome::TransportError`] and
+    /// [`DispatchError::TransportError`]) yield an UNKNOWN verdict and
+    /// consume the key as Unknown; an ambiguous transport outcome can never
+    /// permit a blind re-dispatch regardless of adapter shape. Adapter
+    /// errors that prove nothing was sent (unsupported action, pre-dispatch
+    /// timeout, rejection) release the claim; errors with unknown external
+    /// effect, postcondition evaluation errors, and observation failures
+    /// after dispatch consume the key as Unknown. Every error exit after the
+    /// claim resolves it: no aborted run leaves the key in flight.
     ///
     /// # Errors
     ///
@@ -854,9 +1036,14 @@ impl Executor {
             let mut state_machine = StateMachine::new();
 
             // Validate preconditions
-            state_machine
-                .advance(State::Validating)
-                .map_err(|e| ExecutorError::PreconditionFailed(e.to_string()))?;
+            self.advance_or_abort(
+                &mut state_machine,
+                State::Validating,
+                &action,
+                ClaimPolicy::Release,
+                ExecutorError::PreconditionFailed,
+            )
+            .await?;
 
             // Preconditions need the state as it is *before* dispatch, so it is
             // observed here rather than reusing the post-dispatch observation.
@@ -875,9 +1062,14 @@ impl Executor {
                             contract = %contract.id,
                             "action rejected before dispatch: {message}"
                         );
-                        state_machine
-                            .advance(State::Rejected)
-                            .map_err(|_| ExecutorError::PreconditionFailed(message.clone()))?;
+                        self.advance_or_abort(
+                            &mut state_machine,
+                            State::Rejected,
+                            &action,
+                            ClaimPolicy::Release,
+                            |_| ExecutorError::PreconditionFailed(message.clone()),
+                        )
+                        .await?;
                         final_result = Some(VerificationResult::Failed);
                         break;
                     }
@@ -885,52 +1077,88 @@ impl Executor {
             };
 
             if let Err(e) = Self::validate_preconditions(&action, &contract, pre_state.as_ref()) {
-                state_machine
-                    .advance(State::Rejected)
-                    .map_err(|_| ExecutorError::PreconditionFailed(e.clone()))?;
+                self.advance_or_abort(
+                    &mut state_machine,
+                    State::Rejected,
+                    &action,
+                    ClaimPolicy::Release,
+                    |_| ExecutorError::PreconditionFailed(e.clone()),
+                )
+                .await?;
                 final_result = Some(VerificationResult::Failed);
                 break;
             }
 
-            state_machine
-                .advance(State::Authorized)
-                .map_err(|e| ExecutorError::ExecutionFailed(e.to_string()))?;
+            self.advance_or_abort(
+                &mut state_machine,
+                State::Authorized,
+                &action,
+                ClaimPolicy::Release,
+                ExecutorError::ExecutionFailed,
+            )
+            .await?;
 
             // Execute action through executor
-            state_machine
-                .advance(State::Executing)
-                .map_err(|e| ExecutorError::ExecutionFailed(e.to_string()))?;
+            self.advance_or_abort(
+                &mut state_machine,
+                State::Executing,
+                &action,
+                ClaimPolicy::Release,
+                ExecutorError::ExecutionFailed,
+            )
+            .await?;
 
-            let dispatch_result = action_executor
-                .execute(&action)
-                .await
-                .map_err(|e| ExecutorError::ActionExecutor(e.to_string()))?;
+            let dispatch_result = match action_executor.execute(&action).await {
+                Ok(outcome) => outcome,
+                Err(e) => {
+                    // The adapter failed before producing an outcome. Retry
+                    // safety depends on whether the dispatch could have
+                    // reached the target: only errors that prove nothing was
+                    // sent release the claim; every other error — including
+                    // any future variant — leaves the external effect
+                    // unknown, so the key is consumed with Unknown to keep
+                    // later callers from re-dispatching.
+                    let policy = Self::claim_policy_for(&e);
+                    return Err(self
+                        .abort_claimed_run(
+                            &action,
+                            policy,
+                            ExecutorError::ActionExecutor(e.to_string()),
+                        )
+                        .await);
+                }
+            };
 
             // Handle dispatch outcome
             match dispatch_result {
                 DispatchOutcome::Completed | DispatchOutcome::Accepted => {
-                    state_machine
-                        .advance(State::Executed)
-                        .map_err(|e| ExecutorError::ExecutionFailed(e.to_string()))?;
+                    self.advance_or_abort(
+                        &mut state_machine,
+                        State::Executed,
+                        &action,
+                        ClaimPolicy::ConsumeUnknown,
+                        ExecutorError::ExecutionFailed,
+                    )
+                    .await?;
                 }
                 DispatchOutcome::TimeoutBeforeDispatch | DispatchOutcome::TimeoutAfterDispatch => {
-                    state_machine
-                        .advance(State::Unknown)
-                        .map_err(|e| ExecutorError::Timeout(e.to_string()))?;
+                    self.advance_or_abort(
+                        &mut state_machine,
+                        State::Unknown,
+                        &action,
+                        ClaimPolicy::ConsumeUnknown,
+                        ExecutorError::Timeout,
+                    )
+                    .await?;
                 }
                 DispatchOutcome::TransportError(_) => {
-                    // Terminal — release claim and return Failed
-                    if let Some(ref key) = action.idempotency_key {
-                        self.idempotency.release(&key.0).await;
-                    }
-                    let receipt = Self::create_receipt(
-                        &action,
-                        &contract,
-                        VerificationResult::Failed,
-                        attempts,
-                        Vec::new(),
-                    );
-                    return Ok((VerificationResult::Failed, receipt));
+                    // Terminal — a transport failure is inherently ambiguous
+                    // (the request may have reached the target), so this
+                    // matches the adapter-error path: the verdict stays
+                    // explicitly Unknown and the claim is consumed at the
+                    // end of the run, never released for a blind re-dispatch.
+                    final_result = Some(VerificationResult::Unknown);
+                    break;
                 }
                 DispatchOutcome::Ambiguous(_) => {
                     // Terminal — complete with Unknown
@@ -940,9 +1168,14 @@ impl Executor {
             }
 
             // Observe state
-            state_machine
-                .advance(State::Observing)
-                .map_err(|e| ExecutorError::Unknown(e.to_string()))?;
+            self.advance_or_abort(
+                &mut state_machine,
+                State::Observing,
+                &action,
+                ClaimPolicy::ConsumeUnknown,
+                ExecutorError::Unknown,
+            )
+            .await?;
 
             let timeout_duration =
                 std::time::Duration::from_millis(self.config.verification_timeout_ms);
@@ -954,12 +1187,25 @@ impl Executor {
                             final_result = Some(VerificationResult::Unknown);
                             break;
                         }
-                        Ok(Err(e)) => return Err(e),
+                        Ok(Err(e)) => {
+                            // Dispatch already happened, so the external
+                            // effect is unknown: consume the key with Unknown
+                            // instead of leaving it in-flight or re-dispatching.
+                            return Err(self
+                                .abort_claimed_run(&action, ClaimPolicy::ConsumeUnknown, e)
+                                .await);
+                        }
                         Err(_) => {
-                            return Err(ExecutorError::Timeout(format!(
-                                "Observation timed out after {}ms",
-                                self.config.verification_timeout_ms
-                            )));
+                            return Err(self
+                                .abort_claimed_run(
+                                    &action,
+                                    ClaimPolicy::ConsumeUnknown,
+                                    ExecutorError::Timeout(format!(
+                                        "Observation timed out after {}ms",
+                                        self.config.verification_timeout_ms
+                                    )),
+                                )
+                                .await);
                         }
                     }
                 }
@@ -967,22 +1213,48 @@ impl Executor {
             };
 
             // Verify postconditions
-            state_machine
-                .advance(State::Verifying)
-                .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
+            self.advance_or_abort(
+                &mut state_machine,
+                State::Verifying,
+                &action,
+                ClaimPolicy::ConsumeUnknown,
+                ExecutorError::VerificationFailed,
+            )
+            .await?;
 
-            let evaluation = Self::verify_postconditions(&action, &contract, &observation)?;
+            let evaluation = match Self::verify_postconditions(&action, &contract, &observation) {
+                Ok(evaluation) => evaluation,
+                Err(e) => {
+                    // A predicate that cannot be evaluated (e.g. an
+                    // invalid regex) aborts the run after the dispatch,
+                    // so the external effect is unknown: consume the key
+                    // with Unknown instead of leaving it in-flight.
+                    return Err(self
+                        .abort_claimed_run(&action, ClaimPolicy::ConsumeUnknown, e)
+                        .await);
+                }
+            };
             postcondition_details = evaluation.details;
 
             // Determine final state
             match evaluation.result {
                 VerificationResult::Verified => {
-                    state_machine
-                        .advance(State::Verified)
-                        .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
-                    state_machine
-                        .advance(State::Committed)
-                        .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
+                    self.advance_or_abort(
+                        &mut state_machine,
+                        State::Verified,
+                        &action,
+                        ClaimPolicy::ConsumeUnknown,
+                        ExecutorError::VerificationFailed,
+                    )
+                    .await?;
+                    self.advance_or_abort(
+                        &mut state_machine,
+                        State::Committed,
+                        &action,
+                        ClaimPolicy::ConsumeUnknown,
+                        ExecutorError::VerificationFailed,
+                    )
+                    .await?;
                     final_result = Some(VerificationResult::Verified);
                     final_observation = Some(observation);
                     break;
@@ -1005,9 +1277,14 @@ impl Executor {
                         sleep(std::time::Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
-                    state_machine
-                        .advance(State::VerificationFailed)
-                        .map_err(|e| ExecutorError::VerificationFailed(e.to_string()))?;
+                    self.advance_or_abort(
+                        &mut state_machine,
+                        State::VerificationFailed,
+                        &action,
+                        ClaimPolicy::ConsumeUnknown,
+                        ExecutorError::VerificationFailed,
+                    )
+                    .await?;
                     final_result = Some(VerificationResult::Failed);
                     break;
                 }
@@ -1219,7 +1496,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_with_executor_transport_error_is_terminal() {
+    async fn execute_with_executor_transport_error_verdict_is_unknown() {
         use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
         use std::sync::Arc;
 
@@ -1249,8 +1526,9 @@ mod tests {
 
         assert!(result.is_ok());
         let (verification_result, receipt) = result.unwrap();
-        // TransportError is terminal - should be Failed immediately, not retried
-        assert_eq!(verification_result, VerificationResult::Failed);
+        // A transport failure is ambiguous: the request may have reached the
+        // target, so the verdict is Unknown — not Failed — and terminal.
+        assert_eq!(verification_result, VerificationResult::Unknown);
         assert_eq!(receipt.attempts, 1); // First attempt
     }
 
@@ -1575,8 +1853,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_with_executor_transport_error_releases_claim_for_retry() {
+    async fn execute_with_executor_transport_error_consumes_claim_as_unknown() {
         use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use agentverify_core::IdempotencyKey;
 
         struct MockExecutor;
 
@@ -1590,7 +1869,11 @@ mod tests {
         }
 
         let executor = Executor::new();
-        let action = Action::new("test", serde_json::json!({}));
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("transport-outcome-key"),
+        );
         let contract =
             Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
 
@@ -1600,8 +1883,388 @@ mod tests {
 
         assert!(result.is_ok());
         let (verification_result, _receipt) = result.unwrap();
-        // TransportError is terminal — Failed immediately, not retried
+        // The verdict stays explicitly Unknown.
+        assert_eq!(verification_result, VerificationResult::Unknown);
+
+        // The claim is consumed with Unknown, matching the adapter-error
+        // path: no caller can blindly re-dispatch the action.
+        let (claim, observed) = executor
+            .idempotency
+            .claim_or_check("transport-outcome-key")
+            .await;
+        assert_eq!(claim, ClaimResult::AlreadyClaimed);
+        assert_eq!(observed, Some(VerificationResult::Unknown));
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_adapter_error_releases_claim_for_retry() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use agentverify_core::IdempotencyKey;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct FailOnceExecutor {
+            calls: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for FailOnceExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+                if call == 1 {
+                    // An adapter-local rejection: nothing reached the target.
+                    Err(DispatchError::ActionNotSupported(
+                        "stage unavailable".to_string(),
+                    ))
+                } else {
+                    Ok(DispatchOutcome::Completed)
+                }
+            }
+        }
+
+        let executor = Executor::new();
+        let adapter = Arc::new(FailOnceExecutor {
+            calls: AtomicUsize::new(0),
+        });
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("adapter-error-release-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let first = executor
+            .execute_with_executor(action.clone(), contract.clone(), adapter.clone(), None)
+            .await;
+        assert!(
+            first.is_err(),
+            "an adapter error must surface as Err, got {first:?}"
+        );
+
+        // The claim was released: the key is claimable again, with no verdict.
+        let (claim, observed) = executor
+            .idempotency
+            .claim_or_check("adapter-error-release-key")
+            .await;
+        assert_eq!(claim, ClaimResult::Claimed);
+        assert_eq!(observed, None);
+        executor
+            .idempotency
+            .release("adapter-error-release-key")
+            .await;
+
+        // A retry reaches the adapter again instead of being poisoned as
+        // a false Duplicate.
+        let second = executor
+            .execute_with_executor(action, contract, adapter.clone(), None)
+            .await;
+        assert!(second.is_ok());
+        let (verification_result, _receipt) = second.unwrap();
+        // The retried dispatch completes, but with no observer the
+        // postcondition never verifies: Failed after bounded retries.
         assert_eq!(verification_result, VerificationResult::Failed);
+        assert!(
+            adapter.calls.load(Ordering::SeqCst) > 1,
+            "the retry must reach the adapter again"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_unknown_effect_adapter_error_consumes_claim() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use agentverify_core::IdempotencyKey;
+
+        struct AmbiguousAdapter;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for AmbiguousAdapter {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                // A transport drop mid-flight: the action may or may not have
+                // taken effect, so the adapter reports Ambiguous as an error.
+                Err(DispatchError::Ambiguous(
+                    "connection dropped mid-flight".to_string(),
+                ))
+            }
+        }
+
+        let executor = Executor::new();
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("ambiguous-adapter-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let first = executor
+            .execute_with_executor(action, contract, Arc::new(AmbiguousAdapter), None)
+            .await;
+        assert!(first.is_err(), "the adapter error must surface as Err");
+
+        // Unknown external effect: the key is consumed with Unknown, never
+        // released for a blind re-dispatch.
+        let (claim, observed) = executor
+            .idempotency
+            .claim_or_check("ambiguous-adapter-key")
+            .await;
+        assert_eq!(claim, ClaimResult::AlreadyClaimed);
+        assert_eq!(observed, Some(VerificationResult::Unknown));
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_observer_timeout_consumes_claim_as_unknown() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use agentverify_core::IdempotencyKey;
+
+        struct CompletedExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for CompletedExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(DispatchOutcome::Completed)
+            }
+        }
+
+        struct SlowObserver;
+
+        #[async_trait::async_trait]
+        impl Observer for SlowObserver {
+            async fn observe(
+                &self,
+                _action: &Action,
+                _contract: &Contract,
+            ) -> Result<Observation, ExecutorError> {
+                sleep(Duration::from_millis(200)).await;
+                Ok(Observation::new(
+                    SourceId("slow".into()),
+                    serde_json::json!({}),
+                ))
+            }
+        }
+
+        let config = ExecutorConfig {
+            verification_timeout_ms: 50,
+            max_retries: 3,
+            verify_before_retry: true,
+        };
+        let executor = Executor::with_config(config);
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("observer-timeout-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let result = executor
+            .execute_with_executor(
+                action,
+                contract,
+                Arc::new(CompletedExecutor),
+                Some(Arc::new(SlowObserver)),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(ExecutorError::Timeout(_))),
+            "expected an observation timeout, got {result:?}"
+        );
+
+        // Dispatch already happened, so the key is consumed with Unknown.
+        let (claim, observed) = executor
+            .idempotency
+            .claim_or_check("observer-timeout-key")
+            .await;
+        assert_eq!(claim, ClaimResult::AlreadyClaimed);
+        assert_eq!(observed, Some(VerificationResult::Unknown));
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_observer_error_consumes_claim_as_unknown() {
+        use crate::action_executor::{ActionExecutor, DispatchError, DispatchOutcome};
+        use agentverify_core::IdempotencyKey;
+
+        struct CompletedExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for CompletedExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(DispatchOutcome::Completed)
+            }
+        }
+
+        struct BrokenObserver;
+
+        #[async_trait::async_trait]
+        impl Observer for BrokenObserver {
+            async fn observe(
+                &self,
+                _action: &Action,
+                _contract: &Contract,
+            ) -> Result<Observation, ExecutorError> {
+                // A non-Unknown observer failure (e.g. a hard collector error).
+                Err(ExecutorError::ActionExecutor(
+                    "collector returned 500".to_string(),
+                ))
+            }
+        }
+
+        let executor = Executor::new();
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("observer-error-key"),
+        );
+        let contract =
+            Contract::new("test").with_postcondition(Predicate::exists("result"), "result exists");
+
+        let result = executor
+            .execute_with_executor(
+                action,
+                contract,
+                Arc::new(CompletedExecutor),
+                Some(Arc::new(BrokenObserver)),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(ExecutorError::ActionExecutor(_))),
+            "expected the observer error to propagate, got {result:?}"
+        );
+
+        // Dispatch already happened, so the key is consumed with Unknown.
+        let (claim, observed) = executor
+            .idempotency
+            .claim_or_check("observer-error-key")
+            .await;
+        assert_eq!(claim, ClaimResult::AlreadyClaimed);
+        assert_eq!(observed, Some(VerificationResult::Unknown));
+    }
+
+    #[tokio::test]
+    async fn execute_with_executor_verification_error_consumes_claim_as_unknown() {
+        use agentverify_core::IdempotencyKey;
+
+        struct CompletedExecutor;
+
+        #[async_trait::async_trait]
+        impl ActionExecutor for CompletedExecutor {
+            async fn execute(&self, _action: &Action) -> Result<DispatchOutcome, DispatchError> {
+                Ok(DispatchOutcome::Completed)
+            }
+        }
+
+        // The observation holds a string at the predicate path, so a
+        // `Matches` predicate reaches regex compilation.
+        let witness = StaticObserver {
+            state: serde_json::json!({"result": "completed"}),
+            source: "post-dispatch",
+        };
+
+        let executor = Executor::new();
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("verify-error-key"),
+        );
+        let contract = Contract::new("test").with_postcondition(
+            Predicate::matches("result", "[invalid("),
+            "result must match the pattern",
+        );
+
+        let result = executor
+            .execute_with_executor(
+                action,
+                contract,
+                Arc::new(CompletedExecutor),
+                Some(Arc::new(witness)),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(ExecutorError::VerificationFailed(_))),
+            "an uncompilable predicate regex must abort the run, got {result:?}"
+        );
+
+        // The error exit happens after the claim and after the dispatch, so
+        // the key is consumed with Unknown: it is neither left in flight
+        // (which would poison later callers with a false Duplicate) nor
+        // released for a blind re-dispatch.
+        let (claim, observed) = executor
+            .idempotency
+            .claim_or_check("verify-error-key")
+            .await;
+        assert_eq!(claim, ClaimResult::AlreadyClaimed);
+        assert_eq!(observed, Some(VerificationResult::Unknown));
+    }
+
+    #[tokio::test]
+    async fn execute_verification_error_releases_the_claim() {
+        use agentverify_core::IdempotencyKey;
+
+        // The simulated path never dispatches externally, so a predicate
+        // evaluation error releases the key for a later retry.
+        let witness = StaticObserver {
+            state: serde_json::json!({"result": "completed"}),
+            source: "simulated",
+        };
+
+        let executor = Executor::new();
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("simulated-verify-error-key"),
+        );
+        let contract = Contract::new("test").with_postcondition(
+            Predicate::matches("result", "[invalid("),
+            "result must match the pattern",
+        );
+
+        let result = executor
+            .execute(action, contract, Some(Arc::new(witness)))
+            .await;
+        assert!(
+            matches!(result, Err(ExecutorError::VerificationFailed(_))),
+            "an uncompilable predicate regex must abort the run, got {result:?}"
+        );
+
+        // Released, not consumed: the key is claimable again with no verdict.
+        let (claim, observed) = executor
+            .idempotency
+            .claim_or_check("simulated-verify-error-key")
+            .await;
+        assert_eq!(claim, ClaimResult::Claimed);
+        assert_eq!(observed, None);
+        executor
+            .idempotency
+            .release("simulated-verify-error-key")
+            .await;
+    }
+
+    #[test]
+    fn adapter_errors_release_the_claim_only_when_nothing_was_sent() {
+        let releasable = [
+            DispatchError::ActionNotSupported("unsupported".to_string()),
+            DispatchError::TimeoutBeforeDispatch,
+            DispatchError::Rejected("quota exceeded".to_string()),
+        ];
+        for error in &releasable {
+            assert_eq!(
+                Executor::claim_policy_for(error),
+                ClaimPolicy::Release,
+                "{error} proves nothing reached the target"
+            );
+        }
+
+        let consuming = [
+            DispatchError::TransportError("connection reset".to_string()),
+            DispatchError::TimeoutAfterDispatch,
+            DispatchError::Ambiguous("split brain".to_string()),
+        ];
+        for error in &consuming {
+            assert_eq!(
+                Executor::claim_policy_for(error),
+                ClaimPolicy::ConsumeUnknown,
+                "{error} cannot prove the action never ran"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2956,7 +3619,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transport_error_releases_the_claim_so_the_key_can_be_retried() {
+    async fn transport_error_consumes_the_claim_so_the_key_cannot_be_redispatched() {
         let store = Arc::new(IdempotencyRegistry::new());
         let executor = Executor::with_config_and_store(ExecutorConfig::default(), store.clone());
         let action = Action::with_idempotency(
@@ -2979,19 +3642,20 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result, VerificationResult::Failed);
+        // Ambiguous external outcome: the verdict stays Unknown.
+        assert_eq!(result, VerificationResult::Unknown);
         assert_eq!(receipt.attempts, 1);
 
-        // The claim was released: this caller no longer owns the key.
+        // The claim was consumed with Unknown — the same treatment as a
+        // DispatchError::TransportError — so a later caller observes a
+        // verdict instead of blindly re-dispatching the action.
         let (claim, observed) = store.claim_or_check("transport-failure-key").await;
         assert_eq!(
             claim,
-            ClaimResult::Claimed,
-            "the failed dispatch must release its claim"
+            ClaimResult::AlreadyClaimed,
+            "the ambiguous transport outcome must not release the claim"
         );
-        assert_eq!(observed, None);
-
-        store.release("transport-failure-key").await;
+        assert_eq!(observed, Some(VerificationResult::Unknown));
     }
 
     #[tokio::test]
