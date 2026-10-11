@@ -24,8 +24,12 @@ Implementation commit: `734f0f0a31ba622f629f26171d8f14e24ffb5f9d` on
 
 ## Validation evidence
 
-Exact GitHub Actions head: `734f0f0a31ba622f629f26171d8f14e24ffb5f9d`,
-run `38184124947`.
+Exact GitHub Actions head (PR #27): `070ed9bc95880294f769c3924f4a26376215f441`,
+hosted run `38184365785` (run #113): 10/10 SUCCESS.
+
+The tested source is unchanged since implementation commit
+`734f0f0a31ba622f629f26171d8f14e24ffb5f9d`; the only delta to the exact head
+is docs-only (this receipt).
 
 | Gate | Result |
 |---|---|
