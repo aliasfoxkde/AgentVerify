@@ -524,10 +524,18 @@ async fn concurrent_writers_are_all_counted_by_concurrent_observers() {
         observed.push(count);
     }
 
-    // The cardinality only ever grows, so the last observation is the highest.
-    let mut sorted = observed.clone();
-    sorted.sort_unstable();
-    assert_eq!(observed.last().copied(), sorted.last().copied());
+    // Each observation is a point-in-time snapshot of a monotonically
+    // growing cardinality, but the observations are collected in spawn
+    // order, not in the order they were taken, so the collected sequence
+    // itself carries no ordering guarantee. What concurrency does
+    // guarantee: every task writes before it reads and the server
+    // serializes commands, so the task whose write lands last observes
+    // every member.
+    assert_eq!(
+        observed.iter().copied().max(),
+        Some(CONCURRENCY as u64),
+        "some observer must have seen the fully populated set"
+    );
 
     let final_total: u64 = {
         let mut conn = connection(&pool).await;
