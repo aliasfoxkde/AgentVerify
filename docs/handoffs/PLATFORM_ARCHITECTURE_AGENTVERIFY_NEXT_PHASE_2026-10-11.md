@@ -16,10 +16,10 @@ integration → live multi-turn end-to-end acceptance), demotes idempotency
 polish behind that proof, and pins every owner decision to an owner role, a
 bounded date, and a fallback (§6). §3's audit findings are unchanged except
 citation corrections recorded in §7.
-**Revision 3 (2026-10-11, this commit):** same evidence boundary (`f55e171`)
-and same §1–§6 substance; the Rev. 2 utility proof chain is retained
-unchanged. Three corrections/registrations, no re-ranking: (1) §2's crate
-inventory is corrected from "13 crates" to **14 workspace crates**
+**Revision 3 (2026-10-11, commit `49f71fb`):** same evidence boundary
+(`f55e171`) and same §1–§6 substance; the Rev. 2 utility proof chain is
+retained unchanged. Three corrections/registrations, no re-ranking: (1) §2's
+crate inventory is corrected from "13 crates" to **14 workspace crates**
 (`agentverify-policy` was already in the per-crate test inventory; the prose
 count alone was wrong) — re-counted with `cargo metadata --no-deps` at the
 boundary, receipt in §7; (2) this handoff is now registered in the task
@@ -28,7 +28,27 @@ ledger (`docs/internal/TASKS.md` Progress Timeline, per that ledger's
 points to `handoffs/` — the branch therefore changes three documentation
 files, still no source; (3) every line citation carried into Rev. 3 was
 re-verified against `f55e171` in this clone — all confirmed, no further
-corrections.
+corrections. *(Rev. 4 supersedes item (3): two load-bearing claims escaped
+that pass — see the Rev. 4 paragraph and the §7 citation-corrections
+bullet.)*
+**Revision 4 (2026-10-11, this commit):** same evidence boundary (`f55e171`)
+and same §1–§6 substance and ranking; three corrections from an independent
+exact-head review, docs-only again (this revision changes only this file):
+(1) §3.3 and P2-7 cite the Redis `release` warn as `idempotency_store.rs:
+450`; the warn is at **`:449`** — Rev. 2's recorded `:449 → :450`
+"correction" was itself wrong (verified in this clone, whose `crates/` and
+`.github/` trees are byte-identical to `f55e171`; §7's `:449-451` anchor
+range already contained the true line); (2) the PR #27 CI snapshot is now
+stated once, identically, in §1/§2/§4/§7 — all 10 substantive GitHub
+Actions checks green at head `dc956d089ae82ba0193a4839045b713266d9229d`
+(run 38106630891, conclusion `success`; the 11th rollup entry, CodeRabbit,
+reports "Review skipped: draft pull request") — replacing Rev. 2's stale
+"10 green checks + 1 pending" and labeled a point-in-time observation, not
+a standing guarantee; (3) P1-5 no longer says `Receipt` has "no replay
+fields": the optional **action-scoped** `idempotency_key` exists
+(`receipt.rs:93-95`) but is not by itself persisted request-level
+idempotency/replay evidence, and P1-5 now explicitly preserves-or-extends
+that field instead of denying it.
 **Evidence boundary:** branch `main` @ `f55e17149b47c04eb53faa21c8b56b6de50a53d9`
 (origin/main, fast-forwarded local clone, working tree clean except this
 document). This boundary already contains PR #26 (post-claim error-exit claim
@@ -60,7 +80,7 @@ since that boundary **[confirmed]**:
 |---|---|---|
 | PR #26 merged (`25571b7`) | on `main` | Every post-claim error exit in the executor now resolves the idempotency claim (`Release` or `ConsumeUnknown`); `TransportError` is `UNKNOWN` in both `DispatchError` and `DispatchOutcome` shapes. The "abandoned in-flight key → false `Duplicate`" defect class is closed at the executor layer. |
 | PR #28 merged (`f55e171`) | on `main` | Redis observer concurrency invariant test repaired. |
-| PR #27 opened (draft) | NOT on `main` | Closes the *store-layer* fail-open claim semantics for `RedisIdempotencyStore` (adds `ClaimResult::Unavailable` + `ExecutorError::IdempotencyUnavailable`, refuses dispatch without a proven claim). All 10 GitHub Actions checks pass on its head. |
+| PR #27 opened (draft) | NOT on `main` | Closes the *store-layer* fail-open claim semantics for `RedisIdempotencyStore` (adds `ClaimResult::Unavailable` + `ExecutorError::IdempotencyUnavailable`, refuses dispatch without a proven claim). All 10 substantive GitHub Actions checks pass on its head `dc956d089ae82ba0193a4839045b713266d9229d` (run 38106630891, conclusion `success`; the 11th rollup entry, CodeRabbit, is skipped while the PR is a draft). Point-in-time snapshot read 2026-10-11 — an observation, not a standing guarantee (§4). |
 | PR #29 opened (draft) | NOT on `main` | Closes the same gap for `FileIdempotencyStore` (claim-persist failure → `Unavailable`, cache untouched). Stacked on #27 (`base` = #27's head branch; merge #27 first). No CI checks have run on it yet. |
 
 Nothing in this document duplicates #27/#29 scope. Section 4 states exactly
@@ -111,7 +131,8 @@ not dropped: they still land before any promotion claim.
   otel 3 — **748 declared test functions** (grep count, not a run count)
   **[confirmed]**. (Rev. 1–2 said "13 crates" here; the per-crate list below
   already named all 14 — only the prose count was wrong, corrected in Rev. 3.)
-- Open PRs: #27 (draft, CI green), #29 (draft, stacked, no CI runs),
+- Open PRs: #27 (draft; 10/10 substantive Actions checks green at head
+  `dc956d0`, snapshot 2026-10-11 — §1/§4), #29 (draft, stacked, no CI runs),
   #25 + #8–#17 (11 dependabot/action bumps, including redis 0.24.1 → 1.6.0 in
   #13 and axum 0.7.9 → 0.8.9 in #11) **[confirmed]**.
 - GitForge: the GitForge repo inventory (21 repos, read 2026-10-11) contains
@@ -198,7 +219,7 @@ Residual fail-closed gaps **not** covered by #27/#29 (source-verified on
 - **Redis completion writes are silently discarded on error.**
   `RedisIdempotencyStore::complete` ignores the `SET` result entirely
   (`idempotency_store.rs:428-435`: `let _: Result<(), _> = ...`); unlike
-  `release` (which warns at `:450`) a failed completion write is not even
+  `release` (which warns at `:449`) a failed completion write is not even
   logged. A lost completion leaves the key `InFlight` until TTL, so later
   callers get `(AlreadyClaimed, None)` — the unresolved-claim shape that reads
   as a false `Duplicate` downstream. **[inferred from the store state
@@ -273,7 +294,11 @@ Both are draft PRs owned by their authors; this handoff neither edits nor
 reimplements them.
 
 - **#27 — "fix(runtime): refuse dispatch on unprovable idempotency claims"**
-  (draft, base `main`, all 10 Actions checks green, run 38106630891). Scope:
+  (draft, base `main`, head `dc956d089ae82ba0193a4839045b713266d9229d`; all
+  10 substantive Actions checks green in run 38106630891 — completed,
+  conclusion `success` — with CodeRabbit skipped as draft; snapshot
+  2026-10-11, an observation at a point in time, not a permanent guarantee).
+  Scope:
   Redis claim fail-closed (`ClaimResult::Unavailable`,
   `ExecutorError::IdempotencyUnavailable`, scripted-connection command-sequence
   tests, executor zero-dispatch tests, CI `--all-features` test job). Public
@@ -425,13 +450,29 @@ Executes the receipt-identity half of P-CC-01 (prior handoff §7;
   `X-Idempotency-Key` (`:193`) and a `submit_receipt_with_unknown_on_timeout`
   wrapper (`:232`), covered by wiremock tests (`:470`). What is missing is
   identity binding: `Receipt` (`receipt.rs:67`) carries `action_id`/
-  `contract_id`/digest/signature but **no** project/task/work-request/job/
-  agent/commit/verifier/replay fields. Whether any Control Center deployment
-  implements the endpoint remains **[unverified]** (prior handoff §5).
+  `contract_id`/digest/signature **and** an optional *action-scoped*
+  `idempotency_key` (`receipt.rs:93-95`, doc comment "Idempotency key for
+  replay protection") — populated by the executor from the Action's own
+  `idempotency_key` (`executor.rs:1356` via `with_contract_version_and_key`,
+  `receipt.rs:132-158`; covered by the canonical digest, `receipt.rs:187`).
+  That field is **not by itself persisted request-level
+  idempotency/replay evidence**: it is `None` unless the action carried a
+  key, the submission path keys `X-Idempotency-Key` on the receipt digest
+  instead (`client.rs:193`), and nothing client- or server-side deduplicates
+  on it. What `Receipt` has no equivalent of is project/task/work-request/
+  job/agent/commit/verifier identity fields, and no request-scoped replay
+  evidence. Whether any Control Center deployment implements the endpoint
+  remains **[unverified]** (prior handoff §5).
 - **Action:** add the P-CC-01 identity fields to `Receipt` (digest computed
-  over the extended canonical form), bind them at execution time from the
-  platform task lifecycle (task/work-request/job/agent-run/commit), and pin
-  the versioned schema in `docs/INTEGRATIONS.md`; add wiremock rejection
+  over the extended canonical form, preserving the existing
+  `idempotency_key` and its canonical-digest coverage — `receipt.rs:187`),
+  bind them at execution time from the platform task lifecycle
+  (task/work-request/job/agent-run/commit), and pin the versioned schema in
+  `docs/INTEGRATIONS.md`, including an explicit decision for the "replayed"
+  rejection class: bind it to the existing action-scoped `idempotency_key`,
+  or extend that field into a persisted request-scoped replay-evidence
+  field — reuse-as-is is not replay evidence (see Evidence), so either way
+  the choice is recorded in the schema, not implicit; add wiremock rejection
   fixtures (orphan, stale, tampered, unauthorized, cross-project, replayed)
   proving the client surfaces rejection reasons. Submit-only: no
   promotion-state mutation, per the client's existing design.
@@ -487,7 +528,7 @@ is undecided.
 
 - **Evidence:** `idempotency_store.rs:428-435` — `complete`'s `SET` result is
   discarded (`let _: Result<(), _>`); contrast `release`'s warned `DEL`
-  (`:450`). Lost completion ⇒ key stays `InFlight` ⇒ false-`Duplicate`
+  (`:449`). Lost completion ⇒ key stays `InFlight` ⇒ false-`Duplicate`
   shape for later callers (§3.3).
 - **Action (post-stack, coordinate rebases — #27 and #29 both touch this
   file):** at minimum `warn!` on completion error, matching `release`; the
@@ -628,11 +669,14 @@ a real fallback; dates from 2026-10-11)**
 - **Branch / revision:** `docs/next-phase-handoff-20261011`, based on `main`
   @ `f55e17149b47c04eb53faa21c8b56b6de50a53d9` (origin/main,
   fast-forwarded). Rev. 1 (`45aabc8`) added this document; Rev. 2
-  (`a7dd069`) updated only this file; **Rev. 3 (this commit)** corrects the
-  §2 crate count in this file and registers the handoff in
+  (`a7dd069`) updated only this file; Rev. 3 (`49f71fb`) corrected the
+  §2 crate count in this file and registered the handoff in
   `docs/internal/TASKS.md` (Progress Timeline row) and `docs/README.md`
-  (navigation pointer to `handoffs/`). Rev. 3 changes exactly three
-  documentation files; no source, test, CI, or workflow file is touched.
+  (navigation pointer to `handoffs/`), changing exactly three documentation
+  files; no source, test, CI, or workflow file is touched. **Rev. 4 (this
+  commit)** corrects the §3.3/P2-7 `release`-warn citation and the P1-5
+  `Receipt` replay-field claim in this file and re-states the #27 CI
+  snapshot identically across §1/§2/§4/§7; it changes only this file.
 - **Crate count (corrected in Rev. 3):** command
   `cargo metadata --no-deps --format-version 1`, run in this clone on
   2026-10-11: **14 workspace packages** — agentverify-{cli, contract, core,
@@ -647,7 +691,9 @@ a real fallback; dates from 2026-10-11)**
   handoff ("source read of all 14 crates").
 - **Commands run for Rev. 2 (read-only):** `gh pr view 27/29` and
   `gh run view 38106630891` (PR/CI state re-read 2026-10-11: #27 draft with
-  10 green checks + 1 pending, run success; #29 draft, zero completed
+  10 green checks + 1 pending — Rev. 4 re-read: that pending entry has
+  since resolved to CodeRabbit "Review skipped: draft pull request"; see
+  the Rev. 4 snapshot below — run success; #29 draft, zero completed
   checks, base = #27's head branch); per-crate recount
   `grep -rE "#\[(tokio::)?test\]"` across `src/`, `tests/`, `benches/`
   (748, matching §2); targeted `sed`/`awk`/`grep` re-verification of every
@@ -666,6 +712,8 @@ a real fallback; dates from 2026-10-11)**
   and `ci.yml:118-121`, `:212-219`, `:243-244`; `wasm_storage.rs:140-147`;
   `client.rs:168`, `:193`, `:232`; `recovery/src/lib.rs:999-1023`,
   `:1485-1493`. **All confirmed; no further citation corrections.**
+  *(Superseded by Rev. 4: two load-bearing claims escaped that pass — see
+  the citation-corrections bullet below.)*
 - **Citation corrections made in Rev. 2:** §3.1 `McpClient` bullet — the
   tool-call surface is `call_tool` (`client.rs:441-466`) and the private
   `dispatch` (`client.rs:352-373`) is JSON-RPC routing; Rev. 1 cited
@@ -674,6 +722,36 @@ a real fallback; dates from 2026-10-11)**
   correct test lines (4 of 8 pairings were drifted) and the
   double-dispatch test line added (`:2353`). All other §2–§4 citations were
   re-verified against `f55e171` and unchanged.
+- **Commands run for Rev. 4 (read-only):** `gh pr view 27 --json
+  headRefOid,statusCheckRollup`, `gh pr checks 27`, and
+  `gh run view 38106630891` (re-read 2026-10-11): #27 is a draft at head
+  `dc956d089ae82ba0193a4839045b713266d9229d`; run 38106630891 (created
+  2026-10-11T02:53:53Z) is completed with conclusion `success`; all 10
+  substantive Actions checks pass on that head (Clippy all-features,
+  Clippy default, Coverage, Deny advisories, Deny bans/licenses/sources,
+  Documentation, Formatting, MSRV, Test, WASM wasm32-wasip1); the 11th
+  check-rollup entry, CodeRabbit, reports "Review skipped: draft pull
+  request" — skipped, not pending. This is a point-in-time observation,
+  not a permanent guarantee; re-read before merge decisions. Source
+  re-verification in this clone: `release`'s warn at
+  `idempotency_store.rs:449` (inside `release`, fn at `:439`) and
+  `complete`'s discarded `SET` at `:428-435`; `Receipt` struct
+  `receipt.rs:67`, `idempotency_key` field `:93-95`, constructor
+  `:132-158`, canonical-digest coverage `:187`; executor key flow
+  `executor.rs:1356`; header source `client.rs:193`; `Action.idempotency_key`
+  `action.rs:20`. `git diff f55e171..HEAD` shows only `docs/` files, so
+  source line numbers at this head equal the `f55e171` boundary.
+- **Citation corrections made in Rev. 4:** §3.3 and P2-7 — the Redis
+  `release` warn is `idempotency_store.rs:449`, not `:450`; Rev. 2's
+  recorded `:449 → :450` correction (above) was itself wrong. §7's
+  `:449-451` anchor range was verified to contain the warn line and stands
+  as written. P1-5 — the Evidence and Action bullets no longer claim
+  `Receipt` has "no replay fields": the optional action-scoped
+  `idempotency_key` (`receipt.rs:93-95`) exists and is covered by the
+  canonical digest; the corrected claim is that it is not by itself
+  persisted request-level replay evidence, and the plan now
+  preserves-or-extends it explicitly. No §1–§6 ranking, boundary, or
+  evidence-boundary change.
 - **Tests run:** none — docs-only branch, no code touched (Rev. 3 included;
   `cargo metadata` resolves manifests only, no build or test execution);
   per `AGENTS.md` the expensive validation gates (fmt/clippy/tests/coverage)
@@ -690,6 +768,8 @@ a real fallback; dates from 2026-10-11)**
   markdown re-reviewed for broken relative links and claim tags on every
   finding; `git diff --check` clean.
 - **Integration limitations:** unchanged from Rev. 1 — GitForge inventory
-  and PR/CI state are point-in-time (2026-10-11); `main` moves when
-  #27/#29 land; Q6's endpoint deployment remains unverified, so P1-6's
-  Control Center hop is stub-backed until Q6 resolves.
+  and PR/CI state are point-in-time observations (2026-10-11), not standing
+  guarantees: re-read `gh pr checks` at the current head before any merge
+  decision; `main` moves when #27/#29 land; Q6's endpoint deployment
+  remains unverified, so P1-6's Control Center hop is stub-backed until Q6
+  resolves.
