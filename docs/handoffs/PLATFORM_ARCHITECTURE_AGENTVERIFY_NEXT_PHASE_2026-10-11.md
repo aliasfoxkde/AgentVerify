@@ -16,7 +16,7 @@ integration → live multi-turn end-to-end acceptance), demotes idempotency
 polish behind that proof, and pins every owner decision to an owner role, a
 bounded date, and a fallback (§6). §3's audit findings are unchanged except
 citation corrections recorded in §7.
-**Revision 3 (2026-10-11, this commit):** same evidence boundary (`f55e171`)
+**Revision 3 (2026-10-11, commit `49f71fba`):** same evidence boundary (`f55e171`)
 and same §1–§6 substance; the Rev. 2 utility proof chain is retained
 unchanged. Three corrections/registrations, no re-ranking: (1) §2's crate
 inventory is corrected from "13 crates" to **14 workspace crates**
@@ -29,6 +29,24 @@ points to `handoffs/` — the branch therefore changes three documentation
 files, still no source; (3) every line citation carried into Rev. 3 was
 re-verified against `f55e171` in this clone — all confirmed, no further
 corrections.
+**Revision 4 (2026-10-12):** evidence-only PR #27 closeout, added as §8. §1–§7
+are preserved verbatim — the audit boundary stays `f55e171` — and Rev. 4
+changes only this file: it appends §8, adds this paragraph, and pins Rev. 3's
+two "(this commit)" anchors to `49f71fba` so they keep describing Rev. 3. §8
+records live 2026-10-12 reads: #27 OPEN/DRAFT at head
+`164c0f445bbdd660dace14def98ab66d60f30654` with `mergeState` CLEAN and an
+empty `reviewDecision`; GitHub Actions run 38186108953 rolls up SUCCESS for
+Formatting, Clippy (default), Clippy (all-features), Test, Documentation,
+MSRV, Deny (advisories), Deny (bans licenses sources), WASM
+(wasm32-wasip1), and Coverage, plus CodeRabbit SUCCESS; GitForge `GET
+/health` (port 42780) answered healthy on 127.0.0.1, 192.168.0.201, and
+192.168.1.202, while `GET /queue/status` (port 42781) answered
+`scheduler_auth_required` HTTP 401 on all three at 2026-10-12 00:31 UTC.
+Accordingly **no GitForge job was queued and none ran** (no run ID exists),
+the §2 GitForge inventory observation remains dated 2026-10-11, and §8.4
+pins the required next actions — authorized scheduler access or explicit
+repo/pipeline integration, an actual GitForge lane run cited by run ID, and
+independent review — before the owner decides readiness/merge.
 **Evidence boundary:** branch `main` @ `f55e17149b47c04eb53faa21c8b56b6de50a53d9`
 (origin/main, fast-forwarded local clone, working tree clean except this
 document). This boundary already contains PR #26 (post-claim error-exit claim
@@ -628,7 +646,7 @@ a real fallback; dates from 2026-10-11)**
 - **Branch / revision:** `docs/next-phase-handoff-20261011`, based on `main`
   @ `f55e17149b47c04eb53faa21c8b56b6de50a53d9` (origin/main,
   fast-forwarded). Rev. 1 (`45aabc8`) added this document; Rev. 2
-  (`a7dd069`) updated only this file; **Rev. 3 (this commit)** corrects the
+  (`a7dd069`) updated only this file; **Rev. 3 (`49f71fba`)** corrects the
   §2 crate count in this file and registers the handoff in
   `docs/internal/TASKS.md` (Progress Timeline row) and `docs/README.md`
   (navigation pointer to `handoffs/`). Rev. 3 changes exactly three
@@ -693,3 +711,85 @@ a real fallback; dates from 2026-10-11)**
   and PR/CI state are point-in-time (2026-10-11); `main` moves when
   #27/#29 land; Q6's endpoint deployment remains unverified, so P1-6's
   Control Center hop is stub-backed until Q6 resolves.
+
+## 8. PR #27 closeout — evidence-only 2026-10-12 pass (Rev. 4)
+
+Point-in-time evidence read live on 2026-10-12 and recorded here exactly as
+observed. This section makes no merge, readiness, or promotion claim and
+does not restate or revise §1–§7's `f55e171`-bounded audit: those findings
+stand as written until re-read against a new boundary.
+
+### 8.1 GitHub state [confirmed — read 2026-10-12]
+
+- **PR #27** ("fix(runtime): refuse dispatch on unprovable idempotency
+  claims", the P0-1 subject, §4): **OPEN**, **DRAFT**; head
+  `164c0f445bbdd660dace14def98ab66d60f30654`; `mergeState` **CLEAN**
+  (GitHub reports the branch mergeable, no conflicts); `reviewDecision`
+  **empty** (no review decision is recorded). The PR is not merged, and
+  P0-1's acceptance gates (§5) remain unmet.
+- **Check rollup — GitHub Actions run `38186108953`** on that head, every
+  listed check **SUCCESS** **[confirmed]**: Formatting; Clippy (default);
+  Clippy (all-features); Test; Documentation; MSRV; Deny (advisories); Deny
+  (bans licenses sources); WASM (wasm32-wasip1); Coverage; plus
+  **CodeRabbit: SUCCESS**. This is the rollup for the current head; §4 and
+  §7's run `38106630891` (2026-10-11) remains the historical record for the
+  head it covered. CI success is evidence that the checks passed, not a
+  review and not a merge decision.
+
+### 8.2 GitForge probes [confirmed — read 2026-10-12]
+
+- `GET /health` (port **42780**): **healthy** on all three probed addresses
+  — `127.0.0.1`, `192.168.0.201`, `192.168.1.202`.
+- `GET /queue/status` (port **42781**): **`scheduler_auth_required`**,
+  HTTP **401**, on all three addresses at **2026-10-12 00:31 UTC**.
+- Reading: the service is reachable, but the queue/scheduler is
+  authorization-gated and this evidence pass held no scheduler credentials.
+- **Hard boundary: no GitForge job was queued and none ran.** There is no
+  GitForge lane run and no run ID from this pass, and none may be implied
+  by §8.1's checks (GitHub Actions/CodeRabbit only). The §2 GitForge
+  inventory finding — no AgentVerify repository among the 21 inventoried
+  repos — **remains dated 2026-10-11** and is unchanged by these probes;
+  Q5's fallback stands (GitHub Actions is the sole gate).
+
+### 8.3 What this closeout does not claim
+
+- No GitForge execution of any kind — no queued job, no lane run, no run ID.
+- No review activity: `reviewDecision` is empty and CI success does not
+  substitute for a review.
+- No readiness, merge, or promotion decision: that belongs to the
+  repository owner, after the sequence in §8.4.
+- No change to the §2–§6 audit boundary, findings, or rankings, and no
+  status change for #29 (still stacked on #27, untouched).
+
+### 8.4 Required next actions, in order, before any readiness/merge decision
+
+1. **Authorized execution path.** Either obtain **authorized scheduler
+   access** — the 2026-10-12 00:31 UTC 401 on `/queue/status` is the
+   blocking fact — or perform an **explicit repo/pipeline integration**
+   (an AgentVerify repository and pipeline in GitForge; per §2 none exists
+   today). Without one of these, no GitForge evidence can be produced.
+2. **Actual GitForge lane run with run ID.** A queued, executed lane run
+   cited by its run ID is the only GitForge evidence of record; until one
+   exists, GitHub Actions remains the sole executed gate (Q5 fallback).
+3. **Independent review** of #27's current head `164c0f4` — §8.1's
+   `reviewDecision` empty is the open gate; check rollups are not reviews.
+4. **Owner decision last.** Only after 1–3 does the repository owner decide
+   readiness/merge against P0-1's acceptance gates (§5), with the #27 → #29
+   stack order unchanged.
+
+### 8.5 Closeout receipt (AGENTS.md change workflow item 4, Rev. 4 scope only)
+
+- **Provenance:** the §8 facts were verified live out-of-band on
+  2026-10-12 (GitHub PR/check state; GitForge `GET /health` and
+  `GET /queue/status` against the addresses and ports above) and are
+  transcribed verbatim — head SHA, run ID, check names, ports, addresses,
+  401 code, and timestamp as observed.
+- **In-session commands (read-only):** repository reads only (`git log`,
+  `git status`, `git rev-parse`) and `git diff --check` on this docs-only
+  branch. No tests, builds, toolchains, `gh`/API re-reads, fetches,
+  commits, or pushes were run in the editing session, and no source, test,
+  CI, or workflow file was touched.
+- **Diff inventory (Rev. 4):** this file only — appended §8, the Revision 4
+  header paragraph, and Rev. 3's two "(this commit)" anchors pinned to
+  `49f71fba`. §1–§7 text is otherwise preserved verbatim;
+  `git diff --check` clean.
