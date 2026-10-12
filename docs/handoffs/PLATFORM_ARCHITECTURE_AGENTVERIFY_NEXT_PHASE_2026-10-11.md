@@ -46,7 +46,28 @@ Accordingly **no GitForge job was queued and none ran** (no run ID exists),
 the §2 GitForge inventory observation remains dated 2026-10-11, and §8.4
 pins the required next actions — authorized scheduler access or explicit
 repo/pipeline integration, an actual GitForge lane run cited by run ID, and
-independent review — before the owner decides readiness/merge.
+independent review — before the owner decides readiness/merge. This Rev. 4
+summary is historical; Rev. 5 below supersedes its scheduler-access guidance.
+**Revision 5 (2026-10-12, edited on top of Rev. 4 head `20cf654`, PR #30):**
+evidence-only addendum to §8; §1–§7 untouched. It corrects the GitForge
+probe record and §8.4's first step. §8.2 now distinguishes the
+**2026-10-12 00:31 UTC unauthenticated** `/queue/status` 401 — retained as
+historical evidence of the route's fail-closed authorization gate, **not**
+as an unresolved credential blocker — from the later **authenticated**
+observation at **2026-10-12 00:48:13 UTC** from Fedora host
+`192.168.1.202`: the GitForge route source shows `GET /queue/status` is
+**runner-authenticated**; `GITFORGE_SCHEDULER_TOKEN` (from the configured
+protected scheduler-token environment file) answers HTTP **200**, while
+`GITFORGE_SCHEDULER_OPERATOR_TOKEN` answers **401** on this runner route
+(a **role mismatch, not absent credentials**). The authenticated queue
+snapshot is 1 assigned job, 8 pending/in-memory queued, 1 online runner,
+next-up `rust-tests-router` in an existing unrelated pipeline; **no job was
+queued for AgentVerify and no lane run was performed**. §8.4 no longer asks
+for scheduler credentials: it requires AgentVerify repo+pipeline
+registration (still absent per the 2026-10-11 inventory), then a wait for
+the queue (saturated at the 00:48:13 UTC snapshot) to have capacity, then
+one actual lane run cited by run ID; independent review and the owner
+decision remain required.
 **Evidence boundary:** branch `main` @ `f55e17149b47c04eb53faa21c8b56b6de50a53d9`
 (origin/main, fast-forwarded local clone, working tree clean except this
 document). This boundary already contains PR #26 (post-claim error-exit claim
@@ -712,7 +733,7 @@ a real fallback; dates from 2026-10-11)**
   #27/#29 land; Q6's endpoint deployment remains unverified, so P1-6's
   Control Center hop is stub-backed until Q6 resolves.
 
-## 8. PR #27 closeout — evidence-only 2026-10-12 pass (Rev. 4)
+## 8. PR #27 closeout — evidence-only 2026-10-12 pass (Rev. 4; amended Rev. 5)
 
 Point-in-time evidence read live on 2026-10-12 and recorded here exactly as
 observed. This section makes no merge, readiness, or promotion claim and
@@ -736,20 +757,34 @@ stand as written until re-read against a new boundary.
   head it covered. CI success is evidence that the checks passed, not a
   review and not a merge decision.
 
-### 8.2 GitForge probes [confirmed — read 2026-10-12]
+### 8.2 GitForge probes [confirmed — read 2026-10-12; Rev. 5 correction]
 
 - `GET /health` (port **42780**): **healthy** on all three probed addresses
   — `127.0.0.1`, `192.168.0.201`, `192.168.1.202`.
-- `GET /queue/status` (port **42781**): **`scheduler_auth_required`**,
-  HTTP **401**, on all three addresses at **2026-10-12 00:31 UTC**.
-- Reading: the service is reachable, but the queue/scheduler is
-  authorization-gated and this evidence pass held no scheduler credentials.
+- **Historical unauthenticated probe (retained as evidence):** at
+  **2026-10-12 00:31 UTC**, `GET /queue/status` (port **42781**) answered
+  **`scheduler_auth_required`**, HTTP **401**, on all three addresses.
+  This probe presented no credentials; it evidences the route's
+  fail-closed authorization gate and is **not** an open credential
+  blocker — see the authenticated probe below.
+- **Authenticated probe (Rev. 5):** at **2026-10-12 00:48:13 UTC**, from
+  the Fedora host `192.168.1.202`, the GitForge route source shows
+  `GET /queue/status` is **runner-authenticated**. With
+  **`GITFORGE_SCHEDULER_TOKEN`** (from the configured protected
+  scheduler-token environment file) the route answers HTTP **200**; with
+  **`GITFORGE_SCHEDULER_OPERATOR_TOKEN`** it answers **401** on this
+  runner route — a **role mismatch, not absent credentials**.
+- **Authenticated queue snapshot (Rev. 5):** 1 assigned job, 8
+  pending/in-memory queued, 1 online runner; next-up **`rust-tests-router`**
+  in an existing **unrelated** pipeline. **No job was queued for
+  AgentVerify.**
 - **Hard boundary: no GitForge job was queued and none ran.** There is no
-  GitForge lane run and no run ID from this pass, and none may be implied
+  GitForge lane run and no run ID from either pass, and none may be implied
   by §8.1's checks (GitHub Actions/CodeRabbit only). The §2 GitForge
   inventory finding — no AgentVerify repository among the 21 inventoried
   repos — **remains dated 2026-10-11** and is unchanged by these probes;
-  Q5's fallback stands (GitHub Actions is the sole gate).
+  AgentVerify repo/pipeline integration is still not present, and Q5's
+  fallback stands (GitHub Actions is the sole gate).
 
 ### 8.3 What this closeout does not claim
 
@@ -763,21 +798,28 @@ stand as written until re-read against a new boundary.
 
 ### 8.4 Required next actions, in order, before any readiness/merge decision
 
-1. **Authorized execution path.** Either obtain **authorized scheduler
-   access** — the 2026-10-12 00:31 UTC 401 on `/queue/status` is the
-   blocking fact — or perform an **explicit repo/pipeline integration**
-   (an AgentVerify repository and pipeline in GitForge; per §2 none exists
-   today). Without one of these, no GitForge evidence can be produced.
-2. **Actual GitForge lane run with run ID.** A queued, executed lane run
-   cited by its run ID is the only GitForge evidence of record; until one
-   exists, GitHub Actions remains the sole executed gate (Q5 fallback).
-3. **Independent review** of #27's current head `164c0f4` — §8.1's
+1. **AgentVerify repo/pipeline registration in GitForge.** An explicit
+   AgentVerify repository and pipeline must exist; per §2 (2026-10-11
+   inventory) none exists today, and §8.2's probes did not create one.
+   Scheduler access is **not** the blocker — §8.2's authenticated probe
+   shows a working runner-authorized path — so Rev. 4's "obtain scheduler
+   credentials" alternative is retired.
+2. **Wait for queue capacity.** The queue was saturated at the 00:48:13
+   UTC snapshot (§8.2: 8 pending/in-memory queued against 1 online runner,
+   next-up `rust-tests-router` in an unrelated pipeline); dispatch no
+   AgentVerify job until it has capacity.
+3. **Actual GitForge lane run with run ID.** A queued, executed lane run
+   cited by its run ID is the only GitForge evidence of record. **No lane
+   run has been performed** — none exists from Rev. 4's unauthenticated
+   pass or Rev. 5's authenticated read; until one exists, GitHub Actions
+   remains the sole executed gate (Q5 fallback).
+4. **Independent review** of #27's current head `164c0f4` — §8.1's
    `reviewDecision` empty is the open gate; check rollups are not reviews.
-4. **Owner decision last.** Only after 1–3 does the repository owner decide
+5. **Owner decision last.** Only after 1–4 does the repository owner decide
    readiness/merge against P0-1's acceptance gates (§5), with the #27 → #29
    stack order unchanged.
 
-### 8.5 Closeout receipt (AGENTS.md change workflow item 4, Rev. 4 scope only)
+### 8.5 Closeout receipt (AGENTS.md change workflow item 4, Rev. 4–5 scope)
 
 - **Provenance:** the §8 facts were verified live out-of-band on
   2026-10-12 (GitHub PR/check state; GitForge `GET /health` and
@@ -793,3 +835,17 @@ stand as written until re-read against a new boundary.
   header paragraph, and Rev. 3's two "(this commit)" anchors pinned to
   `49f71fba`. §1–§7 text is otherwise preserved verbatim;
   `git diff --check` clean.
+- **Rev. 5 correction (2026-10-12):** Rev. 4's scheduler-access guidance
+  explicitly marked historical/superseded; §8.2 rewritten to separate the
+  historical unauthenticated 00:31 UTC 401 from the authenticated
+  **00:48:13 UTC** read and queue snapshot (provenance: authenticated
+  GitForge observation from Fedora `192.168.1.202`, transcribed verbatim —
+  token **values** and the scheduler-token environment file's path are
+  deliberately withheld per `AGENTS.md`'s keep-credentials-out-of-docs
+  invariant); §8.4 steps 1–3 replaced (repo+pipeline registration → queue
+  capacity → one lane run with ID; "obtain scheduler credentials" removed)
+  with review/owner steps renumbered; header Revision 5 paragraph added
+  and §8's title notes the amendment. No lane run was performed; §1–§7 and
+  §8.1/§8.3 are preserved verbatim. In-session commands: read-only
+  repository/file reads and `git diff --check` on this docs-only branch —
+  no tests, builds, commits, or pushes.
