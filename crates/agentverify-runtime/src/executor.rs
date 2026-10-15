@@ -1034,21 +1034,39 @@ impl Executor {
                     }
                     // In-flight — wait briefly and poll for completion
                     sleep(std::time::Duration::from_millis(50)).await;
-                    let (_, existing) = self.idempotency.claim_or_check(&key.0).await;
-                    if let Some(cached) = existing {
-                        let receipt =
-                            Self::create_receipt(&action, &contract, cached, 0, Vec::new());
-                        return Ok((cached, receipt));
+                    let (poll_result, existing) = self.idempotency.claim_or_check(&key.0).await;
+                    match poll_result {
+                        ClaimResult::Claimed => {
+                            // The prior owner released or expired the key
+                            // before this poll. This call now owns the claim
+                            // and may proceed to dispatch.
+                        }
+                        ClaimResult::AlreadyClaimed => {
+                            if let Some(cached) = existing {
+                                let receipt =
+                                    Self::create_receipt(&action, &contract, cached, 0, Vec::new());
+                                return Ok((cached, receipt));
+                            }
+                            // The key is still occupied and its outcome is
+                            // not available, so this call must not dispatch.
+                            let receipt = Self::create_receipt(
+                                &action,
+                                &contract,
+                                VerificationResult::Duplicate,
+                                0,
+                                Vec::new(),
+                            );
+                            return Ok((VerificationResult::Duplicate, receipt));
+                        }
+                        ClaimResult::Unavailable => {
+                            return Err(ExecutorError::IdempotencyUnavailable(format!(
+                                "idempotency store could not answer the polled claim for key '{}'; \
+                                 the action was not dispatched",
+                                key.0
+                            )));
+                        }
                     }
-                    // Still in-flight after poll — treat as duplicate
-                    let receipt = Self::create_receipt(
-                        &action,
-                        &contract,
-                        VerificationResult::Duplicate,
-                        0,
-                        Vec::new(),
-                    );
-                    return Ok((VerificationResult::Duplicate, receipt));
+                    false
                 }
                 ClaimResult::Unavailable => {
                     // The store could not prove the claim state. Dispatching
@@ -3771,6 +3789,104 @@ mod tests {
                 self.releases.fetch_add(1, Ordering::SeqCst);
             })
         }
+    }
+
+    /// Store whose in-flight owner releases the key before the executor's
+    /// single poll, allowing that poll to acquire the now-free claim.
+    struct ReleasedThenClaimedStore {
+        claim_calls: AtomicUsize,
+        poll_result: ClaimResult,
+        completes: AtomicUsize,
+        releases: AtomicUsize,
+    }
+
+    impl IdempotencyStore for ReleasedThenClaimedStore {
+        fn claim_or_check<'a>(
+            &'a self,
+            _key: &'a str,
+        ) -> Pin<Box<dyn Future<Output = (ClaimResult, Option<VerificationResult>)> + Send + 'a>>
+        {
+            Box::pin(async move {
+                match self.claim_calls.fetch_add(1, Ordering::SeqCst) {
+                    0 => (ClaimResult::AlreadyClaimed, None),
+                    1 => (self.poll_result.clone(), None),
+                    _ => (ClaimResult::Unavailable, None),
+                }
+            })
+        }
+
+        fn complete(
+            &self,
+            _key: String,
+            _result: VerificationResult,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(async move {
+                self.completes.fetch_add(1, Ordering::SeqCst);
+            })
+        }
+
+        fn release(&self, _key: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(async move {
+                self.releases.fetch_add(1, Ordering::SeqCst);
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn poll_that_acquires_released_claim_dispatches_once() {
+        let store = Arc::new(ReleasedThenClaimedStore {
+            claim_calls: AtomicUsize::new(0),
+            poll_result: ClaimResult::Claimed,
+            completes: AtomicUsize::new(0),
+            releases: AtomicUsize::new(0),
+        });
+        let executor = Executor::with_config_and_store(ExecutorConfig::default(), store.clone());
+        let (dispatch, dispatches) = CountingDispatch::new();
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("released-before-poll-key"),
+        );
+
+        let (result, receipt) = executor
+            .execute_with_executor(action, Contract::new("test"), dispatch, None)
+            .await
+            .unwrap();
+
+        assert_eq!(result, VerificationResult::Verified);
+        assert_eq!(receipt.attempts, 1);
+        assert_eq!(dispatches.load(Ordering::SeqCst), 1);
+        assert_eq!(store.claim_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(store.completes.load(Ordering::SeqCst), 1);
+        assert_eq!(store.releases.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn unavailable_poll_returns_retryable_error_without_duplicate_receipt() {
+        let store = Arc::new(ReleasedThenClaimedStore {
+            claim_calls: AtomicUsize::new(0),
+            poll_result: ClaimResult::Unavailable,
+            completes: AtomicUsize::new(0),
+            releases: AtomicUsize::new(0),
+        });
+        let executor = Executor::with_config_and_store(ExecutorConfig::default(), store.clone());
+        let (dispatch, dispatches) = CountingDispatch::new();
+        let action = Action::with_idempotency(
+            "test",
+            serde_json::json!({}),
+            IdempotencyKey::new("unavailable-poll-key"),
+        );
+
+        let error = executor
+            .execute_with_executor(action, Contract::new("test"), dispatch, None)
+            .await
+            .expect_err("an unavailable poll is not evidence of a duplicate");
+
+        assert!(matches!(error, ExecutorError::IdempotencyUnavailable(_)));
+        assert_eq!(dispatches.load(Ordering::SeqCst), 0);
+        assert_eq!(store.claim_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(store.completes.load(Ordering::SeqCst), 0);
+        assert_eq!(store.releases.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
