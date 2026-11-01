@@ -164,6 +164,47 @@ let (result, receipt) = executor
     .await?;
 ```
 
+## Execution and evidence flow
+
+The verification boundary is deliberately separate from the action transport:
+
+```mermaid
+flowchart TD
+    A[Action + idempotency key] --> B[Contract: expected postconditions]
+    A --> C[Action executor]
+    C --> D[External system of record]
+    D --> E[Observer reads resulting state]
+    B --> F[Postcondition evaluator]
+    E --> F
+    F --> G[Verification result]
+    F --> H[Evidence receipt]
+    G --> I{Outcome}
+    I -->|VERIFIED| J[Continue workflow]
+    I -->|FAILED| K[Handle failed postconditions]
+    I -->|UNKNOWN| L[Defer or reconcile; do not blindly retry]
+```
+
+The executor dispatches the action; an observer independently reads the
+resulting state. The contract defines what must be true, not merely whether
+the dispatch endpoint returned successfully. The evaluator records each
+postcondition result and returns an explicit outcome. In particular,
+`UNKNOWN` means the system of record could not be queried or the outcome
+could not be established; it is not evidence that the action failed.
+
+### Observer integrations
+
+The README's production integration examples cover these observer types:
+
+| Observer | Integration boundary |
+|---|---|
+| Postgres | Read resulting state from a PostgreSQL system of record |
+| Redis | Read resulting state from Redis |
+| REST | Query an HTTP system of record; the example configures a timeout and redacts the authorization path |
+
+The complete adapter APIs and configuration belong in
+[Observer integrations](docs/INTEGRATIONS.md). The standalone quick-start
+ledger is an in-process example, not a production persistence adapter.
+
 ## Verification Results
 
 | Result | Meaning | Terminal? |
